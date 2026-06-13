@@ -79,6 +79,10 @@ try:
     FFMPEG = shutil.which("ffmpeg")
 except Exception:
     FFMPEG = None
+try:
+    FFPROBE = shutil.which("ffprobe")
+except Exception:
+    FFPROBE = None
 
 try:
     import fcntl
@@ -112,6 +116,7 @@ TEXT_EXTS = {
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif", ".heic", ".heif", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".m4v", ".webm", ".mov", ".mkv", ".avi", ".ts", ".mpeg", ".mpg", ".3gp"}
 AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav", ".opus", ".weba"}
+SUBTITLE_EXTS = {".vtt", ".srt", ".ass", ".ssa"}
 ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".xz", ".bz2"}
 OFFICE_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"}
 
@@ -702,6 +707,138 @@ def make_video_thumb(src: Path, dst: Path) -> bool:
         return False
 
 
+def _float_or_none(value: Any) -> Optional[float]:
+    try:
+        if value in (None, "", "N/A"):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+def _fps(value: str) -> str:
+    try:
+        if not value or value == "0/0":
+            return ""
+        a, b = value.split("/", 1)
+        fps = float(a) / float(b)
+        return f"{fps:.2f}".rstrip("0").rstrip(".")
+    except Exception:
+        return ""
+
+def bitrate_fmt(value: Any) -> str:
+    try:
+        n = int(float(value))
+    except Exception:
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f} Mbps"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f} kbps"
+    return f"{n} bps"
+
+def video_subtitle_sidecars(video: Path) -> List[Path]:
+    found: List[Path] = []
+    try:
+        parent = video.parent
+        stem = video.stem
+        for ext in sorted(SUBTITLE_EXTS):
+            p = parent / f"{stem}{ext}"
+            if p.is_file():
+                found.append(p)
+        for p in parent.glob(stem + ".*"):
+            try:
+                if p.is_file() and p.suffix.lower() in SUBTITLE_EXTS and p not in found:
+                    found.append(p)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return found[:12]
+
+def srt_to_vtt(text: str) -> str:
+    text = text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    if text.lstrip().startswith("WEBVTT"):
+        return text
+    text = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", text)
+    return "WEBVTT\n\n" + text.strip() + "\n"
+
+def _ass_time_to_vtt(t: str) -> str:
+    try:
+        h, m, rest = t.strip().split(":", 2)
+        s, cs = rest.split(".", 1)
+        return f"{int(h):02d}:{int(m):02d}:{int(s):02d}.{int(cs[:2]) * 10:03d}"
+    except Exception:
+        return "00:00:00.000"
+
+def ass_to_vtt(text: str) -> str:
+    out = ["WEBVTT", ""]
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not line.startswith("Dialogue:"):
+            continue
+        parts = line.split(",", 9)
+        if len(parts) < 10:
+            continue
+        start, end, body = parts[1], parts[2], parts[9]
+        body = re.sub(r"\{.*?\}", "", body).replace("\\N", "\n").replace("\\n", "\n")
+        if body.strip():
+            out.append(f"{_ass_time_to_vtt(start)} --> {_ass_time_to_vtt(end)}")
+            out.append(body.strip())
+            out.append("")
+    return "\n".join(out).strip() + "\n"
+
+def subtitle_to_vtt(path: Path) -> str:
+    data = path.read_bytes()[: 4 * 1024 * 1024]
+    text = data.decode("utf-8-sig", "replace")
+    ext = path.suffix.lower()
+    if ext == ".vtt":
+        return text if text.lstrip().startswith("WEBVTT") else "WEBVTT\n\n" + text
+    if ext == ".srt":
+        return srt_to_vtt(text)
+    if ext in {".ass", ".ssa"}:
+        return ass_to_vtt(text)
+    return "WEBVTT\n\n" + text
+
+def ffprobe_video_info(path: Path) -> Dict[str, Any]:
+    if not FFPROBE:
+        return {}
+    try:
+        r = subprocess.run([FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)], capture_output=True, text=True, timeout=12, errors="replace")
+        if r.returncode != 0:
+            return {}
+        data = json.loads(r.stdout or "{}")
+    except Exception:
+        return {}
+    streams = data.get("streams") or []
+    fmt = data.get("format") or {}
+    vstream = next((s for s in streams if s.get("codec_type") == "video"), {})
+    astream = next((s for s in streams if s.get("codec_type") == "audio"), {})
+    duration = _float_or_none(vstream.get("duration")) or _float_or_none(fmt.get("duration"))
+    bitrate = vstream.get("bit_rate") or fmt.get("bit_rate")
+    return {
+        "duration": duration, "width": vstream.get("width"), "height": vstream.get("height"),
+        "video_codec": vstream.get("codec_name") or "", "audio_codec": astream.get("codec_name") or "",
+        "fps": _fps(vstream.get("avg_frame_rate") or vstream.get("r_frame_rate") or ""),
+        "bitrate": int(float(bitrate)) if bitrate not in (None, "", "N/A") else None,
+        "bitrateText": bitrate_fmt(bitrate), "container": fmt.get("format_name") or "",
+    }
+
+def video_info(path: Path) -> Dict[str, Any]:
+    st = path.stat()
+    rel = path.resolve().relative_to(CONFIG.root.resolve()).as_posix()
+    info: Dict[str, Any] = {"ok": True, "name": path.name, "rel": rel, "size": st.st_size, "sizeText": size_fmt(st.st_size), "mtime": st.st_mtime, "mtimeText": mtime_fmt(st.st_mtime), "mime": mimetypes.guess_type(str(path))[0] or "application/octet-stream", "ffprobe": bool(FFPROBE)}
+    info.update(ffprobe_video_info(path))
+    subtitles = []
+    for idx, sub in enumerate(video_subtitle_sidecars(path)):
+        try:
+            srel = sub.resolve().relative_to(CONFIG.root.resolve()).as_posix()
+            lang = sub.stem[len(path.stem):].strip("._-") or f"s{idx}"
+            subtitles.append({"name": sub.name, "rel": srel, "label": lang or sub.name, "lang": re.sub(r"[^A-Za-z0-9_-]+", "", lang)[:16] or f"s{idx}", "ext": sub.suffix.lower(), "url": f"/api/subtitle?p={urllib.parse.quote(rel)}&i={idx}"})
+        except Exception:
+            continue
+    info["subtitles"] = subtitles
+    return info
+
+
 def breadcrumb(rel_path: str) -> str:
     rel_path = rel_path.strip("/")
     parts = [] if not rel_path else rel_path.split("/")
@@ -731,6 +868,8 @@ CSS = r"""
 .modal.media-video .modal-body{background:#000}
 .modal-stage{position:relative;min-height:40vh;background:#050608}.modal-body{position:relative;touch-action:pan-y;overscroll-behavior:contain}
 .modal-title-wrap{min-width:0;display:flex;flex-direction:column;gap:2px}.modal-meta{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.modal-head .actions{flex-wrap:nowrap}.modal-head .btn:disabled,.modal-nav:disabled{opacity:.35;cursor:default;transform:none}.modal-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:46px;height:70px;border:1px solid rgba(255,255,255,.16);border-radius:16px;background:rgba(0,0,0,.45);color:#fff;font-size:34px;font-weight:900;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(8px)}.modal-nav:hover:not(:disabled){background:rgba(255,255,255,.12)}.modal-prev{left:12px}.modal-next{right:12px}.modal-body img{user-select:none;-webkit-user-drag:none}.modal-body video{width:min(1280px,100%);height:auto}.media-hint{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:5px 10px;color:var(--muted);font-size:12px;pointer-events:none}.modal.media-video .media-hint{display:none}@media(max-width:760px){.modal{padding:0}.modal-box{width:100vw;height:100dvh;max-height:none;border-radius:0;border-left:0;border-right:0}.modal-head{height:auto;min-height:54px}.modal-body{min-height:calc(100dvh - 54px)}.modal-body img,.modal-body video{max-height:calc(100dvh - 56px)}.modal-nav{display:none}.modal-meta{font-size:11px}.modal-head .btn.small{height:30px;padding:0 9px}}
+
+.video-wrap{width:100%;display:flex;flex-direction:column;align-items:center;background:#000}.video-wrap video{width:100%;max-height:calc(96vh - 150px);background:#000}.video-panel{width:100%;padding:10px 12px;background:#080b10;border-top:1px solid rgba(255,255,255,.08);color:var(--muted);font-size:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:7px}.video-panel b{color:var(--text)}.video-panel .wide{grid-column:1/-1}.video-panel .video-actions{display:flex;gap:7px;flex-wrap:wrap}.video-panel .chip{display:inline-flex;align-items:center;min-height:26px;padding:4px 8px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:#111827;color:#f8fafc;text-decoration:none;font-weight:750}
 
 /* --- vNext stability patch: thumbnail/folder/upload styles --- */
 body.thumb-contain .thumb,
@@ -890,6 +1029,36 @@ function prefetchMediaAround(){
     else if(it.kind==='video'){const v=document.createElement('video');v.preload='metadata';v.src=url;}
   });
 }
+function fmtTime(seconds){seconds=Number(seconds||0);if(!seconds)return'';const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=Math.floor(seconds%60);return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')}
+function addVideoPanelItem(panel,label,value){if(value===undefined||value===null||value==='')return;const div=document.createElement('div');div.innerHTML='<b>'+label+':</b> ';div.append(document.createTextNode(String(value)));panel.appendChild(div)}
+async function loadVideoInfo(it,video,panel){
+  if(!it?.rel||!panel)return;
+  panel.innerHTML='<div class="wide">Đang đọc metadata video...</div>';
+  try{
+    const r=await fetch('/api/video_info?p='+encodeURIComponent(it.rel));
+    const j=await r.json();
+    if(!r.ok||j.error)throw new Error(j.error||r.statusText);
+    panel.innerHTML='';
+    addVideoPanelItem(panel,'File',j.name);
+    addVideoPanelItem(panel,'Dung lượng',j.sizeText);
+    addVideoPanelItem(panel,'Duration',fmtTime(j.duration));
+    addVideoPanelItem(panel,'Resolution',j.width&&j.height?`${j.width}×${j.height}`:'');
+    addVideoPanelItem(panel,'Video',j.video_codec);
+    addVideoPanelItem(panel,'Audio',j.audio_codec);
+    addVideoPanelItem(panel,'FPS',j.fps);
+    addVideoPanelItem(panel,'Bitrate',j.bitrateText);
+    if(Array.isArray(j.subtitles)&&j.subtitles.length){
+      const wrap=document.createElement('div');wrap.className='wide video-actions';
+      const label=document.createElement('span');label.className='chip';label.textContent='Subtitles';wrap.appendChild(label);
+      j.subtitles.forEach((s,idx)=>{
+        const track=document.createElement('track');track.kind='subtitles';track.label=s.label||s.name||('Sub '+(idx+1));track.srclang=s.lang||('s'+idx);track.src=s.url;if(idx===0)track.default=true;video.appendChild(track);
+        const a=document.createElement('a');a.className='chip';a.href=s.url;a.target='_blank';a.textContent=s.name||('Sub '+(idx+1));wrap.appendChild(a);
+      });
+      panel.appendChild(wrap);
+    }
+    if(!j.ffprobe){const note=document.createElement('div');note.className='wide';note.textContent='ffprobe không có, chỉ hiển thị stat cơ bản.';panel.appendChild(note)}
+  }catch(e){panel.innerHTML='<div class="wide">Không đọc được metadata video: '+e.message+'</div>'}
+}
 function renderMediaItem(it,index,opts={}){
   const modal=$('#modal'),body=$('#modalBody'),title=$('#modalTitle');
   if(!modal||!body||!it)return;
@@ -903,9 +1072,12 @@ function renderMediaItem(it,index,opts={}){
     const img=document.createElement('img');img.src=mediaUrl(it);img.alt=it.name||'';img.draggable=false;body.appendChild(img);
     const hint=document.createElement('div');hint.className='media-hint';hint.textContent='Vuốt trái/phải hoặc dùng ←/→ để xem ảnh khác';body.appendChild(hint);
   }else if(it.kind==='video'){
+    const wrap=document.createElement('div');wrap.className='video-wrap';
     const v=document.createElement('video');v.src=mediaUrl(it);v.controls=true;v.autoplay=opts.autoplay!==false;v.playsInline=true;v.preload='metadata';
     v.addEventListener('ended',()=>{if(mediaState.items.length>1)stepMedia(1)});
-    body.appendChild(v);
+    const panel=document.createElement('div');panel.className='video-panel';
+    wrap.appendChild(v);wrap.appendChild(panel);body.appendChild(wrap);
+    loadVideoInfo(it,v,panel);
   }else if(it.kind==='audio'){
     const a=document.createElement('audio');a.src=mediaUrl(it);a.controls=true;a.autoplay=opts.autoplay!==false;a.preload='metadata';body.appendChild(a);
   }
@@ -1894,6 +2066,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_thumb(parsed.query)
             if parsed.path == "/api/folder_preview":
                 return self.api_folder_preview(parsed.query)
+            if parsed.path == "/api/video_info":
+                return self.api_video_info(parsed.query)
+            if parsed.path == "/api/subtitle":
+                return self.api_subtitle(parsed.query)
             if parsed.path == "/api/plugin/info":
                 return self.api_plugin_info()
             if parsed.path in ("/api/plugin/preview", "/api/preview"):
@@ -2184,6 +2360,33 @@ class Handler(SimpleHTTPRequestHandler):
         if not target.is_dir():
             self.send_json(404, {"error": "folder not found"}); return
         self.send_json(200, {"ok": True, "items": folder_preview_items(target)})
+
+    def api_video_info(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        rel = qs.get("p", qs.get("path", [""]))[0]
+        target = safe_join("/" + rel)
+        if not target.is_file() or classify(target) != "video":
+            self.send_json(404, {"error": "video not found"}); return
+        self.send_json(200, video_info(target))
+
+    def api_subtitle(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        rel = qs.get("p", qs.get("path", [""]))[0]
+        try:
+            idx = max(0, min(int(qs.get("i", ["0"])[0] or 0), 50))
+        except Exception:
+            idx = 0
+        video = safe_join("/" + rel)
+        if not video.is_file() or classify(video) != "video":
+            self.send_error(404, "video not found"); return
+        subs = video_subtitle_sidecars(video)
+        if idx >= len(subs):
+            self.send_error(404, "subtitle not found"); return
+        try:
+            body = subtitle_to_vtt(subs[idx]).encode("utf-8", "replace")
+        except Exception as e:
+            self.send_error(500, f"subtitle error: {e}"); return
+        self.send_bytes(200, body, "text/vtt; charset=utf-8")
 
     def api_thumb(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
