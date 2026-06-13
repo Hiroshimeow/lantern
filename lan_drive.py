@@ -1201,6 +1201,7 @@ body.thumb-cover .folder-mosaic img{object-fit:cover;background:#000}
 .upload-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px;border-bottom:1px solid rgba(255,255,255,.08)}
 .upload-title{font-weight:850;font-size:16px}.upload-body{padding:14px;overflow:auto;display:flex;flex-direction:column;gap:12px}.upload-drop{min-height:190px;border:2px dashed rgba(255,255,255,.16);border-radius:20px;background:rgba(255,255,255,.035);display:grid;place-items:center;text-align:center;color:var(--muted);cursor:pointer;transition:.12s}.upload-drop:hover,.upload-drop.drag{border-color:var(--accent);background:rgba(104,227,122,.08);color:var(--text)}.upload-plus{font-size:52px;line-height:1;color:var(--accent);font-weight:900}.upload-options{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.upload-queue{border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:auto;max-height:260px;background:#080b10}.upload-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.055);font-size:12px}.upload-row:last-child{border-bottom:0}.upload-path{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.upload-state{color:var(--muted);white-space:nowrap}.upload-state.ok{color:var(--accent)}.upload-state.err{color:var(--danger)}.upload-foot{display:flex;gap:10px;align-items:center;padding:12px 14px;border-top:1px solid rgba(255,255,255,.08);flex-wrap:wrap}.upload-summary{color:var(--muted);font-size:12px;min-width:160px}.upload-progress{height:8px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden;flex:1;min-width:180px}.upload-progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,#61ff75,#8bb6ff)}
 .grid.list .folder-mosaic{width:44px;height:44px}.grid.list .folder-mosaic.empty .fileicon{font-size:24px}.grid.list .card-main{display:contents}.grid.list .meta{border-top:0;background:transparent}
+.ctx-menu{position:fixed;z-index:230;min-width:190px;padding:6px;border:1px solid rgba(255,255,255,.14);border-radius:14px;background:#0d121b;box-shadow:0 18px 54px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:2px}.ctx-menu.hidden{display:none}.ctx-menu button{height:32px;border:0;border-radius:9px;background:transparent;color:var(--text);display:flex;align-items:center;gap:8px;padding:0 10px;text-align:left;cursor:pointer;font-weight:720}.ctx-menu button:hover{background:#1a2230}.ctx-menu button.danger{color:#ffd2d2}.ctx-menu button.hidden{display:none}
 
 .term-drawer{position:fixed;left:14px;right:14px;bottom:14px;z-index:80;display:none;flex-direction:column;min-height:240px;max-height:88vh;background:linear-gradient(180deg,rgba(8,13,10,.98),rgba(3,5,8,.98));border:1px solid rgba(104,227,122,.34);border-radius:18px;box-shadow:0 22px 80px rgba(0,0,0,.62);overflow:hidden;resize:vertical}
 .term-drawer.show{display:flex}.term-drawer.full{inset:10px;height:auto!important;max-height:none}.term-head{min-height:45px;display:flex;align-items:center;gap:10px;justify-content:space-between;padding:7px 9px 7px 13px;background:linear-gradient(180deg,rgba(104,227,122,.13),rgba(255,255,255,.025));border-bottom:1px solid rgba(104,227,122,.22)}.term-title{font-weight:850;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.term-mode{margin-left:8px;color:#7dff93;font-size:12px}.term-cwd{margin-left:10px;color:#b6c6b8;font-size:12px;font-weight:650}.term-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.term-screen{flex:1;margin:0;padding:14px 16px;background:linear-gradient(180deg,#000503,#02060a);color:#dfffe6;font:14px/1.55 "Cascadia Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;overflow:auto;white-space:pre;word-break:normal;outline:none;tab-size:4;letter-spacing:0;text-rendering:geometricPrecision;scrollbar-color:rgba(104,227,122,.42) rgba(255,255,255,.05)}.term-screen:empty::before{content:"Terminal chưa có output. Bấm New hoặc gõ lệnh khi cursor đang ở khung này.";color:#6f7f78}.term-screen:focus{box-shadow:inset 0 0 0 1px rgba(104,227,122,.42)}.term-command{display:flex;align-items:center;gap:8px;padding:9px 11px;border-top:1px solid rgba(104,227,122,.18);background:#05090c}.term-command.hidden{display:none}.term-command span{font:13px ui-monospace,monospace;color:#7dff93;white-space:nowrap}.term-command input{flex:1;background:transparent;color:#f6fff7;border:0;outline:0;font:13px ui-monospace,monospace}.term-keys{display:none;gap:5px;align-items:center;overflow:auto;padding:7px;border-top:1px solid rgba(255,255,255,.07);background:#070a0f}.term-keys button{border:1px solid rgba(255,255,255,.14);background:#121821;color:#f6fff7;border-radius:9px;padding:6px 10px;font-weight:800}@media(max-width:720px){
@@ -1260,9 +1261,40 @@ function toggleFolderPreview(el){state.folderPreview=!!el.checked;savePrefs({fol
 function changePreviewAnimation(sel){state.previewAnimation=sel.value||'fade';savePrefs({folder_preview_animation:state.previewAnimation});setupFolderPreviews()}
 function changeUploadConflict(sel){state.uploadConflict=sel.value||'ask';savePrefs({upload_conflict:state.uploadConflict})}
 function updateSelectionUI(){ if(!grid)return; $$('.card').forEach(c=>c.classList.toggle('selected',state.selected.has(c.dataset.rel))); const n=state.selected.size; const count=$('#selCount'); if(count)count.textContent=n?`${n} selected`:(state.loading?'Đang tải...':`${Math.max(0,state.items.filter(x=>!x.special).length)}${state.hasMore?'+':''} mục`); const one=n===1?document.querySelector(`.card[data-rel="${CSS.escape(selectedArray()[0]||'')}"]`):null; const oneFile=!!(one&&one.dataset.isdir==='0'); const canPreview=!!(oneFile&&one.dataset.preview==='1'); $('#deleteBtn')?.classList.toggle('hidden',!n); $('#downloadBtn')?.classList.toggle('hidden',!n); $('#archiveBtn')?.classList.toggle('hidden',!n); $('#copyBtn')?.classList.toggle('hidden',!n); $('#moveBtn')?.classList.toggle('hidden',!n); $('#duplicateBtn')?.classList.toggle('hidden',!n); $('#batchRenameBtn')?.classList.toggle('hidden',!n); $('#extractBtn')?.classList.toggle('hidden',n!==1); $('#renameBtn')?.classList.toggle('hidden',n!==1); $('#shareBtn')?.classList.toggle('hidden',n!==1); $('#previewBtn')?.classList.toggle('hidden',!canPreview); }
-function toggleSelect(rel,ev){if(ev){ev.preventDefault();ev.stopPropagation()} if(!rel)return; if(state.selected.has(rel))state.selected.delete(rel);else state.selected.add(rel);updateSelectionUI()}
+function toggleSelect(rel,ev){if(ev){ev.preventDefault();ev.stopPropagation()} closeContextMenu(); if(!rel)return; if(state.selected.has(rel))state.selected.delete(rel);else state.selected.add(rel);updateSelectionUI()}
 function clearSel(){state.selected.clear();updateSelectionUI()}
 function selectVisible(){$$('.card:not(.hidden)').forEach(c=>{if(c.dataset.rel)state.selected.add(c.dataset.rel)});updateSelectionUI()}
+function closeContextMenu(){const m=$('#ctxMenu'); if(m)m.classList.add('hidden')}
+function ensureContextSelection(card){const rel=card?.dataset?.rel||''; if(!rel)return ''; if(!state.selected.has(rel)){state.selected.clear();state.selected.add(rel);updateSelectionUI()} return rel}
+function openContextMenu(ev,card){
+  ev.preventDefault();ev.stopPropagation();const rel=ensureContextSelection(card);if(!rel)return;
+  const m=$('#ctxMenu'); if(!m)return; m.dataset.rel=rel;
+  const arr=selectedArray(); const one=arr.length===1; const c=one?document.querySelector(`.card[data-rel="${CSS.escape(arr[0])}"]`):null;
+  const oneFile=!!(c&&c.dataset.isdir==='0'), oneText=!!(oneFile&&c.dataset.kind==='text'), canPreview=!!(oneFile&&c.dataset.preview==='1');
+  m.querySelector('[data-act="open"]')?.classList.toggle('hidden',!one);
+  m.querySelector('[data-act="preview"]')?.classList.toggle('hidden',!canPreview);
+  m.querySelector('[data-act="edit"]')?.classList.toggle('hidden',!oneText);
+  m.querySelector('[data-act="rename"]')?.classList.toggle('hidden',!one);
+  m.querySelector('[data-act="share"]')?.classList.toggle('hidden',!one);
+  m.querySelector('[data-act="extract"]')?.classList.toggle('hidden',!one);
+  const w=210,h=390; m.style.left=Math.max(8,Math.min(ev.clientX,innerWidth-w-8))+'px'; m.style.top=Math.max(8,Math.min(ev.clientY,innerHeight-h-8))+'px'; m.classList.remove('hidden');
+}
+function contextAction(action){
+  closeContextMenu();
+  if(action==='open'){const rel=selectedArray()[0];const c=rel&&document.querySelector(`.card[data-rel="${CSS.escape(rel)}"]`);if(c)openItem(c);return}
+  if(action==='preview')return previewSelected();
+  if(action==='edit'){const rel=selectedArray()[0];if(rel)location.href=fileUrl(rel)+'?edit=1';return}
+  if(action==='rename')return renameOne();
+  if(action==='share')return shareOne();
+  if(action==='download')return downloadSelected();
+  if(action==='archive')return archiveSelected();
+  if(action==='extract')return extractSelected();
+  if(action==='copy')return copySel();
+  if(action==='move')return moveSel();
+  if(action==='duplicate')return duplicateSel();
+  if(action==='batch')return batchRenameSel();
+  if(action==='delete')return deleteSel();
+}
 function cardHTML(it){
   if(it.special==='back')return `<div class="card" data-rel="" data-name=".." data-size="0" data-mtime="0" data-isdir="1" data-kind="folder" data-rawname=".."><a class="card-main" href="${it.href}"><div class="thumbwrap"><div class="fileicon">↩️</div></div><div class="meta"><div class="name">Back</div><div class="sub">Parent folder</div></div></a></div>`;
   const badge=['video','audio','text','pdf'].includes(it.kind)?`<div class="badge">${it.kind.toUpperCase()}</div>`:'';
@@ -1272,7 +1304,7 @@ function cardHTML(it){
   }else if(it.thumb){
     thumb=`<img class="thumb" loading="lazy" decoding="async" src="${it.thumb}" onerror="this.style.display='none';this.nextElementSibling.classList.remove('hidden')"><div class="fileicon hidden">${it.icon}</div>`;
   }else{ thumb=`<div class="fileicon">${it.icon}</div>`; }
-  return `<div class="card" data-rel="${it.relEsc}" data-name="${it.nameLowerEsc}" data-size="${it.size}" data-mtime="${it.mtime}" data-isdir="${it.is_dir?'1':'0'}" data-kind="${it.kind}" data-preview="${it.preview?'1':'0'}" data-rawname="${it.nameEsc}"><button class="check" onclick="toggleSelect('${it.relJs}', event)" title="Select"></button>${badge}<div class="card-main" onclick="openItem(this.closest('.card'))"><div class="thumbwrap">${thumb}</div><div class="meta"><div class="name" title="${it.nameEsc}">${it.nameEsc}</div><div class="sub">${it.searchPathTextEsc?it.searchPathTextEsc+' · ':''}${it.sizeTextEsc} · ${it.mtimeTextEsc}</div></div></div></div>`
+  return `<div class="card" data-rel="${it.relEsc}" data-name="${it.nameLowerEsc}" data-size="${it.size}" data-mtime="${it.mtime}" data-isdir="${it.is_dir?'1':'0'}" data-kind="${it.kind}" data-preview="${it.preview?'1':'0'}" data-rawname="${it.nameEsc}" oncontextmenu="openContextMenu(event,this)"><button class="check" onclick="toggleSelect('${it.relJs}', event)" title="Select"></button>${badge}<div class="card-main" onclick="openItem(this.closest('.card'),event)"><div class="thumbwrap">${thumb}</div><div class="meta"><div class="name" title="${it.nameEsc}">${it.nameEsc}</div><div class="sub">${it.searchPathTextEsc?it.searchPathTextEsc+' · ':''}${it.sizeTextEsc} · ${it.mtimeTextEsc}</div></div></div></div>`
 }
 function ensureLoader(){ const old=$('#loader'); if(old)old.remove(); if(state.hasMore)grid.insertAdjacentHTML('beforeend','<div id="loader" class="loader">Cuộn xuống để tải thêm...</div>'); observeLoader(); }
 function render(){ if(!grid)return; const old=$('#loader'); if(old)old.remove(); if(!state.items.length&&!state.loading){grid.innerHTML=emptyHTML;return} if(grid.querySelector('.empty')||grid.querySelector('.skeleton'))grid.innerHTML=''; grid.innerHTML=state.items.map(cardHTML).join(''); ensureLoader(); applyView(); updateSelectionUI(); setupFolderPreviews() }
@@ -1437,6 +1469,8 @@ document.addEventListener('keydown',e=>{
   }else if(e.key==='Escape'&&$('#uploadModal')?.classList.contains('show')){closeUploadDialog();return}
   if(grid&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='a'&&!isTypingTarget(document.activeElement)){e.preventDefault();selectVisible()}
 });
+document.addEventListener('click',e=>{if(!e.target.closest?.('#ctxMenu'))closeContextMenu()});
+window.addEventListener('scroll',closeContextMenu,true);
 async function api(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{})});const j=await r.json().catch(()=>({}));if(!r.ok||j.error)throw new Error(j.error||`HTTP ${r.status}`);return j}
 async function mkdir(){const name=prompt('Tên thư mục mới:');if(!name)return;try{await api('/api/mkdir',{path:currentPath(),name});clearFolderCache();loadMore(true)}catch(e){toast('Lỗi tạo thư mục: '+e.message)}}
 async function newFile(){const name=prompt('Tên file mới, ví dụ notes.txt:');if(!name)return;try{const r=await api('/api/newfile',{path:currentPath(),name});location.href=r.edit_url}catch(e){toast('Lỗi tạo file: '+e.message)}}
@@ -1456,7 +1490,7 @@ function previewUrl(rel){return '/api/plugin/preview?p='+encodeURIComponent(rel)
 function previewSelected(){const rel=selectedArray()[0];if(!rel)return;window.open(previewUrl(rel),'_blank')}
 async function addPreviewExtension(){const raw=prompt('Thêm đuôi/pattern đọc nhanh, ví dụ .env.local hoặc *.secret hoặc .foo:');if(!raw)return;try{const j=await api('/api/plugin/extensions',{add:raw});state.pluginEnabled=true;toast('Đã thêm: '+(j.custom_patterns||[]).join(', '));clearFolderCache();loadMore(true)}catch(e){toast('Lỗi plugin: '+e.message)}}
 function fileUrl(rel){return '/'+enc(rel)}
-function openItem(card){const rel=card.dataset.rel,kind=card.dataset.kind,item=findLoadedItem(rel),name=item?.name||card.dataset.rawname,url=fileUrl(rel);saveListCache();if(kind==='folder')location.href=url+'/';else if(isMediaKind(kind))openPreview(kind,url,name,rel);else if(card.dataset.preview==='1')location.href=previewUrl(rel);else if(kind==='text')location.href=url+'?edit=1';else location.href=url}
+function openItem(card,ev){const rel=card.dataset.rel;if(ev&&(ev.ctrlKey||ev.metaKey)){toggleSelect(rel,ev);return}closeContextMenu();const kind=card.dataset.kind,item=findLoadedItem(rel),name=item?.name||card.dataset.rawname,url=fileUrl(rel);saveListCache();if(kind==='folder')location.href=url+'/';else if(isMediaKind(kind))openPreview(kind,url,name,rel);else if(card.dataset.preview==='1')location.href=previewUrl(rel);else if(kind==='text')location.href=url+'?edit=1';else location.href=url}
 
 // ---------------- Folder preview mosaic ----------------
 let folderPreviewIO=null, folderPreviewTimers=[];
@@ -3181,6 +3215,21 @@ class Handler(SimpleHTTPRequestHandler):
   <div id="termKeys" class="term-keys">
     <button onclick="termSendCtrl('c')">Ctrl-C</button><button onclick="termSend('\x7f')">⌫</button><button onclick="termSend('\t')">Tab</button><button onclick="termSend('\x1b[A')">↑</button><button onclick="termSend('\x1b[B')">↓</button><button onclick="termSend('\x1b')">Esc</button><button onclick="termSend('/')">/</button><button onclick="termSend('..')">..</button>
   </div>
+</div>
+<div id="ctxMenu" class="ctx-menu hidden" onclick="event.stopPropagation()">
+  <button data-act="open" onclick="contextAction('open')">↗ Open</button>
+  <button data-act="preview" onclick="contextAction('preview')">👁 Preview</button>
+  <button data-act="edit" onclick="contextAction('edit')">📝 Edit</button>
+  <button data-act="rename" onclick="contextAction('rename')">✏️ Rename</button>
+  <button data-act="download" onclick="contextAction('download')">⬇️ Download</button>
+  <button data-act="archive" onclick="contextAction('archive')">🗜 Archive</button>
+  <button data-act="extract" onclick="contextAction('extract')">📦 Extract</button>
+  <button data-act="copy" onclick="contextAction('copy')">📋 Copy</button>
+  <button data-act="move" onclick="contextAction('move')">➡️ Move</button>
+  <button data-act="duplicate" onclick="contextAction('duplicate')">⧉ Duplicate</button>
+  <button data-act="batch" onclick="contextAction('batch')">🔤 Batch rename</button>
+  <button data-act="share" onclick="contextAction('share')">🔗 Copy link</button>
+  <button data-act="delete" class="danger" onclick="contextAction('delete')">🗑 Delete</button>
 </div>
 <div id="toast" class="toast"></div>
 """

@@ -35,6 +35,7 @@ MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 600_000
 MAX_TABLE_ROWS = 160
 MAX_TABLE_COLS = 32
+MARKDOWN_EXTS = {".md", ".markdown"}
 
 BUILTIN_PATTERNS = [
     ".txt", ".text", ".md", ".markdown", ".rst", ".log",
@@ -176,6 +177,8 @@ def can_preview(path: Path | str, config_path: Optional[Path | str] = None) -> b
 def _kind(path: Path, config_path: Optional[Path | str] = None) -> str:
     name = path.name.lower()
     ext = path.suffix.lower()
+    if ext in MARKDOWN_EXTS:
+        return "markdown"
     if ext == ".pdf":
         return "pdf"
     if ext == ".docx":
@@ -223,6 +226,134 @@ def _render_text(path: Path) -> Tuple[str, str]:
         truncated = True
     note = "<div class='note'>Đã cắt preview để giữ UI nhẹ.</div>" if truncated else ""
     return "Text preview", f"{note}<pre class='text-preview'>{h(text)}</pre>"
+
+
+def _safe_href(url: str) -> str:
+    raw = url.strip()
+    lowered = raw.lower()
+    if lowered.startswith(("javascript:", "data:", "vbscript:")):
+        return "#"
+    return h(raw)
+
+
+def _md_inline(text: str) -> str:
+    escaped = h(text)
+    stash: List[str] = []
+
+    def keep(html_fragment: str) -> str:
+        token = f"\u0000MD{len(stash)}\u0000"
+        stash.append(html_fragment)
+        return token
+
+    def code_repl(m: re.Match[str]) -> str:
+        return keep(f"<code>{m.group(1)}</code>")
+
+    escaped = re.sub(r"`([^`]+)`", code_repl, escaped)
+
+    def link_repl(m: re.Match[str]) -> str:
+        label = m.group(1)
+        url = _safe_href(html.unescape(m.group(2)))
+        return f"<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{label}</a>"
+
+    escaped = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link_repl, escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", escaped)
+    escaped = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<em>\1</em>", escaped)
+    for i, html_fragment in enumerate(stash):
+        escaped = escaped.replace(f"\u0000MD{i}\u0000", html_fragment)
+    return escaped
+
+
+def _flush_md_paragraph(out: List[str], lines: List[str]) -> None:
+    if not lines:
+        return
+    text = " ".join(x.strip() for x in lines).strip()
+    if text:
+        out.append(f"<p>{_md_inline(text)}</p>")
+    lines.clear()
+
+
+def _render_markdown(path: Path) -> Tuple[str, str]:
+    data, truncated = _read_limited_bytes(path)
+    if _is_probably_binary(data):
+        return "Markdown preview", "<p>File này có vẻ là binary. Không render dạng Markdown.</p>"
+    text = _decode_text(data)
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS]
+        truncated = True
+    out: List[str] = []
+    para: List[str] = []
+    in_code = False
+    code_lines: List[str] = []
+    list_type = ""
+    in_quote = False
+
+    def close_list() -> None:
+        nonlocal list_type
+        if list_type:
+            out.append(f"</{list_type}>")
+            list_type = ""
+
+    def close_quote() -> None:
+        nonlocal in_quote
+        if in_quote:
+            out.append("</blockquote>")
+            in_quote = False
+
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        fence = re.match(r"^(```+|~~~+)(.*)$", stripped)
+        if fence:
+            _flush_md_paragraph(out, para); close_list(); close_quote()
+            if not in_code:
+                in_code = True
+                code_lines = []
+            else:
+                out.append(f"<pre class='md-code'><code>{h(chr(10).join(code_lines))}</code></pre>")
+                in_code = False
+                code_lines = []
+            continue
+        if in_code:
+            code_lines.append(line)
+            continue
+        if not stripped:
+            _flush_md_paragraph(out, para); close_list(); close_quote(); continue
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", stripped)
+        if heading:
+            _flush_md_paragraph(out, para); close_list(); close_quote()
+            level = len(heading.group(1))
+            out.append(f"<h{level}>{_md_inline(heading.group(2))}</h{level}>")
+            continue
+        if re.match(r"^(-{3,}|\*{3,}|_{3,})$", stripped):
+            _flush_md_paragraph(out, para); close_list(); close_quote(); out.append("<hr>"); continue
+        quote = re.match(r"^>\s?(.*)$", line)
+        if quote:
+            _flush_md_paragraph(out, para); close_list()
+            if not in_quote:
+                out.append("<blockquote>"); in_quote = True
+            out.append(f"<p>{_md_inline(quote.group(1))}</p>")
+            continue
+        close_quote()
+        ul = re.match(r"^\s*[-+*]\s+(.+)$", line)
+        ol = re.match(r"^\s*\d+[.)]\s+(.+)$", line)
+        if ul or ol:
+            _flush_md_paragraph(out, para)
+            tag = "ul" if ul else "ol"
+            if list_type != tag:
+                close_list(); out.append(f"<{tag}>"); list_type = tag
+            out.append(f"<li>{_md_inline((ul or ol).group(1))}</li>")
+            continue
+        close_list()
+        para.append(line)
+    if in_code:
+        out.append(f"<pre class='md-code'><code>{h(chr(10).join(code_lines))}</code></pre>")
+    _flush_md_paragraph(out, para); close_list(); close_quote()
+    note = "<div class='note'>Markdown preview dùng parser nhẹ, raw HTML bị escape.</div>"
+    if truncated:
+        note += "<div class='note'>Đã cắt preview để giữ UI nhẹ.</div>"
+    return "Markdown preview", note + "<article class='md-preview'>" + "\n".join(out) + "</article>"
 
 
 def _render_csv(path: Path) -> Tuple[str, str]:
@@ -435,6 +566,8 @@ def _render_pdf(path: Path) -> Tuple[str, str]:
 def render_content(path: Path | str, config_path: Optional[Path | str] = None) -> Tuple[str, str]:
     p = Path(path)
     kind = _kind(p, config_path)
+    if kind == "markdown":
+        return _render_markdown(p)
     if kind == "pdf":
         return _render_pdf(p)
     if kind == "docx":
@@ -457,12 +590,12 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
     raw_url = "/" + "/".join([quote_component(x) for x in rel.split("/")])
     css = """
 :root{color-scheme:dark;--bg:#080a0f;--panel:#10151e;--line:#283343;--text:#f8fafc;--muted:#b9c4d0;--accent:#68e37a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}td,th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.md-preview{max-width:980px;margin:0 auto;padding:18px 22px;border:1px solid var(--line);border-radius:16px;background:#0b1018;color:#edf5ff;font-size:15px;line-height:1.72}.md-preview h1,.md-preview h2,.md-preview h3{line-height:1.25;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:.28em}.md-preview a{color:#8db4ff}.md-preview code{background:#18202c;border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:.1em .35em}.md-code{padding:12px 14px;border:1px solid #263142;border-radius:13px;background:#05070b;overflow:auto}.md-preview blockquote{margin:10px 0;padding:4px 12px;border-left:4px solid var(--accent);background:rgba(104,227,122,.06);color:var(--muted)}.md-preview hr{border:0;border-top:1px solid var(--line);margin:18px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}td,th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}
 """
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{h(title)} - {h(rel)}</title><style>{css}</style></head>
 <body>
-<div class="bar"><a class="btn" href="javascript:history.back()">↩ Back</a><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><a class="btn" href="{h(raw_url)}">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
+<div class="bar"><a class="btn" href="javascript:history.back()">↩ Back</a><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><a class="btn" href="{h(raw_url)}?edit=1">Edit</a><a class="btn" href="{h(raw_url)}">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
 <div class="content"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
 </body></html>"""
     return page.encode("utf-8", "surrogateescape")
@@ -479,7 +612,7 @@ def info(config_path: Optional[Path | str] = None) -> Dict[str, Any]:
         "version": VERSION,
         "builtin_patterns": BUILTIN_PATTERNS,
         "custom_patterns": custom_patterns(config_path),
-        "formats": ["text/env/code/log", "csv/tsv", "pdf", "docx", "xlsx/xlsm"],
+        "formats": ["markdown", "text/env/code/log", "csv/tsv", "pdf", "docx", "xlsx/xlsm"],
         "notes": [
             "DOCX/XLSX preview uses stdlib OOXML parsing, no formatting/macros.",
             "PDF preview prefers pdftotext when installed, otherwise best-effort parser.",
