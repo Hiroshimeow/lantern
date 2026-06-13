@@ -54,6 +54,7 @@ import socketserver
 import subprocess
 import sys
 import tempfile
+import tarfile
 import threading
 import time
 import urllib.parse
@@ -490,6 +491,282 @@ def drain_stream(stream: Any, remaining: int) -> None:
         if not chunk:
             break
         remaining -= len(chunk)
+
+
+def ensure_under_root(path: Path) -> Path:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(CONFIG.root.resolve())
+    except ValueError:
+        raise PermissionError("Path is outside root")
+    return resolved
+
+
+def payload_paths(data: Dict[str, Any], key: str = "paths") -> List[str]:
+    raw = data.get(key)
+    if raw is None and "path" in data:
+        raw = [data.get("path")]
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise BadRequest(f"{key} must be a list")
+    out: List[str] = []
+    for item in raw:
+        rel = str(item or "").strip()
+        if rel:
+            out.append(rel)
+    if not out:
+        raise BadRequest("no paths supplied")
+    return out
+
+
+def resolve_existing(rel: str) -> Path:
+    p = safe_join("/" + str(rel))
+    if not p.exists():
+        raise BadRequest(f"not found: {rel}")
+    return p
+
+
+def resolve_destination_dir(data: Dict[str, Any], default: str = "") -> Path:
+    rel = str(data.get("dest") if data.get("dest") is not None else data.get("dest_dir", default))
+    dest = safe_join("/" + rel)
+    if dest.exists() and not dest.is_dir():
+        raise BadRequest("destination is not a folder")
+    dest.mkdir(parents=True, exist_ok=True)
+    return ensure_under_root(dest)
+
+
+def split_stem_suffix(name: str) -> Tuple[str, str]:
+    p = Path(name)
+    return p.stem, p.suffix
+
+
+def unique_path(candidate: Path) -> Path:
+    candidate = ensure_under_root(candidate)
+    if not candidate.exists():
+        return candidate
+    stem, suffix = split_stem_suffix(candidate.name)
+    for i in range(1, 10000):
+        alt = candidate.with_name(f"{stem} ({i}){suffix}")
+        if not alt.exists():
+            return ensure_under_root(alt)
+    raise BadRequest("cannot find free target name")
+
+
+def conflict_target(candidate: Path, conflict: str) -> Optional[Path]:
+    conflict = normalize_conflict(conflict)
+    candidate = ensure_under_root(candidate)
+    if not candidate.exists():
+        return candidate
+    if conflict == "skip":
+        return None
+    if conflict == "rename":
+        return unique_path(candidate)
+    if conflict == "overwrite":
+        return candidate
+    raise BadRequest(f"target exists: {candidate.name}")
+
+
+def reject_self_nesting(src: Path, dest: Path) -> None:
+    src_r, dest_r = src.resolve(), dest.resolve()
+    if src_r == dest_r:
+        raise BadRequest("source and destination are the same")
+    if src.is_dir():
+        try:
+            dest_r.relative_to(src_r)
+            raise BadRequest("cannot place a folder inside itself")
+        except ValueError:
+            pass
+
+
+def remove_existing_target(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
+
+
+def copy_item(src: Path, dest_dir: Path, *, name: Optional[str] = None, conflict: str = "rename") -> Optional[Path]:
+    final_name = clean_component(name if name is not None else src.name)
+    dest = conflict_target(dest_dir / final_name, conflict)
+    if dest is None:
+        return None
+    reject_self_nesting(src, dest)
+    if dest.exists() and normalize_conflict(conflict) == "overwrite":
+        remove_existing_target(dest)
+    if src.is_dir() and not src.is_symlink():
+        shutil.copytree(src, dest, symlinks=True, copy_function=shutil.copy2)
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest, follow_symlinks=False)
+    return dest
+
+
+def move_item(src: Path, dest_dir: Path, *, name: Optional[str] = None, conflict: str = "rename") -> Optional[Path]:
+    final_name = clean_component(name if name is not None else src.name)
+    dest = conflict_target(dest_dir / final_name, conflict)
+    if dest is None:
+        return None
+    reject_self_nesting(src, dest)
+    if dest.exists() and normalize_conflict(conflict) == "overwrite":
+        remove_existing_target(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
+    return dest
+
+
+def duplicate_name(src: Path) -> str:
+    stem, suffix = split_stem_suffix(src.name)
+    return f"{stem} copy{suffix}" if suffix else f"{src.name} copy"
+
+
+def unique_arcname(name: str, used: set[str]) -> str:
+    clean = name.strip("/") or "item"
+    if clean not in used:
+        used.add(clean)
+        return clean
+    p = Path(clean)
+    stem, suffix = p.stem, p.suffix
+    parent = p.parent.as_posix()
+    for i in range(1, 10000):
+        cand = f"{stem} ({i}){suffix}"
+        if parent not in ("", "."):
+            cand = parent.rstrip("/") + "/" + cand
+        if cand not in used:
+            used.add(cand)
+            return cand
+    raise BadRequest("cannot allocate archive name")
+
+
+def iter_archive_entries(paths: List[Path]) -> Iterable[Tuple[Path, str]]:
+    used: set[str] = set()
+    for target in paths:
+        top = unique_arcname(target.name, used)
+        if target.is_dir() and not target.is_symlink():
+            yielded = False
+            for root, dirs, files in os.walk(target):
+                rootp = Path(root)
+                dirs[:] = [d for d in dirs if not should_hide_entry(rootp, d)]
+                for fn in files:
+                    if should_hide_entry(rootp, fn):
+                        continue
+                    p = rootp / fn
+                    try:
+                        rel = p.relative_to(target).as_posix()
+                    except Exception:
+                        continue
+                    yielded = True
+                    yield p, top + "/" + rel
+            if not yielded:
+                yield target, top + "/"
+        else:
+            yield target, top
+
+
+def parse_archive_payload(handler: Any) -> Dict[str, Any]:
+    n = handler.content_length(max_bytes=MAX_ZIP_PAYLOAD)
+    raw = handler.read_body_exact(n) if n else b""
+    if not raw:
+        return {}
+    ctype = handler.headers.get("Content-Type", "")
+    if "application/json" in ctype:
+        return json.loads(raw.decode("utf-8", "replace"))
+    form = urllib.parse.parse_qs(raw.decode("utf-8", "replace"))
+    return json.loads(form.get("payload", ["{}"])[0])
+
+
+def archive_response_meta(fmt: str, compression: str) -> Tuple[str, str, str]:
+    fmt = str(fmt or "zip").lower()
+    compression = str(compression or "compress").lower()
+    stamp = int(time.time())
+    if fmt == "tar":
+        if compression == "compress":
+            return f"lan-drive-{stamp}.tar.gz", "application/gzip", "w|gz"
+        return f"lan-drive-{stamp}.tar", "application/x-tar", "w|"
+    if fmt != "zip":
+        raise BadRequest("archive format must be zip or tar")
+    return f"lan-drive-{stamp}.zip", "application/zip", "zip"
+
+
+def safe_extract_member_path(dest: Path, member_name: str) -> Path:
+    name = str(member_name or "").replace("\\", "/")
+    if not name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+        raise BadRequest(f"unsafe archive member: {member_name}")
+    parts = []
+    for part in name.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            raise BadRequest(f"unsafe archive member: {member_name}")
+        parts.append(clean_component(part))
+    if not parts:
+        raise BadRequest(f"unsafe archive member: {member_name}")
+    return ensure_under_root(dest.joinpath(*parts))
+
+
+def write_extracted_file(src_file: Any, out_path: Path, conflict: str) -> Optional[Path]:
+    target = conflict_target(out_path, conflict)
+    if target is None:
+        return None
+    if target.exists() and normalize_conflict(conflict) == "overwrite":
+        remove_existing_target(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp: Optional[Path] = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=target.name + ".extract-", dir=str(target.parent))
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "wb") as out:
+            shutil.copyfileobj(src_file, out, CHUNK_SIZE)
+        os.replace(tmp, target)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+    return target
+
+
+def extract_archive(archive_path: Path, dest: Path, conflict: str = "rename") -> Dict[str, Any]:
+    written = 0
+    skipped = 0
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path) as zf:
+            for info in zf.infolist():
+                out_path = safe_extract_member_path(dest, info.filename)
+                if info.is_dir():
+                    out_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                with zf.open(info) as src:
+                    result = write_extracted_file(src, out_path, conflict)
+                if result is None:
+                    skipped += 1
+                else:
+                    written += 1
+        return {"ok": True, "format": "zip", "written": written, "skipped": skipped}
+    if tarfile.is_tarfile(archive_path):
+        with tarfile.open(archive_path) as tf:
+            for member in tf.getmembers():
+                out_path = safe_extract_member_path(dest, member.name)
+                if member.isdir():
+                    out_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not member.isfile():
+                    skipped += 1
+                    continue
+                src = tf.extractfile(member)
+                if src is None:
+                    skipped += 1
+                    continue
+                with src:
+                    result = write_extracted_file(src, out_path, conflict)
+                if result is None:
+                    skipped += 1
+                else:
+                    written += 1
+        return {"ok": True, "format": "tar", "written": written, "skipped": skipped}
+    raise BadRequest("unsupported archive; use zip/tar/tar.gz/tgz/tbz2/txz")
 
 
 def html_escape(s: Any) -> str:
@@ -982,7 +1259,7 @@ function changeThumbFit(sel){state.thumbFit=sel.value==='cover'?'cover':'contain
 function toggleFolderPreview(el){state.folderPreview=!!el.checked;savePrefs({folder_preview_enabled:state.folderPreview});refreshFolder()}
 function changePreviewAnimation(sel){state.previewAnimation=sel.value||'fade';savePrefs({folder_preview_animation:state.previewAnimation});setupFolderPreviews()}
 function changeUploadConflict(sel){state.uploadConflict=sel.value||'ask';savePrefs({upload_conflict:state.uploadConflict})}
-function updateSelectionUI(){ if(!grid)return; $$('.card').forEach(c=>c.classList.toggle('selected',state.selected.has(c.dataset.rel))); const n=state.selected.size; const count=$('#selCount'); if(count)count.textContent=n?`${n} selected`:(state.loading?'Đang tải...':`${Math.max(0,state.items.filter(x=>!x.special).length)}${state.hasMore?'+':''} mục`); const one=n===1?document.querySelector(`.card[data-rel="${CSS.escape(selectedArray()[0]||'')}"]`):null; const oneFile=!!(one&&one.dataset.isdir==='0'); const canPreview=!!(oneFile&&one.dataset.preview==='1'); $('#deleteBtn')?.classList.toggle('hidden',!n); $('#downloadBtn')?.classList.toggle('hidden',!n); $('#renameBtn')?.classList.toggle('hidden',n!==1); $('#shareBtn')?.classList.toggle('hidden',n!==1); $('#previewBtn')?.classList.toggle('hidden',!canPreview); }
+function updateSelectionUI(){ if(!grid)return; $$('.card').forEach(c=>c.classList.toggle('selected',state.selected.has(c.dataset.rel))); const n=state.selected.size; const count=$('#selCount'); if(count)count.textContent=n?`${n} selected`:(state.loading?'Đang tải...':`${Math.max(0,state.items.filter(x=>!x.special).length)}${state.hasMore?'+':''} mục`); const one=n===1?document.querySelector(`.card[data-rel="${CSS.escape(selectedArray()[0]||'')}"]`):null; const oneFile=!!(one&&one.dataset.isdir==='0'); const canPreview=!!(oneFile&&one.dataset.preview==='1'); $('#deleteBtn')?.classList.toggle('hidden',!n); $('#downloadBtn')?.classList.toggle('hidden',!n); $('#archiveBtn')?.classList.toggle('hidden',!n); $('#copyBtn')?.classList.toggle('hidden',!n); $('#moveBtn')?.classList.toggle('hidden',!n); $('#duplicateBtn')?.classList.toggle('hidden',!n); $('#batchRenameBtn')?.classList.toggle('hidden',!n); $('#extractBtn')?.classList.toggle('hidden',n!==1); $('#renameBtn')?.classList.toggle('hidden',n!==1); $('#shareBtn')?.classList.toggle('hidden',n!==1); $('#previewBtn')?.classList.toggle('hidden',!canPreview); }
 function toggleSelect(rel,ev){if(ev){ev.preventDefault();ev.stopPropagation()} if(!rel)return; if(state.selected.has(rel))state.selected.delete(rel);else state.selected.add(rel);updateSelectionUI()}
 function clearSel(){state.selected.clear();updateSelectionUI()}
 function selectVisible(){$$('.card:not(.hidden)').forEach(c=>{if(c.dataset.rel)state.selected.add(c.dataset.rel)});updateSelectionUI()}
@@ -1164,9 +1441,16 @@ async function api(path,data){const r=await fetch(path,{method:'POST',headers:{'
 async function mkdir(){const name=prompt('Tên thư mục mới:');if(!name)return;try{await api('/api/mkdir',{path:currentPath(),name});clearFolderCache();loadMore(true)}catch(e){toast('Lỗi tạo thư mục: '+e.message)}}
 async function newFile(){const name=prompt('Tên file mới, ví dụ notes.txt:');if(!name)return;try{const r=await api('/api/newfile',{path:currentPath(),name});location.href=r.edit_url}catch(e){toast('Lỗi tạo file: '+e.message)}}
 async function renameOne(){const rel=selectedArray()[0];if(!rel)return;const old=rel.split('/').pop();const name=prompt('Đổi tên thành:',old);if(!name||name===old)return;try{await api('/api/rename',{path:rel,name});clearFolderCache();loadMore(true)}catch(e){toast('Lỗi rename: '+e.message)}}
+async function copySel(){const arr=selectedArray();if(!arr.length)return;const dest=prompt(`Copy ${arr.length} mục đến thư mục:`,currentPath());if(dest===null)return;try{const r=await api('/api/copy',{paths:arr,dest,conflict:'rename'});toast(`Đã copy ${r.copied?.length||0} mục`);clearFolderCache();loadMore(true)}catch(e){toast('Lỗi copy: '+e.message)}}
+async function moveSel(){const arr=selectedArray();if(!arr.length)return;const dest=prompt(`Move ${arr.length} mục đến thư mục:`,currentPath());if(dest===null)return;if(!confirm(`Move ${arr.length} mục đến /${dest}?`))return;try{const r=await api('/api/move',{paths:arr,dest,conflict:'rename'});toast(`Đã move ${r.moved?.length||0} mục`);clearFolderCache();loadMore(true)}catch(e){toast('Lỗi move: '+e.message)}}
+async function duplicateSel(){const arr=selectedArray();if(!arr.length)return;try{const r=await api('/api/duplicate',{paths:arr,conflict:'rename'});toast(`Đã duplicate ${r.duplicated?.length||0} mục`);clearFolderCache();loadMore(true)}catch(e){toast('Lỗi duplicate: '+e.message)}}
+async function batchRenameSel(){const arr=selectedArray();if(!arr.length)return;const find=prompt('Batch rename: tìm chuỗi trong tên file:','');if(find===null)return;const repl=prompt('Thay bằng:','');if(repl===null)return;const items=arr.map(path=>{const old=path.split('/').pop();return{path,name:old.split(find).join(repl)}}).filter(x=>x.name&&x.name!==x.path.split('/').pop());if(!items.length){toast('Không có tên nào thay đổi');return}try{const r=await api('/api/batch_rename',{items});toast(`Đã rename ${r.renamed?.length||0} mục`);clearFolderCache();loadMore(true)}catch(e){toast('Lỗi batch rename: '+e.message)}}
+async function extractSelected(){const arr=selectedArray();if(arr.length!==1){toast('Chọn đúng 1 archive để extract');return}const dest=prompt('Extract đến thư mục:',currentPath());if(dest===null)return;try{const r=await api('/api/extract',{path:arr[0],dest,conflict:'rename'});toast(`Extract xong: ${r.written||0} file`);clearFolderCache();loadMore(true)}catch(e){toast('Lỗi extract: '+e.message)}}
+function submitArchive(paths,format='zip',compression='compress'){const arr=paths||selectedArray();if(!arr.length)return;const form=document.createElement('form');form.method='POST';form.action='/api/archive';const input=document.createElement('input');input.name='payload';input.value=JSON.stringify({paths:arr,format,compression});form.appendChild(input);document.body.appendChild(form);form.submit();form.remove()}
+function downloadZip(paths){submitArchive(paths||selectedArray(),'zip','compress')}
+function archiveSelected(){const arr=selectedArray();if(!arr.length)return;let format=(prompt('Archive format: zip hoặc tar','zip')||'zip').trim().toLowerCase();if(!['zip','tar'].includes(format)){toast('Format phải là zip hoặc tar');return}let compression=(prompt('Compression: compress hoặc store','compress')||'compress').trim().toLowerCase();if(!['compress','store'].includes(compression)){toast('Compression phải là compress hoặc store');return}submitArchive(arr,format,compression)}
+function downloadSelected(){const arr=selectedArray();if(!arr.length)return; if(arr.length===1){const card=document.querySelector(`.card[data-rel="${CSS.escape(arr[0])}"]`); if(card&&card.dataset.isdir==='0'){location.href='/'+enc(arr[0])+'?download=1'; return}} submitArchive(arr,'zip','compress')}
 async function deleteSel(){const arr=selectedArray();if(!arr.length)return;if(!confirm(`Xoá vĩnh viễn ${arr.length} mục?`))return;try{await api('/api/delete',{paths:arr});clearFolderCache();loadMore(true)}catch(e){toast('Lỗi xoá: '+e.message)}}
-function downloadZip(paths){const arr=paths||selectedArray();if(!arr.length)return;const form=document.createElement('form');form.method='POST';form.action='/api/zip';const input=document.createElement('input');input.name='payload';input.value=JSON.stringify({paths:arr});form.appendChild(input);document.body.appendChild(form);form.submit();form.remove()}
-function downloadSelected(){const arr=selectedArray();if(!arr.length)return; if(arr.length===1){const card=document.querySelector(`.card[data-rel="${CSS.escape(arr[0])}"]`); if(card&&card.dataset.isdir==='0'){location.href='/'+enc(arr[0])+'?download=1'; return}} downloadZip(arr)}
 async function shareOne(){const rel=selectedArray()[0];if(!rel)return;const url=new URL('/'+enc(rel),location.href).href;try{await navigator.clipboard.writeText(url);toast('Đã copy link share')}catch(e){prompt('Copy link:',url)}}
 function previewUrl(rel){return '/api/plugin/preview?p='+encodeURIComponent(rel)}
 function previewSelected(){const rel=selectedArray()[0];if(!rel)return;window.open(previewUrl(rel),'_blank')}
@@ -2181,7 +2465,13 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/mkdir": return self.api_mkdir()
             if route == "/api/newfile": return self.api_newfile()
             if route == "/api/rename": return self.api_rename()
+            if route == "/api/copy": return self.api_copy()
+            if route == "/api/move": return self.api_move()
+            if route == "/api/duplicate": return self.api_duplicate()
+            if route == "/api/batch_rename": return self.api_batch_rename()
+            if route == "/api/extract": return self.api_extract()
             if route == "/api/delete": return self.api_delete()
+            if route == "/api/archive": return self.api_archive()
             if route == "/api/zip": return self.api_zip()
             if route == "/api/config": return self.api_config_post()
             if route == "/api/plugin/extensions": return self.api_plugin_extensions()
@@ -2602,6 +2892,126 @@ class Handler(SimpleHTTPRequestHandler):
         target.rename(dest)
         self.send_json(200, {"ok": True, "path": rel_url_for_path(dest)})
 
+    def api_copy(self) -> None:
+        data = self.read_json()
+        dest_dir = resolve_destination_dir(data, current_path if (current_path := str(data.get("dest", data.get("dest_dir", "")))) is not None else "")
+        conflict = normalize_conflict(data.get("conflict", "rename"))
+        copied = []
+        skipped = 0
+        for rel in payload_paths(data):
+            src = resolve_existing(rel)
+            result = copy_item(src, dest_dir, conflict=conflict)
+            if result is None:
+                skipped += 1
+            else:
+                copied.append(rel_url_for_path(result).lstrip("/"))
+        self.send_json(200, {"ok": True, "copied": copied, "skipped": skipped})
+
+    def api_move(self) -> None:
+        data = self.read_json()
+        dest_dir = resolve_destination_dir(data)
+        conflict = normalize_conflict(data.get("conflict", "rename"))
+        moved = []
+        skipped = 0
+        for rel in payload_paths(data):
+            src = resolve_existing(rel)
+            if src.resolve() == CONFIG.root.resolve():
+                raise BadRequest("cannot move root")
+            result = move_item(src, dest_dir, conflict=conflict)
+            if result is None:
+                skipped += 1
+            else:
+                moved.append(rel_url_for_path(result).lstrip("/"))
+        self.send_json(200, {"ok": True, "moved": moved, "skipped": skipped})
+
+    def api_duplicate(self) -> None:
+        data = self.read_json()
+        conflict = normalize_conflict(data.get("conflict", "rename"))
+        duplicated = []
+        skipped = 0
+        for rel in payload_paths(data):
+            src = resolve_existing(rel)
+            if src.resolve() == CONFIG.root.resolve():
+                raise BadRequest("cannot duplicate root")
+            result = copy_item(src, src.parent, name=duplicate_name(src), conflict=conflict)
+            if result is None:
+                skipped += 1
+            else:
+                duplicated.append(rel_url_for_path(result).lstrip("/"))
+        self.send_json(200, {"ok": True, "duplicated": duplicated, "skipped": skipped})
+
+    def api_batch_rename(self) -> None:
+        data = self.read_json()
+        items = data.get("items")
+        if not isinstance(items, list) or not items:
+            raise BadRequest("items must be a non-empty list")
+        planned: List[Tuple[Path, Path]] = []
+        seen: set[Path] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise BadRequest("each batch rename item must be an object")
+            src = resolve_existing(str(item.get("path", "")))
+            if src.resolve() == CONFIG.root.resolve():
+                raise BadRequest("cannot rename root")
+            name = clean_component(str(item.get("name", "")))
+            dest = ensure_under_root(src.parent / name)
+            if src.resolve() == dest.resolve():
+                continue
+            if dest in seen:
+                raise BadRequest(f"duplicate target in batch: {name}")
+            if dest.exists():
+                raise BadRequest(f"target exists: {name}")
+            planned.append((src, dest))
+            seen.add(dest)
+        renamed = []
+        for src, dest in planned:
+            src.rename(dest)
+            renamed.append({"from": rel_url_for_path(src).lstrip("/"), "to": rel_url_for_path(dest).lstrip("/")})
+        self.send_json(200, {"ok": True, "renamed": renamed})
+
+    def api_extract(self) -> None:
+        data = self.read_json()
+        archive = resolve_existing(str(data.get("path", "")))
+        if not archive.is_file():
+            raise BadRequest("archive path must be a file")
+        dest = resolve_destination_dir(data, archive.parent.resolve().relative_to(CONFIG.root.resolve()).as_posix())
+        conflict = normalize_conflict(data.get("conflict", "rename"))
+        result = extract_archive(archive, dest, conflict)
+        result["dest"] = rel_url_for_path(dest).lstrip("/")
+        self.send_json(200, result)
+
+    def api_archive(self) -> None:
+        payload = parse_archive_payload(self)
+        rels = payload_paths(payload)
+        paths = [resolve_existing(rel) for rel in rels]
+        fmt = str(payload.get("format", "zip")).lower()
+        compression = str(payload.get("compression", "compress")).lower()
+        if compression not in {"store", "compress"}:
+            raise BadRequest("compression must be store or compress")
+        filename, ctype, mode = archive_response_meta(fmt, compression)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        if mode == "zip":
+            zip_compression = zipfile.ZIP_STORED if compression == "store" else zipfile.ZIP_DEFLATED
+            with zipfile.ZipFile(self.wfile, "w", compression=zip_compression, compresslevel=(0 if compression == "store" else 3)) as zf:
+                for path, arc in iter_archive_entries(paths):
+                    try:
+                        if path.is_dir():
+                            zf.writestr(arc.rstrip("/") + "/", b"")
+                        else:
+                            zf.write(path, arc)
+                    except Exception:
+                        pass
+        else:
+            with tarfile.open(fileobj=self.wfile, mode=mode) as tf:
+                for path, arc in iter_archive_entries(paths):
+                    try:
+                        tf.add(path, arcname=arc, recursive=False)
+                    except Exception:
+                        pass
+
     def api_delete(self) -> None:
         data = self.read_json()
         paths = data.get("paths") or []
@@ -2720,6 +3130,12 @@ class Handler(SimpleHTTPRequestHandler):
       <button id="shareBtn" class="btn small hidden" onclick="shareOne()">🔗 Share</button>
       <button id="previewBtn" class="btn small hidden" onclick="previewSelected()">👁 Preview</button>
       <button class="btn small" onclick="addPreviewExtension()" title="Thêm đuôi/pattern để plugin đọc nhanh, ví dụ .foo hoặc *.env.*">＋ Đuôi đọc</button>
+      <button id="copyBtn" class="btn small hidden" onclick="copySel()">📋 Copy</button>
+      <button id="moveBtn" class="btn small hidden" onclick="moveSel()">➡️ Move</button>
+      <button id="duplicateBtn" class="btn small hidden" onclick="duplicateSel()">⧉ Duplicate</button>
+      <button id="batchRenameBtn" class="btn small hidden" onclick="batchRenameSel()">🔤 Batch rename</button>
+      <button id="extractBtn" class="btn small hidden" onclick="extractSelected()">📦 Extract</button>
+      <button id="archiveBtn" class="btn small hidden" onclick="archiveSelected()">🗜 Archive</button>
       <button id="renameBtn" class="btn small warn hidden" onclick="renameOne()">✏️ Rename</button>
       <button id="downloadBtn" class="btn small hidden" onclick="downloadSelected()">⬇️ Tải</button>
       <button id="deleteBtn" class="btn small danger hidden" onclick="deleteSel()">🗑️ Xoá</button>
