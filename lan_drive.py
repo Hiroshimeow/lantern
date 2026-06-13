@@ -123,6 +123,8 @@ OFFICE_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt"
 SYSTEM_SKIP_NAMES = {"proc", "sys", "run", "dev"}
 CHUNK_SIZE = 1024 * 1024
 MAX_TEXT_PREVIEW = 20 * 1024 * 1024  # 20MB
+MAX_JSON_BODY = 32 * 1024 * 1024
+MAX_ZIP_PAYLOAD = 4 * 1024 * 1024
 
 mimetypes.add_type("image/avif", ".avif")
 mimetypes.add_type("image/heic", ".heic")
@@ -462,10 +464,32 @@ def quote_path(path: str) -> str:
     return "/".join(urllib.parse.quote(p) for p in path.split("/"))
 
 
+class BadRequest(ValueError):
+    pass
+
+
 def clean_name(name: str) -> str:
     name = name.replace("\x00", "").strip()
     name = name.replace("/", "_").replace("\\", "_")
     return name or f"unnamed-{int(time.time())}"
+
+
+def clean_component(name: str, *, fallback: Optional[str] = None) -> str:
+    raw = str(name).replace("\x00", "").replace("/", "_").replace("\\", "_").strip()
+    raw = "".join(ch for ch in raw if ch == "\t" or ord(ch) >= 32).strip()
+    if not raw and fallback is not None:
+        raw = fallback
+    if not raw or raw in {".", ".."}:
+        raise BadRequest("bad filename component")
+    return raw
+
+
+def drain_stream(stream: Any, remaining: int) -> None:
+    while remaining > 0:
+        chunk = stream.read(min(CHUNK_SIZE, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
 
 
 def html_escape(s: Any) -> str:
@@ -2042,11 +2066,36 @@ class Handler(SimpleHTTPRequestHandler):
     def send_json(self, status: int, data: Dict[str, Any]) -> None:
         self.send_bytes(status, json_dumps(data).encode("utf-8"), "application/json; charset=utf-8")
 
-    def read_json(self) -> Dict[str, Any]:
-        n = int(self.headers.get("Content-Length") or "0")
+    def content_length(self, *, max_bytes: Optional[int] = None) -> int:
+        raw = self.headers.get("Content-Length") or "0"
+        try:
+            n = int(raw)
+        except Exception:
+            raise BadRequest("invalid Content-Length")
+        if n < 0:
+            raise BadRequest("invalid Content-Length")
+        if max_bytes is not None and n > max_bytes:
+            raise BadRequest(f"request body too large; max {size_fmt(max_bytes)}")
+        return n
+
+    def read_body_exact(self, n: int) -> bytes:
+        data = self.rfile.read(n) if n else b""
+        if len(data) != n:
+            raise BadRequest("incomplete request body")
+        return data
+
+    def read_json(self, *, max_bytes: int = MAX_JSON_BODY) -> Dict[str, Any]:
+        n = self.content_length(max_bytes=max_bytes)
         if n <= 0:
             return {}
-        return json.loads(self.rfile.read(n).decode("utf-8", "replace"))
+        raw = self.read_body_exact(n)
+        try:
+            data = json.loads(raw.decode("utf-8", "replace"))
+        except json.JSONDecodeError as e:
+            raise BadRequest(f"invalid JSON: {e.msg}")
+        if not isinstance(data, dict):
+            raise BadRequest("JSON body must be an object")
+        return data
 
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -2117,6 +2166,8 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/term/kill": return self.api_term_kill()
             if route == "/api/term/run": return self.api_term_run()
             self.send_error(404, "API not found")
+        except BadRequest as e:
+            self.send_json(400, {"error": str(e)})
         except PermissionError as e:
             self.send_json(403, {"error": str(e)})
         except Exception as e:
@@ -2204,6 +2255,7 @@ class Handler(SimpleHTTPRequestHandler):
             "platform": platform.platform(),
             "pillow": HAS_PIL,
             "ffmpeg": bool(FFMPEG),
+            "ffprobe": bool(FFPROBE),
             "config": str(CONFIG.config_path),
             "defaults": {
                 "default_sort": CONFIG.default_sort,
@@ -2410,38 +2462,35 @@ class Handler(SimpleHTTPRequestHandler):
         name = qs.get("name", [""])[0]
         conflict = normalize_conflict(qs.get("conflict", [CONFIG.upload_conflict])[0])
         if not name:
-            self.send_json(400, {"error": "missing name"}); return
+            raise BadRequest("missing name")
+        total = self.content_length()
         base = safe_join("/" + base_rel)
+        if base.exists() and not base.is_dir():
+            drain_stream(self.rfile, total)
+            raise BadRequest("upload path is not a folder")
         base.mkdir(parents=True, exist_ok=True)
 
-        parts = []
+        parts: List[str] = []
         for p in name.replace("\\", "/").split("/"):
-            if not p or p in (".", ".."):
+            if not p or p in {".", ".."}:
                 continue
-            parts.append(clean_name(p))
+            parts.append(clean_component(p))
         if not parts:
-            self.send_json(400, {"error": "bad filename"}); return
+            drain_stream(self.rfile, total)
+            raise BadRequest("bad filename")
         dest = base.joinpath(*parts).resolve()
         try:
             dest.relative_to(CONFIG.root.resolve())
         except ValueError:
+            drain_stream(self.rfile, total)
             self.send_json(403, {"error": "outside root"}); return
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             if conflict == "skip":
-                # Drain request body so the HTTP connection remains clean.
-                remaining = int(self.headers.get("Content-Length") or "0")
-                while remaining > 0:
-                    chunk = self.rfile.read(min(CHUNK_SIZE, remaining))
-                    if not chunk: break
-                    remaining -= len(chunk)
+                drain_stream(self.rfile, total)
                 self.send_json(200, {"ok": True, "skipped": True, "file": rel_url_for_path(dest), "reason": "exists"}); return
             if conflict == "ask":
-                remaining = int(self.headers.get("Content-Length") or "0")
-                while remaining > 0:
-                    chunk = self.rfile.read(min(CHUNK_SIZE, remaining))
-                    if not chunk: break
-                    remaining -= len(chunk)
+                drain_stream(self.rfile, total)
                 self.send_json(409, {"error": "exists", "file": rel_url_for_path(dest)}); return
             if conflict == "rename":
                 stem, suffix = dest.stem, dest.suffix
@@ -2452,19 +2501,30 @@ class Handler(SimpleHTTPRequestHandler):
                         dest = cand.resolve()
                         break
 
-        total = int(self.headers.get("Content-Length") or "0")
-        tmp = dest.with_name(dest.name + f".uploading-{os.getpid()}-{threading.get_ident()}")
+        tmp: Optional[Path] = None
         written = 0
-        with open(tmp, "wb") as f:
-            remaining = total
-            while remaining > 0:
-                chunk = self.rfile.read(min(CHUNK_SIZE, remaining))
-                if not chunk:
-                    break
-                f.write(chunk)
-                written += len(chunk)
-                remaining -= len(chunk)
-        os.replace(tmp, dest)
+        remaining = total
+        try:
+            fd, tmp_name = tempfile.mkstemp(prefix=dest.name + ".uploading-", dir=str(dest.parent))
+            tmp = Path(tmp_name)
+            with os.fdopen(fd, "wb") as f:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(CHUNK_SIZE, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    written += len(chunk)
+                    remaining -= len(chunk)
+            if written != total or remaining != 0:
+                raise BadRequest(f"incomplete upload: got {written} of {total} bytes")
+            os.replace(tmp, dest)
+            tmp = None
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
         self.send_json(200, {"ok": True, "file": rel_url_for_path(dest), "bytes": written})
 
     def api_save(self) -> None:
@@ -2485,9 +2545,7 @@ class Handler(SimpleHTTPRequestHandler):
     def api_mkdir(self) -> None:
         data = self.read_json()
         base = safe_join("/" + str(data.get("path", "")))
-        name = clean_name(str(data.get("name", "")))
-        if not name:
-            self.send_json(400, {"error": "missing name"}); return
+        name = clean_component(str(data.get("name", "")))
         dest = (base / name).resolve()
         dest.relative_to(CONFIG.root.resolve())
         dest.mkdir(parents=True, exist_ok=False)
@@ -2496,7 +2554,7 @@ class Handler(SimpleHTTPRequestHandler):
     def api_newfile(self) -> None:
         data = self.read_json()
         base = safe_join("/" + str(data.get("path", "")))
-        name = clean_name(str(data.get("name", "")))
+        name = clean_component(str(data.get("name", "")))
         dest = (base / name).resolve()
         dest.relative_to(CONFIG.root.resolve())
         if dest.exists():
@@ -2508,7 +2566,7 @@ class Handler(SimpleHTTPRequestHandler):
     def api_rename(self) -> None:
         data = self.read_json()
         target = safe_join("/" + str(data.get("path", "")))
-        name = clean_name(str(data.get("name", "")))
+        name = clean_component(str(data.get("name", "")))
         if not target.exists():
             self.send_json(404, {"error": "not found"}); return
         dest = (target.parent / name).resolve()
@@ -2536,8 +2594,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def api_zip(self) -> None:
         # Accept form because browser download from fetch is more awkward; JSON fallback too.
-        n = int(self.headers.get("Content-Length") or "0")
-        raw = self.rfile.read(n) if n else b""
+        n = self.content_length(max_bytes=MAX_ZIP_PAYLOAD)
+        raw = self.read_body_exact(n) if n else b""
         payload = {}
         ctype = self.headers.get("Content-Type", "")
         if "application/json" in ctype:
@@ -2804,6 +2862,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sort", choices=sorted(VALID_SORTS), default=None, help="Default sort mode")
     p.add_argument("--view", choices=sorted(VALID_VIEWS), default=None, help="Default view mode")
     p.add_argument("--page-limit", type=int, default=None, help="Items per lazy-load page")
+    p.add_argument("--save-config", action="store_true", help="Persist CLI overrides to the config file. Without this, CLI overrides are runtime-only.")
     return p.parse_args()
 
 
@@ -2875,15 +2934,18 @@ def build_config(args: argparse.Namespace) -> AppConfig:
 def main() -> None:
     global CONFIG
     args = parse_args()
+    config_path = Path(args.config).expanduser().resolve()
+    config_existed = config_path.exists()
     CONFIG = build_config(args)
     if not CONFIG.root.exists():
         print(f"Root does not exist: {CONFIG.root}", file=sys.stderr)
         sys.exit(2)
     ensure_cache_dir(CONFIG.cache_dir)
-    try:
-        write_config_file(CONFIG)
-    except Exception as e:
-        print(f"Warning: cannot write config {CONFIG.config_path}: {e}", file=sys.stderr)
+    if args.save_config or not config_existed:
+        try:
+            write_config_file(CONFIG)
+        except Exception as e:
+            print(f"Warning: cannot write config {CONFIG.config_path}: {e}", file=sys.stderr)
     os.chdir(str(CONFIG.root))
     ip = get_local_ip_guess()
     print(f"\n{APP_NAME}")
