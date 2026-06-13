@@ -956,7 +956,7 @@ const state = {
 };
 document.body.classList.add('thumb-'+(state.thumbFit==='cover'?'cover':'contain'));
 const grid=$('#grid'), q=$('#q'), toastBox=$('#toast');
-const emptyHTML='<div class="empty"><div><div style="font-size:42px">🫙</div><p>Không có mục phù hợp.</p><p>Bấm Upload để chọn hoặc kéo file/folder vào popup.</p></div></div>';
+const emptyHTML='<div class="empty"><div><div style="font-size:42px">🫙</div><p>Không có mục phù hợp.</p><p>Kéo file/folder vào đây hoặc bấm Upload.</p></div></div>';
 function toast(msg){ if(!toastBox){console.log(msg);return} const el=document.createElement('div');el.textContent=msg;toastBox.appendChild(el);setTimeout(()=>el.remove(),3200) }
 function enc(s){return encodeURIComponent(s).replace(/%2F/g,'/')}
 function currentPath(){return window.APP?.currentPath||''}
@@ -1237,12 +1237,33 @@ function openUploadDialog(){const m=$('#uploadModal'); if(!m)return; m.classList
 function closeUploadDialog(){ if(uploadState.running&&!confirm('Upload đang chạy, vẫn đóng popup?'))return; $('#uploadModal')?.classList.remove('show') }
 function chooseFiles(){openUploadDialog()} function chooseFolder(){openUploadDialog()}
 function pickUploadFiles(){$('#fileInput')?.click()} function pickUploadFolder(){$('#folderInput')?.click()}
-function addUploadFiles(files){const arr=Array.from(files||[]).map(f=>({file:f,relPath:f.webkitRelativePath||f.name,state:'ready',loaded:0,size:f.size||0})); uploadState.queue.push(...arr); uploadState.totalBytes=uploadState.queue.reduce((a,x)=>a+(x.size||0),0); renderUploadQueue(); if(state.uploadAutoStart)startUploadQueue();}
-async function traverseEntry(entry,path,out){
-  if(entry.isFile){await new Promise(res=>entry.file(f=>{out.push({file:f,relPath:(path+f.name).replace(/^\/+/,''),state:'ready',loaded:0,size:f.size||0});res()},()=>res()))}
-  else if(entry.isDirectory){const reader=entry.createReader();let batch=[];do{batch=await new Promise(res=>reader.readEntries(res,()=>res([])));for(const e of batch)await traverseEntry(e,path+entry.name+'/',out)}while(batch.length)}
+function normalizeUploadItem(it,targetPath){it.targetPath=targetPath==null?currentPath():targetPath;return it}
+function enqueueUploadItems(items,targetPath,autoStart=state.uploadAutoStart){
+  const arr=Array.from(items||[]).map(it=>normalizeUploadItem(it,targetPath));
+  if(!arr.length)return 0;
+  uploadState.queue.push(...arr); uploadState.totalBytes=uploadState.queue.reduce((a,x)=>a+(x.size||0),0); renderUploadQueue();
+  if(autoStart)startUploadQueue();
+  return arr.length;
 }
-async function handleUploadDrop(e){e.preventDefault();e.stopPropagation();const dz=$('#uploadDrop');dz?.classList.remove('drag');const out=[];const items=Array.from(e.dataTransfer?.items||[]);if(items.length&&items[0].webkitGetAsEntry){for(const it of items){const entry=it.webkitGetAsEntry();if(entry)await traverseEntry(entry,'',out)}}if(out.length){uploadState.queue.push(...out)}else addUploadFiles(e.dataTransfer.files);uploadState.totalBytes=uploadState.queue.reduce((a,x)=>a+(x.size||0),0);renderUploadQueue();if(state.uploadAutoStart)startUploadQueue();}
+function addUploadFiles(files,targetPath=currentPath()){const arr=Array.from(files||[]).map(f=>({file:f,relPath:f.webkitRelativePath||f.name,state:'ready',loaded:0,size:f.size||0,targetPath})); return enqueueUploadItems(arr,targetPath);}
+async function traverseEntry(entry,path,out,targetPath=currentPath()){
+  if(entry.isFile){await new Promise(res=>entry.file(f=>{out.push({file:f,relPath:(path+f.name).replace(/^\/+/,''),state:'ready',loaded:0,size:f.size||0,targetPath});res()},()=>res()))}
+  else if(entry.isDirectory){const reader=entry.createReader();let batch=[];do{batch=await new Promise(res=>reader.readEntries(res,()=>res([])));for(const e of batch)await traverseEntry(e,path+entry.name+'/',out,targetPath)}while(batch.length)}
+}
+async function itemsFromDrop(e,targetPath=currentPath()){
+  const out=[]; const dt=e.dataTransfer; const items=Array.from(dt?.items||[]);
+  if(items.length&&items[0].webkitGetAsEntry){for(const it of items){const entry=it.webkitGetAsEntry();if(entry)await traverseEntry(entry,'',out,targetPath)}}
+  if(out.length)return out;
+  return Array.from(dt?.files||[]).map(f=>({file:f,relPath:f.webkitRelativePath||f.name,state:'ready',loaded:0,size:f.size||0,targetPath}));
+}
+async function handleUploadDrop(e){e.preventDefault();e.stopPropagation();const dz=$('#uploadDrop');dz?.classList.remove('drag');const targetPath=currentPath();const out=await itemsFromDrop(e,targetPath);enqueueUploadItems(out,targetPath);}
+async function handleGridUploadDrop(e){
+  e.preventDefault(); e.stopPropagation(); grid?.classList.remove('drag');
+  if(uploadState.running){toast('Upload đang chạy, chưa thêm queue mới');return}
+  const targetPath=currentPath(); openUploadDialog();
+  const added=enqueueUploadItems(await itemsFromDrop(e,targetPath),targetPath,false);
+  if(added)toast(`Đã thêm ${added} file vào queue upload`);
+}
 function renderUploadQueue(){
   const q=$('#uploadQueue'), sum=$('#uploadSummary'), bar=$('#uploadModalBar'); if(!q)return;
   const total=uploadState.queue.length; const bytes=uploadState.queue.reduce((a,x)=>a+(x.size||0),0);
@@ -1253,7 +1274,7 @@ function renderUploadQueue(){
 }
 async function uploadOneQueued(it){
   it.state='uploading';it.loaded=0;renderUploadQueue();
-  try{let mode=state.uploadConflict;let res;try{res=await uploadFile(it,currentPath(),(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},mode)}catch(e){if(e.status===409&&mode==='ask'){if(confirm(`File đã tồn tại:\n${it.relPath}\n\nGhi đè file này?`)){res=await uploadFile(it,currentPath(),(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},'overwrite')}else{it.state='skipped';it.loaded=it.size;return}}else throw e} it.state=res?.skipped?'skipped':'done';it.loaded=it.size;uploadState.done++}
+  try{let mode=state.uploadConflict;let res;const targetPath=it.targetPath==null?currentPath():it.targetPath;try{res=await uploadFile(it,targetPath,(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},mode)}catch(e){if(e.status===409&&mode==='ask'){if(confirm(`File đã tồn tại:\n${it.relPath}\n\nGhi đè file này?`)){res=await uploadFile(it,targetPath,(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},'overwrite')}else{it.state='skipped';it.loaded=it.size;return}}else throw e} it.state=res?.skipped?'skipped':'done';it.loaded=it.size;uploadState.done++}
   catch(e){it.state='error';it.error=e.message;uploadState.failed++} finally{renderUploadQueue()}
 }
 async function startUploadQueue(){
@@ -1264,6 +1285,11 @@ async function startUploadQueue(){
 function clearUploadQueue(){if(uploadState.running){toast('Đang upload, chưa xoá queue được');return} uploadState.queue=[];uploadState.done=0;uploadState.failed=0;renderUploadQueue()}
 $('#fileInput')?.addEventListener('change',e=>{addUploadFiles(e.target.files);e.target.value=''});$('#folderInput')?.addEventListener('change',e=>{addUploadFiles(e.target.files);e.target.value=''});
 const upDrop=$('#uploadDrop'); if(upDrop){['dragenter','dragover'].forEach(ev=>upDrop.addEventListener(ev,e=>{e.preventDefault();upDrop.classList.add('drag')}));['dragleave','drop'].forEach(ev=>upDrop.addEventListener(ev,e=>{e.preventDefault();upDrop.classList.remove('drag')}));upDrop.addEventListener('drop',handleUploadDrop);upDrop.addEventListener('click',pickUploadFiles)}
+if(grid){
+  ['dragenter','dragover'].forEach(ev=>grid.addEventListener(ev,e=>{if(uploadState.running)return;e.preventDefault();e.stopPropagation();grid.classList.add('drag')}));
+  ['dragleave','dragend'].forEach(ev=>grid.addEventListener(ev,e=>{e.preventDefault();grid.classList.remove('drag')}));
+  grid.addEventListener('drop',handleGridUploadDrop);
+}
 $('#uploadConflict')?.addEventListener('change',e=>changeUploadConflict(e.target));
 if(grid){
   syncControls(); applyView(); if(!hydrateCache())loadMore(true); updateSelectionUI();
