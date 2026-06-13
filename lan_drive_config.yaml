@@ -1,0 +1,44 @@
+# LAN Drive config - file này có thể sửa tay hoặc đổi trong UI.
+# Chạy: python3 lan_drive.py --config lan_drive_config.yaml
+root: "/"
+port: 9999
+host: "0.0.0.0"
+title: "LAN Drive"
+cache_dir: "/tmp/lan-drive-onefile-cache"
+show_hidden: true
+show_system: true
+default_sort: "mtime-desc"
+default_view: "grid"
+page_limit: 100
+folders_first: true
+search_debounce_ms: 240
+terminal_enabled: true
+terminal_backend_linux: "pty"
+terminal_backend_linux_fallback: "pty"
+terminal_shell_linux: "/bin/bash"
+terminal_tmux_bin: "tmux"
+terminal_tmux_session_prefix: "landrive"
+terminal_tmux_status_bar: false
+terminal_session_mode: "per_folder"
+terminal_backend_windows: "command"
+terminal_shell_windows: "powershell"
+terminal_command_timeout: 0
+terminal_max_sessions: 8
+terminal_idle_detach_minutes: 120
+terminal_max_buffer_chars: 500000
+terminal_poll_ms: 150
+terminal_start_height_px: 380
+terminal_mobile_extra_keys: true
+thumb_fit: "cover"
+folder_preview_enabled: true
+folder_preview_mode: "mosaic4"
+folder_preview_fit: "cover"
+folder_preview_rotate: true
+folder_preview_animation: "fade"
+folder_preview_interval_ms: 3500
+folder_preview_scan_limit: 80
+folder_preview_max_items: 24
+folder_preview_include_video: true
+upload_auto_start: false
+upload_parallel: 3
+upload_conflict: "ask"
