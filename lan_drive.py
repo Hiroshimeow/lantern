@@ -1433,7 +1433,7 @@ function renderMediaItem(it,index,opts={}){
     const img=document.createElement('img');img.src=mediaUrl(it);img.alt=it.name||'';img.draggable=false;body.appendChild(img);
   }else if(it.kind==='video'){
     const wrap=document.createElement('div');wrap.className='video-wrap';
-    const v=document.createElement('video');v.src=mediaUrl(it);v.controls=true;v.autoplay=opts.autoplay!==false;v.playsInline=true;v.preload='metadata';
+    const v=document.createElement('video');v.src=mediaUrl(it);v.controls=true;v.autoplay=opts.autoplay!==false;v.playsInline=true;v.preload='auto';
     v.addEventListener('ended',()=>{if(mediaState.items.length>1)stepMedia(1)});
     const panel=document.createElement('div');panel.className='video-panel';
     wrap.appendChild(v);wrap.appendChild(panel);body.appendChild(wrap);
@@ -1611,7 +1611,7 @@ function renderListPreview(card){
   const body=sidePreview.querySelector('.side-content');
   const mode=m=>{body.className='side-content '+m};
   if(kind==='image'){mode('media');body.innerHTML=`<div class="side-fit-bg" style="background-image:url('${url.replace(/'/g,"%27")}')"></div>`}
-  else if(kind==='video'){mode('media video');body.innerHTML=`<div class="side-video-fit"><video class="side-video" src="${url}" controls preload="metadata" playsinline></video></div>`}
+  else if(kind==='video'){mode('media video');body.innerHTML=`<div class="side-video-fit"><video class="side-video" src="${url}" controls autoplay preload="auto" playsinline></video></div>`;const v=body.querySelector('video');if(v){v.play().catch(()=>{})}}
   else if(kind==='audio'){mode('media audio');body.innerHTML=`<audio class="side-audio" src="${url}" controls preload="metadata"></audio>`}
   else if(card.dataset.preview==='1'){mode('doc');body.innerHTML=`<iframe class="side-frame" src="${previewUrl(rel)}"></iframe>`}
   else if(kind==='text'){mode('text');body.innerHTML='<pre class="side-text">Đang đọc...</pre>';fetch(url).then(r=>r.text()).then(t=>{const pre=body.querySelector('pre');if(pre)pre.textContent=t.slice(0,200000)}).catch(e=>body.textContent='Không đọc được preview: '+e.message)}
