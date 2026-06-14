@@ -1240,7 +1240,7 @@ const state = {
   pluginEnabled:!!(window.APP?.plugin?.enabled),
   previewPane:String(pref('preview_pane_enabled','true')) !== 'false',
   hasMore:true, loading:false, searchTimer:null,
-  listPreview:null, dragSelecting:false, dragMode:null, lastListClick:0
+  listPreview:null, dragSelecting:false, dragMode:null, dragCandidate:null, suppressClick:false, lastListClick:0
 };
 document.body.classList.add('thumb-'+(state.thumbFit==='cover'?'cover':'contain'));
 const grid=$('#grid'), q=$('#q'), toastBox=$('#toast'), sidePreview=$('#sidePreview'), browserArea=$('#browserArea');
@@ -1279,7 +1279,8 @@ function toggleSelect(rel,ev){if(ev){ev.preventDefault();ev.stopPropagation()} c
 function clearSel(){state.selected.clear();updateSelectionUI()}
 function selectVisible(){$$('.card:not(.hidden)').forEach(c=>{if(c.dataset.rel)state.selected.add(c.dataset.rel)});updateSelectionUI()}
 function applyDragSelect(card){if(!state.dragSelecting||!card?.dataset?.rel)return;if(state.dragMode==='add')state.selected.add(card.dataset.rel);else if(state.dragMode==='remove')state.selected.delete(card.dataset.rel);updateSelectionUI()}
-function beginDragSelect(ev,card){if(!(ev.ctrlKey||ev.metaKey)||!card?.dataset?.rel)return false;ev.preventDefault();ev.stopPropagation();state.dragSelecting=true;state.dragMode=state.selected.has(card.dataset.rel)?'remove':'add';applyDragSelect(card);return true}
+function beginDragSelect(ev,card){if(!(ev.ctrlKey||ev.metaKey)||ev.button!==0||!card?.dataset?.rel)return false;ev.preventDefault();ev.stopPropagation();state.dragCandidate={rel:card.dataset.rel,x:ev.clientX,y:ev.clientY,mode:state.selected.has(card.dataset.rel)?'remove':'add'};return true}
+function maybeStartDragSelect(ev){const d=state.dragCandidate;if(!d||state.dragSelecting)return;const dx=ev.clientX-d.x,dy=ev.clientY-d.y;if(Math.hypot(dx,dy)<5)return;state.dragSelecting=true;state.dragMode=d.mode;state.suppressClick=true;const c=document.querySelector(`.card[data-rel="${CSS.escape(d.rel)}"]`);applyDragSelect(c)}
 function closeContextMenu(){const m=$('#ctxMenu'); if(m)m.classList.add('hidden')}
 function ensureContextSelection(card){const rel=card?.dataset?.rel||''; if(!rel)return ''; if(!state.selected.has(rel)){state.selected.clear();state.selected.add(rel);updateSelectionUI()} return rel}
 function openContextMenu(ev,card){
@@ -1496,7 +1497,8 @@ document.addEventListener('keydown',e=>{
   if(grid&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='a'&&!isTypingTarget(document.activeElement)){e.preventDefault();selectVisible()}
 });
 document.addEventListener('click',e=>{if(!e.target.closest?.('#ctxMenu'))closeContextMenu()});
-document.addEventListener('mouseup',()=>{state.dragSelecting=false;state.dragMode=null});
+document.addEventListener('mousemove',maybeStartDragSelect);
+document.addEventListener('mouseup',()=>{const wasDrag=state.dragSelecting;state.dragCandidate=null;state.dragSelecting=false;state.dragMode=null;if(wasDrag){state.suppressClick=true;setTimeout(()=>{state.suppressClick=false},0)}});
 window.addEventListener('scroll',closeContextMenu,true);
 async function api(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{})});const j=await r.json().catch(()=>({}));if(!r.ok||j.error)throw new Error(j.error||`HTTP ${r.status}`);return j}
 async function mkdir(){const name=prompt('Tên thư mục mới:');if(!name)return;try{await api('/api/mkdir',{path:currentPath(),name});clearFolderCache();loadMore(true)}catch(e){toast('Lỗi tạo thư mục: '+e.message)}}
@@ -1538,7 +1540,7 @@ function renderListPreview(card){
   else if(kind==='text'){mode('text');body.innerHTML='<pre class="side-text">Đang đọc...</pre>';fetch(url).then(r=>r.text()).then(t=>{const pre=body.querySelector('pre');if(pre)pre.textContent=t.slice(0,200000)}).catch(e=>body.textContent='Không đọc được preview: '+e.message)}
   else{mode('empty');body.innerHTML='<div class="side-empty">Không hỗ trợ preview nhanh</div>'}
 }
-function openItem(card,ev){const rel=card.dataset.rel;if(ev&&(ev.ctrlKey||ev.metaKey)){toggleSelect(rel,ev);return}closeContextMenu();const kind=card.dataset.kind,item=findLoadedItem(rel),name=item?.name||card.dataset.rawname,url=fileUrl(rel);saveListCache();if(state.previewPane&&listCanPreview(card)){renderListPreview(card);return}if(kind==='folder')location.href=url+'/';else if(isMediaKind(kind))openPreview(kind,url,name,rel);else if(card.dataset.preview==='1')location.href=previewUrl(rel);else if(kind==='text')location.href=url+'?edit=1';else toast('File này chưa hỗ trợ preview. Dùng nút Download để tải.')}
+function openItem(card,ev){const rel=card.dataset.rel;if(state.suppressClick){if(ev){ev.preventDefault();ev.stopPropagation()}return}if(ev&&(ev.ctrlKey||ev.metaKey)){toggleSelect(rel,ev);return}closeContextMenu();const kind=card.dataset.kind,item=findLoadedItem(rel),name=item?.name||card.dataset.rawname,url=fileUrl(rel);saveListCache();if(state.previewPane&&listCanPreview(card)){renderListPreview(card);return}if(kind==='folder')location.href=url+'/';else if(isMediaKind(kind))openPreview(kind,url,name,rel);else if(card.dataset.preview==='1')location.href=previewUrl(rel);else if(kind==='text')location.href=url+'?edit=1';else toast('File này chưa hỗ trợ preview. Dùng nút Download để tải.')}
 
 // ---------------- Folder preview mosaic ----------------
 let folderPreviewIO=null, folderPreviewTimers=[];
