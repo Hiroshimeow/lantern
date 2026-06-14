@@ -1827,11 +1827,16 @@ function termPoll(){
 }
 async function termSend(data){ if(!term.id){await openTerminal(false)} if(term.mode==='command')return; try{await termApi('/api/term/input',{id:term.id,data})}catch(e){termAppend('\n[input error: '+e.message+']\n')}}
 function termSendCtrl(ch){ const code=ch.toLowerCase().charCodeAt(0)-96; if(code>0&&code<27)termSend(String.fromCharCode(code));}
+function termSelectedText(){const scr=termScreen(),sel=window.getSelection?.();if(!scr||!sel||sel.isCollapsed)return'';const a=sel.anchorNode,f=sel.focusNode;if((a&&scr.contains(a))||(f&&scr.contains(f)))return sel.toString();return''}
+async function termWriteClipboardText(text){try{await navigator.clipboard.writeText(text);return true}catch(e){try{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();const ok=document.execCommand('copy');ta.remove();return !!ok}catch(_){return false}}}
+async function termReadClipboardText(){try{if(navigator.clipboard?.readText)return await navigator.clipboard.readText()}catch(e){}return''}
+async function termCopySelectionOrOutput(){const selected=termSelectedText();const text=selected||termScreen()?.textContent||'';if(!text)return false;const ok=await termWriteClipboardText(text);if(ok)toast(selected?'Đã copy selection':'Đã copy terminal output');else toast('Không copy được');return ok}
+async function termPasteClipboard(){const text=await termReadClipboardText();if(!text){toast('Clipboard trống hoặc browser chặn đọc clipboard');return false}await termSend(text);return true}
 async function termResize(){ const rc=termRowsCols(); if(term.screen){term.screen.cols=rc.cols; term.screen.rows=rc.rows; termRender(true);} if(!term.id||term.mode==='command')return; try{await termApi('/api/term/resize',{id:term.id,...rc})}catch(e){}}
 async function termDetach(){ if(!term.id)return; try{await termApi('/api/term/detach',{id:term.id})}catch(e){} clearInterval(term.poll); term.id=null; termAppend('\n[detached]\n'); }
 async function termKill(){ if(!term.id)return; if(!confirm('Kill terminal/session này? Với tmux, lệnh này kill cả tmux session.'))return; try{await termApi('/api/term/kill',{id:term.id})}catch(e){} clearInterval(term.poll); term.id=null; termAppend('\n[killed]\n'); }
 function termClear(){ termResetScreen(); if(term.id&&term.mode!=='command')termSend('\x0c');}
-async function termCopy(){try{await navigator.clipboard.writeText(termScreen()?.textContent||'');toast('Đã copy terminal output')}catch(e){toast('Không copy được')}}
+async function termCopy(){await termCopySelectionOrOutput()}
 function termStartTmux(){ const cmd='tmux new-session -A -s landrive'; if(term.mode==='command'){termRunCommand(cmd);return;} termSend(cmd+'\r'); }
 function termFullscreen(){termEl()?.classList.toggle('full'); setTimeout(termResize,120)}
 async function termRunCommand(cmd){
@@ -1851,9 +1856,10 @@ document.addEventListener('keydown', async e=>{
   if(!termEl()?.classList.contains('show'))return;
   if(e.key==='Escape' && termEl()?.classList.contains('full')){e.preventDefault();termEl().classList.remove('full');setTimeout(termResize,80);return}
   if(inEditor || term.mode==='command' || active!==termScreen())return;
-  if(e.ctrlKey){
+  if(e.ctrlKey||e.metaKey){
     const k=e.key.toLowerCase();
-    if(k==='c'){e.preventDefault();termSendCtrl('c');return}
+    if(k==='c'){e.preventDefault();if(termSelectedText()){await termCopySelectionOrOutput();return}termSendCtrl('c');return}
+    if(k==='v'){e.preventDefault();await termPasteClipboard();return}
     if(k==='d'){e.preventDefault();termSendCtrl('d');return}
     if(k==='l'){e.preventDefault();termClear();return}
   }
@@ -1865,6 +1871,7 @@ document.addEventListener('keydown', async e=>{
   if(e.key.length===1 && !e.metaKey && !e.altKey){e.preventDefault();termSend(e.key)}
 });
 termScreen()?.addEventListener('paste',e=>{if(term.mode==='command')return;e.preventDefault();const t=(e.clipboardData||window.clipboardData).getData('text');termSend(t)});
+termScreen()?.addEventListener('copy',async e=>{const t=termSelectedText();if(!t)return;e.preventDefault();e.clipboardData?.setData('text/plain',t);if(!e.clipboardData)await termWriteClipboardText(t)});
 $('#termLine')?.addEventListener('keydown',e=>{
   if(e.key==='Enter'){const v=e.target.value;e.target.value='';termRunCommand(v)}
   else if(e.key==='ArrowUp'){e.preventDefault(); if(term.cmdHistory.length){term.cmdIndex=Math.max(0,term.cmdIndex-1); e.target.value=term.cmdHistory[term.cmdIndex]||''}}
@@ -3255,7 +3262,8 @@ class Handler(SimpleHTTPRequestHandler):
       <button class="btn small" onclick="newTerminalSession()">New</button>
       <button class="btn small" onclick="termStartTmux()">tmux</button>
       <button class="btn small" onclick="termClear()">Clear</button>
-      <button class="btn small" onclick="termCopy()">Copy</button>
+      <button class="btn small" onclick="termCopy()" title="Copy selection hoặc toàn bộ terminal output">Copy</button>
+      <button class="btn small" onclick="termPasteClipboard()" title="Paste clipboard vào terminal">Paste</button>
       <button class="btn small" onclick="refreshFolder()">Refresh</button>
       <button class="btn small" onclick="termFullscreen()">⛶</button>
       <button class="btn small warn" onclick="termDetach()">Detach</button>
