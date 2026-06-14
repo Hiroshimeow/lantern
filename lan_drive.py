@@ -1330,6 +1330,7 @@ function appendRender(newItems){ if(!grid)return; const old=$('#loader'); if(old
 function saveListCache(){try{sessionStorage.setItem(cacheKey(),JSON.stringify({items:state.items,offset:state.offset,hasMore:state.hasMore,scrollY:window.scrollY,ts:Date.now()}))}catch(e){}}
 function hydrateCache(){try{const raw=sessionStorage.getItem(cacheKey()); if(!raw)return false; const c=JSON.parse(raw); if(!Array.isArray(c.items))return false; state.items=c.items; state.offset=c.offset||c.items.length; state.hasMore=!!c.hasMore; render(); requestAnimationFrame(()=>window.scrollTo(0,c.scrollY||Number(sessionStorage.getItem(scrollKey())||0))); return true}catch(e){return false}}
 window.addEventListener('pagehide',()=>{if(grid){sessionStorage.setItem(scrollKey(),String(window.scrollY));saveListCache()}});
+window.addEventListener('pageshow',e=>{if(grid&&e.persisted)setTimeout(()=>softRefresh().catch(()=>{}),0)});
 let autoRefreshTimer=setInterval(()=>{if(document.hidden||!grid||state.loading||state.selected.size||$('#modal')?.classList.contains('show')||$('#uploadModal')?.classList.contains('show')||$('#termDrawer')?.classList.contains('show'))return;softRefresh().catch(()=>{})},4000);
 async function loadMore(reset=false){ if(!grid||state.loading)return; if(reset){state.items=[];state.offset=0;state.hasMore=true;state.selected.clear();grid.innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>'} if(!state.hasMore)return; state.loading=true; updateSelectionUI(); const params=new URLSearchParams({path:currentPath(),offset:String(state.offset),limit:String(state.limit),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)}); try{const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'}); const j=await r.json(); if(!r.ok||j.error)throw new Error(j.error||r.statusText); const newItems=j.items||[]; if(reset)state.items=[]; state.items.push(...newItems); state.offset=j.nextOffset; state.hasMore=!!j.hasMore; if(reset)render(); else appendRender(newItems); saveListCache()}catch(e){grid.innerHTML=`<div class="empty"><div><div style="font-size:42px">⚠️</div><p>Lỗi tải thư mục</p><p>${String(e.message||e)}</p></div></div>`}finally{state.loading=false;updateSelectionUI()} }
 let io=null; function observeLoader(){ if(!grid)return; if(io)io.disconnect(); const loader=$('#loader'); if(!loader)return; io=new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore(false)},{rootMargin:'900px'}); io.observe(loader)}
@@ -1633,7 +1634,11 @@ if(grid){
 }
 $('#uploadConflict')?.addEventListener('change',e=>changeUploadConflict(e.target));
 if(grid){
-  syncControls(); applyView(); if(!hydrateCache())loadMore(true); updateSelectionUI();
+  syncControls(); applyView();
+  const usedCache=hydrateCache();
+  if(usedCache){setTimeout(()=>softRefresh().catch(()=>{}),0)}
+  else loadMore(true);
+  updateSelectionUI();
 }
 
 // ---------------- Terminal drawer ----------------
