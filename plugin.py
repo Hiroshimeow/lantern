@@ -595,7 +595,7 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{h(title)} - {h(rel)}</title><style>{css}</style></head>
 <body>
-<div class="bar"><a class="btn" href="javascript:history.back()">↩ Back</a><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><a class="btn" href="{h(raw_url)}?edit=1">Edit</a><a class="btn" href="{h(raw_url)}">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
+<div class="bar"><a class="btn" href="javascript:history.back()">↩ Back</a><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><a class="btn" href="/api/plugin/preview?p={h(rel)}">Preview</a><a class="btn" href="{h(raw_url)}?edit=1">Edit</a><a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
 <div class="content"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
 </body></html>"""
     return page.encode("utf-8", "surrogateescape")
