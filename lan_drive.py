@@ -1212,9 +1212,15 @@ body.thumb-cover .folder-mosaic img{object-fit:cover;background:#000}
 .view-list:not(.preview-pane) .browser-area{display:block}.view-list:not(.preview-pane) .side-preview{display:none}.preview-pane .browser-area{display:grid;grid-template-columns:minmax(420px,1fr) minmax(360px,.85fr);gap:12px;align-items:start}.preview-pane .side-preview{display:flex;position:sticky;top:118px;min-height:62vh;height:calc(100vh - 132px);max-height:calc(100vh - 132px);border:1px solid rgba(255,255,255,.1);border-radius:16px;background:#0b1018;overflow:hidden;flex-direction:column}.side-title{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.side-title-text{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.side-nav{display:inline-flex;gap:5px}.side-nav button{width:28px;height:26px;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:#151c28;color:#f8fafc;cursor:pointer;font-weight:900}.side-nav button:hover{background:#243044}.side-body{position:relative;overflow:hidden;display:block;background:#000}.side-content{width:100%;height:100%;display:grid;place-items:center;overflow:hidden}.side-media{width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;background:#000}.side-frame{width:100%;height:100%;border:0;background:#080a0f}.side-frame,.side-text{overflow:auto}.side-text{display:block}.preview-pane .side-preview{height:calc(100dvh - 132px)!important;max-height:calc(100dvh - 132px)!important;overflow:hidden!important}.side-body{flex:1!important;min-height:0!important;position:relative!important;overflow:hidden!important;display:block!important}.side-content{position:absolute!important;inset:0!important;width:auto!important;height:auto!important;display:grid!important;place-items:center!important;overflow:hidden!important}.side-content.doc,.side-content.text{display:block!important;overflow:auto!important}.side-fit-bg{position:absolute!important;inset:0!important;background-color:#000!important;background-repeat:no-repeat!important;background-position:center center!important;background-size:contain!important}.side-video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;display:block!important;background:#000}.side-frame{width:100%!important;height:100%!important}.side-text{min-height:100%;width:100%;height:auto}.side-arrow{position:absolute;top:50%;transform:translateY(-50%);z-index:5;width:42px;height:58px;border:1px solid rgba(255,255,255,.16);border-radius:14px;background:rgba(8,12,18,.58);color:#fff;font-size:34px;font-weight:900;cursor:pointer;opacity:0;transition:.12s}.side-body:hover .side-arrow{opacity:1}.side-arrow:hover{background:rgba(24,32,44,.88)}.side-prev{left:10px}.side-next{right:10px}.side-audio{width:92%;align-self:center}.grid:not(.list) .check{z-index:12;pointer-events:auto}.grid:not(.list) .check:hover,.grid.list .check:hover{border-color:var(--accent);box-shadow:0 0 0 3px rgba(104,227,122,.13)}.card.selected .check{background:var(--accent)!important;color:#061007!important;border-color:var(--accent)!important}.card.selected .check:after{content:'✓';font-weight:950}.btn.active,#previewPaneBtn.active{background:#243044;border-color:rgba(104,227,122,.45);color:#fff}body.thumb-contain .grid:not(.list) .thumb,body.thumb-contain .grid:not(.list) .folder-mosaic img{object-fit:contain!important;background:#000!important}body.thumb-cover .grid:not(.list) .thumb,body.thumb-cover .grid:not(.list) .folder-mosaic img{object-fit:cover!important;background:#000!important}@media(max-width:900px){.preview-pane .browser-area{grid-template-columns:1fr}.preview-pane .side-preview{position:static;height:55vh;min-height:300px;max-height:55vh}}
 
 .download-choice-backdrop{position:fixed;inset:0;z-index:240;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}.download-choice-box{width:min(430px,94vw);background:#0d1118;border:1px solid rgba(255,255,255,.14);border-radius:20px;box-shadow:var(--shadow);padding:16px;display:flex;flex-direction:column;gap:12px}.download-choice-title{font-weight:850;font-size:16px}.download-choice-desc{color:var(--muted);line-height:1.45}.download-choice-actions{display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.side-video-fit{position:absolute!important;inset:0!important;display:grid!important;place-items:center!important;background:#000!important;overflow:hidden!important}.side-video-fit video,.side-video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important;display:block!important;background:#000!important}
-.term-drawer{position:fixed;left:14px;right:14px;bottom:14px;z-index:80;display:none;flex-direction:column;min-height:240px;max-height:88vh;background:linear-gradient(180deg,rgba(8,13,10,.98),rgba(3,5,8,.98));border:1px solid rgba(104,227,122,.34);border-radius:18px;box-shadow:0 22px 80px rgba(0,0,0,.62);overflow:hidden;resize:vertical}
-.term-drawer.show{display:flex}.term-drawer.full{inset:10px;height:auto!important;max-height:none}.term-screen{-webkit-user-select:text;user-select:text;caret-color:#7dff93}.term-screen[contenteditable=true]{cursor:text}.term-head{min-height:45px;display:flex;align-items:center;gap:10px;justify-content:space-between;padding:7px 9px 7px 13px;background:linear-gradient(180deg,rgba(104,227,122,.13),rgba(255,255,255,.025));border-bottom:1px solid rgba(104,227,122,.22)}.term-title{font-weight:850;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.term-mode{margin-left:8px;color:#7dff93;font-size:12px}.term-cwd{margin-left:10px;color:#b6c6b8;font-size:12px;font-weight:650}.term-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.term-screen{flex:1;margin:0;padding:14px 16px;background:linear-gradient(180deg,#000503,#02060a);color:#dfffe6;font:14px/1.55 "Cascadia Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;overflow:auto;white-space:pre;word-break:normal;outline:none;tab-size:4;letter-spacing:0;text-rendering:geometricPrecision;scrollbar-color:rgba(104,227,122,.42) rgba(255,255,255,.05)}.term-screen:empty::before{content:"Terminal chưa có output. Bấm New hoặc gõ lệnh khi cursor đang ở khung này.";color:#6f7f78}.term-screen:focus{box-shadow:inset 0 0 0 1px rgba(104,227,122,.42)}.term-command{display:flex;align-items:center;gap:8px;padding:9px 11px;border-top:1px solid rgba(104,227,122,.18);background:#05090c}.term-command.hidden{display:none}.term-command span{font:13px ui-monospace,monospace;color:#7dff93;white-space:nowrap}.term-command input{flex:1;background:transparent;color:#f6fff7;border:0;outline:0;font:13px ui-monospace,monospace}.term-keys{display:none;gap:5px;align-items:center;overflow:auto;padding:7px;border-top:1px solid rgba(255,255,255,.07);background:#070a0f}.term-keys button{border:1px solid rgba(255,255,255,.14);background:#121821;color:#f6fff7;border-radius:9px;padding:6px 10px;font-weight:800}@media(max-width:720px){
-.term-drawer{left:6px;right:6px;bottom:6px;height:54vh!important}.term-actions .btn{height:28px;padding:0 8px}.term-cwd{display:none}.term-keys{display:flex}.terminal-btn .label{display:none}}
+.term-drawer{--term-bg:#070a0d;--term-panel:#0d1218;--term-line:#25303a;--term-text:#e8edf2;--term-muted:#8e9aa6;--term-accent:#73d18a;position:fixed;left:14px;right:14px;bottom:14px;z-index:80;display:none;flex-direction:column;min-height:260px;max-height:88vh;background:var(--term-bg);border:1px solid var(--term-line);border-radius:14px;box-shadow:0 26px 90px rgba(0,0,0,.66);overflow:hidden;isolation:isolate}
+.term-drawer.show{display:flex}.term-drawer.full{inset:8px;height:auto!important;max-height:none}.term-resize-handle{height:9px;flex:0 0 9px;cursor:ns-resize;background:#0a0e12;position:relative;touch-action:none}.term-resize-handle:after{content:"";position:absolute;left:50%;top:3px;translate:-50% 0;width:44px;height:3px;border-radius:999px;background:#34424d}.term-resize-handle:hover:after,.term-resize-handle.dragging:after{background:var(--term-accent)}
+.term-head{min-height:56px;display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:12px;align-items:center;padding:8px 10px 8px 14px;background:linear-gradient(180deg,#111820,#0c1117);border-bottom:1px solid var(--term-line)}.term-identity{display:flex;align-items:center;gap:10px;min-width:0}.term-mark{display:grid;place-items:center;width:34px;height:34px;flex:0 0 34px;border:1px solid #30404b;border-radius:9px;background:#090d11;color:var(--term-accent);font:800 12px/1 "Cascadia Mono",Consolas,monospace}.term-title-wrap{min-width:0}.term-title-row{display:flex;align-items:center;gap:8px;min-width:0}.term-title{font-weight:800;letter-spacing:.01em}.term-mode{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid #2d4235;border-radius:999px;background:#101b14;color:#9be5ab;padding:2px 7px;font:700 10px/1.4 ui-monospace,monospace}.term-cwd{margin-top:3px;color:var(--term-muted);font:11px/1.35 ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.term-actions{display:flex;gap:7px;align-items:center;justify-content:flex-end;min-width:0}.term-action-group{display:flex;gap:4px;padding:3px;border:1px solid #202a32;border-radius:9px;background:#080c10}.term-btn{height:30px;padding:0 9px;border:1px solid transparent;border-radius:7px;background:transparent;color:#cfd7df;cursor:pointer;font-size:11px;font-weight:750;white-space:nowrap}.term-btn:hover{background:#172029;border-color:#2b3944;color:#fff}.term-btn:focus-visible{outline:2px solid var(--term-accent);outline-offset:1px}.term-btn.warn{color:#f0c178}.term-btn.danger{color:#ff9b9b}.term-btn.icon{width:30px;padding:0;font-size:15px}
+.term-screen{-webkit-user-select:text;user-select:text;caret-color:var(--term-accent);flex:1;min-height:0;width:100%;margin:0;padding:14px 16px 20px;background:linear-gradient(180deg,#070a0d,#050709);color:var(--term-text);font:13px/1.5 "Cascadia Mono","JetBrains Mono",Consolas,"Liberation Mono",ui-monospace,monospace;font-variant-ligatures:none;overflow:auto;white-space:pre;word-break:normal;outline:none;tab-size:8;letter-spacing:0;text-rendering:optimizeLegibility;scrollbar-color:#35434e #0a0e12}.term-screen[contenteditable]{cursor:text}.term-screen::selection,.term-screen *::selection{background:#315c44;color:#fff}.term-screen:empty::before{content:"Terminal chưa có output. Gõ lệnh trực tiếp hoặc bấm New để mở session.";color:#64717c}.term-screen:focus{box-shadow:inset 0 0 0 1px rgba(115,209,138,.5)}
+.term-command{display:flex;align-items:center;gap:9px;padding:9px 12px;border-top:1px solid var(--term-line);background:#090d11}.term-command.hidden{display:none}.term-command span{max-width:42%;overflow:hidden;text-overflow:ellipsis;font:12px ui-monospace,monospace;color:var(--term-accent);white-space:nowrap}.term-command input{flex:1;min-width:0;background:#05080b;color:#f3f6f8;border:1px solid #27343e;border-radius:7px;outline:0;padding:7px 9px;font:12px ui-monospace,monospace}.term-command input:focus{border-color:var(--term-accent);box-shadow:0 0 0 3px rgba(115,209,138,.1)}
+.term-footer{min-height:31px;display:flex;align-items:center;gap:12px;padding:5px 12px;border-top:1px solid var(--term-line);background:#0b1015;color:var(--term-muted);font-size:10px}.term-status{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.term-status-dot{width:7px;height:7px;border-radius:50%;background:#6f7a84;box-shadow:0 0 0 3px rgba(111,122,132,.12)}.term-status[data-state=online] .term-status-dot{background:var(--term-accent);box-shadow:0 0 0 3px rgba(115,209,138,.14)}.term-status[data-state=busy] .term-status-dot{background:#e8b45d}.term-status[data-state=error] .term-status-dot{background:#ff7676}.term-shortcuts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.term-footer kbd{padding:1px 5px;border:1px solid #34414b;border-bottom-color:#1b242b;border-radius:4px;background:#121920;color:#cfd7df;font:9px ui-monospace,monospace}.term-cols{white-space:nowrap;font:10px ui-monospace,monospace;color:#aab5bf}
+.term-keys{display:none;gap:5px;align-items:center;overflow:auto;padding:7px;border-top:1px solid var(--term-line);background:#090d11}.term-keys button{border:1px solid #2d3943;background:#121920;color:#eef2f5;border-radius:7px;padding:6px 10px;font-weight:800;white-space:nowrap}
+@media(max-width:900px){.term-head{grid-template-columns:1fr}.term-actions{justify-content:flex-start;overflow:auto;padding-bottom:1px}.term-action-group{flex:0 0 auto}.term-cwd{max-width:82vw}}
+@media(max-width:720px){.term-drawer{left:5px;right:5px;bottom:5px;height:58vh!important;min-height:240px;border-radius:11px}.term-drawer.full{inset:4px}.term-head{padding:7px 8px 8px}.term-mark{display:none}.term-title-row{gap:6px}.term-btn{height:29px;padding:0 8px}.term-btn .term-btn-label{display:none}.term-shortcuts{display:none}.term-keys{display:flex}.terminal-btn .label{display:none}}
 
 """
 
@@ -1748,44 +1754,119 @@ if(grid){
 const term = {
   id:null, mode:null, poll:null, shown:false, started:false,
   cmdHistory:[], cmdIndex:0, commandCwd:'',
-  screen:null
+  screen:null, renderPending:false, composing:false
 };
 function termEl(){return $('#termDrawer')}
 function termScreen(){return $('#termScreen')}
 function termRowsColsEstimate(){
   const scr=termScreen(); if(!scr)return {cols:100,rows:30};
   const cs=getComputedStyle(scr);
-  let cw=8;
+  let cw=7.8;
   try{
-    const span=document.createElement('span');
-    span.textContent='MMMMMMMMMM'; span.style.visibility='hidden'; span.style.position='absolute'; span.style.font=cs.font;
-    document.body.appendChild(span); cw=Math.max(5,span.getBoundingClientRect().width/10); span.remove();
+    const canvas=term.measureCanvas||(term.measureCanvas=document.createElement('canvas'));
+    const ctx=canvas.getContext?.('2d');
+    if(ctx){ctx.font=cs.font;cw=Math.max(5,ctx.measureText('0000000000').width/10);}
+    else{
+      const span=document.createElement('span');
+      span.textContent='0000000000';span.style.visibility='hidden';span.style.position='absolute';span.style.font=cs.font;
+      document.body.appendChild(span);cw=Math.max(5,span.getBoundingClientRect().width/10);span.remove();
+    }
   }catch(e){}
-  const lh=parseFloat(cs.lineHeight)||18;
+  const lh=parseFloat(cs.lineHeight)||19;
   const padX=(parseFloat(cs.paddingLeft)||0)+(parseFloat(cs.paddingRight)||0);
   const padY=(parseFloat(cs.paddingTop)||0)+(parseFloat(cs.paddingBottom)||0);
-  const usableW=Math.max(40,scr.clientWidth-padX);
+  const usableW=Math.max(20,scr.clientWidth-padX);
   const usableH=Math.max(40,scr.clientHeight-padY);
-  return {cols:Math.max(40,Math.floor(usableW/cw)), rows:Math.max(8,Math.floor(usableH/lh))};
+  return {cols:Math.max(20,Math.floor(usableW/cw)),rows:Math.max(6,Math.floor(usableH/lh))};
 }
-function termInitScreen(){ const rc=termRowsColsEstimate(); term.screen={cols:rc.cols, rows:rc.rows, r:0, c:0, lines:[''], saved:null}; }
-function termResetScreen(){termInitScreen(); termRender(true)}
-function termEnsureScreen(){if(!term.screen)termInitScreen(); return term.screen}
-function termEnsureLine(st,r){while(st.lines.length<=r)st.lines.push(''); return st.lines[r]}
-function termSetLine(st,r,line){while(st.lines.length<=r)st.lines.push(''); st.lines[r]=line}
+const TERM_CONT='\x00';
+function termIsCombining(cp){
+  return (cp>=0x0300&&cp<=0x036f)||(cp>=0x1ab0&&cp<=0x1aff)||(cp>=0x1dc0&&cp<=0x1dff)||
+    (cp>=0x20d0&&cp<=0x20ff)||(cp>=0xfe00&&cp<=0xfe0f)||(cp>=0xfe20&&cp<=0xfe2f)||
+    (cp>=0xe0100&&cp<=0xe01ef)||(cp>=0x1f3fb&&cp<=0x1f3ff)||cp===0x200b||cp===0x200c||cp===0x200d||cp===0x2060;
+}
+function termIsWide(cp){
+  return cp>=0x1100&&(
+    cp<=0x115f||cp===0x2329||cp===0x232a||(cp>=0x2e80&&cp<=0xa4cf&&cp!==0x303f)||
+    (cp>=0xac00&&cp<=0xd7a3)||(cp>=0xf900&&cp<=0xfaff)||(cp>=0xfe10&&cp<=0xfe19)||
+    (cp>=0xfe30&&cp<=0xfe6f)||(cp>=0xff00&&cp<=0xff60)||(cp>=0xffe0&&cp<=0xffe6)||
+    (cp>=0x1f300&&cp<=0x1faff)||(cp>=0x20000&&cp<=0x3fffd)
+  );
+}
+function termCharWidth(ch){
+  const cp=ch.codePointAt(0)||0;
+  if(cp===0||cp<32||(cp>=0x7f&&cp<0xa0)||termIsCombining(cp))return 0;
+  return termIsWide(cp)?2:1;
+}
+function termInitScreen(){const rc=termRowsColsEstimate();term.screen={cols:rc.cols,rows:rc.rows,r:0,c:0,lines:[[]],saved:null,joinNext:false};term.renderPending=false;}
+function termResetScreen(){termInitScreen();termRender(true)}
+function termEnsureScreen(){if(!term.screen)termInitScreen();return term.screen}
+function termEnsureLine(st,r){while(st.lines.length<=r)st.lines.push([]);return st.lines[r]}
+function termSetLine(st,r,line){while(st.lines.length<=r)st.lines.push([]);st.lines[r]=line}
+function termClearCell(line,col){
+  if(col<0)return;
+  if(line[col]===TERM_CONT){line[col]=undefined;if(col>0)line[col-1]=undefined;return;}
+  if(line[col+1]===TERM_CONT)line[col+1]=undefined;
+  line[col]=undefined;
+}
+function termFixLine(line){
+  for(let i=0;i<line.length;i++){
+    const cell=line[i];
+    if(cell===TERM_CONT){if(i===0||!line[i-1]||termCharWidth(line[i-1])!==2)line[i]=undefined;continue;}
+    if(cell&&termCharWidth(cell)===2){line[i+1]=TERM_CONT;i++;}
+  }
+  return line;
+}
+function termTrimBuffer(st){
+  const maxLines=Math.max(st.rows*8,Math.ceil(Number(defaults.terminal_max_buffer_chars||500000)/80));
+  if(st.lines.length<=maxLines)return;
+  const drop=st.lines.length-maxLines;st.lines.splice(0,drop);st.r=Math.max(0,st.r-drop);
+}
+function termNewLine(st,resetColumn=true){
+  st.r++;if(resetColumn)st.c=0;st.joinNext=false;
+  termEnsureLine(st,st.r);termTrimBuffer(st);
+}
+function termPreviousCell(st){
+  let r=st.r,c=st.c-1;
+  while(r>=0){
+    const line=termEnsureLine(st,r);c=Math.min(c,line.length-1);
+    while(c>=0&&(line[c]===TERM_CONT||line[c]===undefined))c--;
+    if(c>=0&&line[c])return {line,col:c};
+    r--;if(r>=0)c=termEnsureLine(st,r).length-1;
+  }
+  return null;
+}
+function termAppendCombining(st,ch){
+  const prev=termPreviousCell(st);
+  if(prev)prev.line[prev.col]+=ch;
+  if(ch.codePointAt(0)===0x200d)st.joinNext=true;
+}
 function termPutChar(ch){
   const st=termEnsureScreen();
-  if(ch==='\t'){ const n=8-(st.c%8); for(let i=0;i<n;i++)termPutChar(' '); return; }
-  if(st.c>=st.cols){ st.c=0; st.r++; }
-  if(st.r>=st.lines.length)st.lines.push('');
-  let line=termEnsureLine(st,st.r);
-  if(line.length<st.c)line=line+' '.repeat(st.c-line.length);
-  line=line.slice(0,st.c)+ch+line.slice(st.c+1);
-  termSetLine(st,st.r,line); st.c++;
-  const maxLines=Math.max(st.rows*6, Math.ceil(Number(defaults.terminal_max_buffer_chars||500000)/80));
-  if(st.lines.length>maxLines){ const drop=st.lines.length-maxLines; st.lines.splice(0,drop); st.r=Math.max(0,st.r-drop); }
+  if(ch==='\t'){const n=8-(st.c%8);for(let i=0;i<n;i++)termPutChar(' ');return;}
+  const width=termCharWidth(ch);
+  if(width===0){termAppendCombining(st,ch);return;}
+  if(st.joinNext){
+    const prev=termPreviousCell(st);st.joinNext=false;
+    if(prev){prev.line[prev.col]+=ch;return;}
+  }
+  if(st.c>=st.cols||(width===2&&st.c===st.cols-1))termNewLine(st,true);
+  const line=termEnsureLine(st,st.r);
+  termClearCell(line,st.c);if(width===2)termClearCell(line,st.c+1);
+  line[st.c]=ch;if(width===2)line[st.c+1]=TERM_CONT;
+  st.c+=width;termTrimBuffer(st);
 }
-function termCSI(params, final){
+function termBackspace(st){
+  st.c=Math.max(0,st.c-1);
+  const line=termEnsureLine(st,st.r);
+  if(line[st.c]===TERM_CONT)st.c=Math.max(0,st.c-1);
+}
+function termBlankRange(line,start,end){for(let i=Math.max(0,start);i<Math.max(start,end);i++)termClearCell(line,i);}
+function termNormalizeCursor(st){
+  const line=termEnsureLine(st,st.r);
+  if(st.c>0&&line[st.c]===TERM_CONT)st.c--;
+}
+function termCSI(params,final){
   const st=termEnsureScreen();
   if(params.startsWith('?'))params=params.slice(1);
   const nums=params.split(';').filter(x=>x!=='').map(x=>parseInt(x,10));
@@ -1800,68 +1881,102 @@ function termCSI(params, final){
   else if(final==='H'||final==='f'){st.r=Math.max(0,n(0,1)-1);st.c=Math.max(0,Math.min(st.cols-1,n(1,1)-1));}
   else if(final==='d')st.r=Math.max(0,n(0,1)-1);
   else if(final==='J'){
-    const mode=n(0,0);
-    if(mode===2||mode===3){st.lines=[''];st.r=0;st.c=0;}
-    else if(mode===0){let line=termEnsureLine(st,st.r); termSetLine(st,st.r,line.slice(0,st.c)); st.lines=st.lines.slice(0,st.r+1);}
-    else if(mode===1){for(let i=0;i<st.r;i++)st.lines[i]=''; let line=termEnsureLine(st,st.r); termSetLine(st,st.r,' '.repeat(st.c)+line.slice(st.c));}
+    const mode=n(0,0),line=termEnsureLine(st,st.r);
+    if(mode===2||mode===3){st.lines=[[]];st.r=0;st.c=0;}
+    else if(mode===0){termBlankRange(line,st.c,line.length);st.lines=st.lines.slice(0,st.r+1);}
+    else if(mode===1){for(let i=0;i<st.r;i++)st.lines[i]=[];termBlankRange(line,0,st.c+1);}
   }
   else if(final==='K'){
-    const mode=n(0,0); let line=termEnsureLine(st,st.r);
-    if(mode===0)termSetLine(st,st.r,line.slice(0,st.c));
-    else if(mode===1)termSetLine(st,st.r,' '.repeat(Math.min(st.c,line.length))+line.slice(st.c));
-    else if(mode===2)termSetLine(st,st.r,'');
+    const mode=n(0,0),line=termEnsureLine(st,st.r);
+    if(mode===0)termBlankRange(line,st.c,line.length);
+    else if(mode===1)termBlankRange(line,0,st.c+1);
+    else if(mode===2)termSetLine(st,st.r,[]);
   }
-  else if(final==='P'){ const count=n(0,1); let line=termEnsureLine(st,st.r); termSetLine(st,st.r,line.slice(0,st.c)+line.slice(st.c+count)); }
-  else if(final==='X'){ const count=n(0,1); let line=termEnsureLine(st,st.r); if(line.length<st.c)line+=' '.repeat(st.c-line.length); termSetLine(st,st.r,line.slice(0,st.c)+' '.repeat(count)+line.slice(st.c+count)); }
-  else if(final==='@'){ const count=n(0,1); let line=termEnsureLine(st,st.r); if(line.length<st.c)line+=' '.repeat(st.c-line.length); termSetLine(st,st.r,line.slice(0,st.c)+' '.repeat(count)+line.slice(st.c)); }
-  else if(final==='s'){st.saved={r:st.r,c:st.c};}
+  else if(final==='P'){
+    const count=Math.max(1,n(0,1)),line=termEnsureLine(st,st.r);line.splice(st.c,count);termFixLine(line);
+  }
+  else if(final==='X'){
+    const count=Math.max(1,n(0,1)),line=termEnsureLine(st,st.r);termBlankRange(line,st.c,st.c+count);
+  }
+  else if(final==='@'){
+    const count=Math.max(1,n(0,1)),line=termEnsureLine(st,st.r);line.splice(st.c,0,...Array(count));termFixLine(line);
+  }
+  else if(final==='S'){
+    const count=Math.max(1,n(0,1));st.lines.splice(0,count);while(st.lines.length<=st.r)st.lines.push([]);st.r=Math.max(0,st.r-count);
+  }
+  else if(final==='T'){
+    const count=Math.max(1,n(0,1));st.lines.unshift(...Array.from({length:count},()=>[]));st.r+=count;termTrimBuffer(st);
+  }
+  else if(final==='s')st.saved={r:st.r,c:st.c};
   else if(final==='u'&&st.saved){st.r=st.saved.r;st.c=st.saved.c;}
+  termEnsureLine(st,st.r);termNormalizeCursor(st);
+}
+function termLineText(line){
+  let end=line.length;
+  while(end>0&&(line[end-1]===undefined||line[end-1]===TERM_CONT))end--;
+  let out='';
+  for(let i=0;i<end;i++){
+    const cell=line[i];
+    if(cell===TERM_CONT)continue;
+    out+=cell===undefined?' ':cell;
+  }
+  return out;
 }
 function termRender(forceStick=false){
-  const scr=termScreen(); if(!scr)return;
+  const scr=termScreen();if(!scr)return;
+  if(!forceStick&&termSelectedText()){term.renderPending=true;return;}
   const st=termEnsureScreen();
-  const stick=forceStick || (scr.scrollTop + scr.clientHeight >= scr.scrollHeight - 24);
+  const stick=forceStick||(scr.scrollTop+scr.clientHeight>=scr.scrollHeight-24);
   const maxChars=Number(defaults.terminal_max_buffer_chars||500000);
-  let text=st.lines.join('\n'); if(text.length>maxChars)text=text.slice(-maxChars);
-  scr.textContent=text; if(stick)scr.scrollTop=scr.scrollHeight;
+  let text=st.lines.map(termLineText).join('\n');
+  if(text.length>maxChars){text=text.slice(-maxChars);if(text&&/[\uDC00-\uDFFF]/.test(text[0]))text=text.slice(1);}
+  scr.textContent=text;term.renderPending=false;if(stick)scr.scrollTop=scr.scrollHeight;
 }
 function termAppend(s){
-  const scr=termScreen(); if(!scr||!s)return;
-  const st=termEnsureScreen(); s=String(s);
+  const scr=termScreen();if(!scr||!s)return;
+  const st=termEnsureScreen();s=String(s);
   for(let i=0;i<s.length;i++){
-    const ch=s[i];
+    let ch=s[i];
     if(ch==='\x1b'){
       const next=s[i+1];
       if(next===']'){
-        let end=s.indexOf('\x07',i+2); let end2=s.indexOf('\x1b\\',i+2);
-        if(end<0 || (end2>=0 && end2<end)) end=end2>=0?end2+1:end;
-        i=end>=0?end:s.length-1; continue;
+        let end=s.indexOf('\x07',i+2),end2=s.indexOf('\x1b\\',i+2);
+        if(end<0||(end2>=0&&end2<end))end=end2>=0?end2+1:end;
+        i=end>=0?end:s.length-1;continue;
       }
-      if(next==='['){ let j=i+2; while(j<s.length && !(/[A-Za-z@`~]/.test(s[j])))j++; if(j<s.length){termCSI(s.slice(i+2,j),s[j]); i=j; continue;} }
-      if(next==='7'){st.saved={r:st.r,c:st.c}; i++; continue;}
+      if(next==='['){
+        let j=i+2;while(j<s.length&&(s.charCodeAt(j)<0x40||s.charCodeAt(j)>0x7e))j++;
+        if(j<s.length){termCSI(s.slice(i+2,j),s[j]);i=j;continue;}
+      }
+      if(next==='7'){st.saved={r:st.r,c:st.c};i++;continue;}
       if(next==='8'&&st.saved){st.r=st.saved.r;st.c=st.saved.c;i++;continue;}
-      if(next && '=>()#'.includes(next)){i+=2; continue;}
+      if(next==='D'){termNewLine(st,false);i++;continue;}
+      if(next==='E'){termNewLine(st,true);i++;continue;}
+      if(next==='M'){st.r=Math.max(0,st.r-1);i++;continue;}
+      if(next&&'=>()#'.includes(next)){i+=2;continue;}
       continue;
     }
     if(ch==='\x07')continue;
-    if(ch==='\x0c'){st.lines=[''];st.r=0;st.c=0;continue;}
+    if(ch==='\x0c'){st.lines=[[]];st.r=0;st.c=0;continue;}
     if(ch==='\r'){st.c=0;continue;}
-    if(ch==='\n'){
-      st.r++;
-      st.c=0;
-      if(st.r>=st.lines.length)st.lines.push('');
-      if(st.r>Math.max(st.rows*6,200)){const drop=st.r-Math.max(st.rows*6,200); st.lines.splice(0,drop); st.r-=drop;}
-      continue;
-    }
-    if(ch==='\b'||ch==='\x7f'){st.c=Math.max(0,st.c-1);continue;}
-    if(ch<' ' && ch!=='\t')continue;
+    if(ch==='\n'){termNewLine(st,true);continue;}
+    if(ch==='\b'||ch==='\x7f'){termBackspace(st);continue;}
+    const cp=s.codePointAt(i);ch=String.fromCodePoint(cp);if(ch.length===2)i++;
+    if(cp<32&&ch!=='\t')continue;
     termPutChar(ch);
   }
   termRender(false);
 }
+function termSetConnection(state,label){
+  const el=$('#termStatus');if(!el)return;
+  el.dataset.state=state||'idle';const text=el.querySelector?.('.term-status-text');if(text)text.textContent=label||state||'Idle';
+}
+function termUpdateDimensions(){const rc=termRowsColsEstimate(),el=$('#termCols');if(el)el.textContent=`${rc.cols} × ${rc.rows}`;return rc;}
 function termSetStatus(j){
-  $('#termMode') && ($('#termMode').textContent = j?.mode ? `[${j.mode}${j.tmux_name?' '+j.tmux_name:''}]` : '');
-  $('#termCwd') && ($('#termCwd').textContent = j?.cwd ? j.cwd : '');
+  $('#termMode')&&($('#termMode').textContent=j?.mode?`${j.mode}${j.tmux_name?' · '+j.tmux_name:''}`:'idle');
+  $('#termCwd')&&($('#termCwd').textContent=j?.cwd?j.cwd:'No active session');
+  termSetConnection(j?.alive===false?'error':'online',j?.alive===false?'Session ended':'Connected');
+  termUpdateDimensions();
 }
 async function termApi(path,data){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{})});
@@ -1870,93 +1985,173 @@ async function termApi(path,data){
   return j;
 }
 function termRowsCols(){return termRowsColsEstimate()}
+function termSetHeight(px,save=false){
+  const drawer=termEl();if(!drawer||drawer.classList.contains('full'))return;
+  const min=240,max=Math.max(min,Math.floor(window.innerHeight*.88));
+  const height=Math.max(min,Math.min(Number(px)||Number(defaults.terminal_start_height_px||380),max));
+  drawer.style.height=`${height}px`;
+  if(save){try{localStorage.setItem('lanDriveTerminalHeight',String(Math.round(height)))}catch(e){}}
+  clearTimeout(term.resizeTimer);term.resizeTimer=setTimeout(termResize,60);
+}
+function termRestoreHeight(){
+  let saved=0;try{saved=Number(localStorage.getItem('lanDriveTerminalHeight')||0)}catch(e){}
+  termSetHeight(saved||Number(defaults.terminal_start_height_px||380),false);
+}
 async function openTerminal(forceNew=false){
-  const drawer=termEl(); if(!drawer){toast('Terminal UI không có trên trang này');return}
+  const drawer=termEl();if(!drawer){toast('Terminal UI không có trên trang này');return}
   if(!defaults.terminal_enabled){toast('Terminal đang tắt trong config');return}
-  drawer.classList.add('show'); term.shown=true;
-  if(term.id && !forceNew){termScreen()?.focus();return}
+  drawer.classList.add('show');term.shown=true;termRestoreHeight();termUpdateDimensions();
+  if(term.id&&!forceNew){termScreen()?.focus();return}
+  termSetConnection('busy','Connecting');
   try{
     termAppend('\n[opening terminal...]\n');
     const j=await termApi('/api/term/new',{path:currentPath()});
-    term.id=j.id; term.mode=j.mode; term.started=true; term.commandCwd=j.cwd||''; termSetStatus(j);
-    drawer.classList.toggle('command-mode', term.mode==='command');
-    $('#termCommand')?.classList.toggle('hidden', term.mode!=='command');
-    if(term.mode==='command'){ $('#termPrompt').textContent=(term.commandCwd||'>')+'>'; $('#termLine')?.focus(); }
-    else { termScreen()?.focus(); await termResize(); termPoll(); }
-  }catch(e){termAppend('\n[terminal error: '+e.message+']\n');}
+    term.id=j.id;term.mode=j.mode;term.started=true;term.commandCwd=j.cwd||'';termSetStatus(j);
+    drawer.classList.toggle('command-mode',term.mode==='command');
+    $('#termCommand')?.classList.toggle('hidden',term.mode!=='command');
+    if(term.mode==='command'){$('#termPrompt').textContent=(term.commandCwd||'>')+'>';$('#termLine')?.focus();}
+    else{termScreen()?.focus();await termResize();termPoll();}
+  }catch(e){termSetConnection('error','Connection failed');termAppend('\n[terminal error: '+e.message+']\n');}
 }
-function toggleTerminal(){ const d=termEl(); if(!d)return; if(d.classList.contains('show')){termHide()}else openTerminal(false); }
-function termHide(){termEl()?.classList.remove('show'); term.shown=false;}
-async function newTerminalSession(){ if(term.id){try{await termApi('/api/term/detach',{id:term.id})}catch(e){}} term.id=null; term.mode=null; termResetScreen(); await openTerminal(true); }
+function toggleTerminal(){const d=termEl();if(!d)return;if(d.classList.contains('show'))termHide();else openTerminal(false)}
+function termHide(){termEl()?.classList.remove('show');term.shown=false}
+async function newTerminalSession(){
+  if(term.id){try{await termApi('/api/term/detach',{id:term.id})}catch(e){}}
+  clearInterval(term.poll);term.id=null;term.mode=null;termResetScreen();termSetConnection('busy','Opening session');await openTerminal(true);
+}
 function termPoll(){
   clearInterval(term.poll);
   const ms=Number(defaults.terminal_poll_ms||150);
   async function once(){
-    if(!term.id || term.mode==='command')return;
+    if(!term.id||term.mode==='command')return;
     try{
       const r=await fetch('/api/term/read?id='+encodeURIComponent(term.id));
       const j=await r.json();
-      if(j.error){clearInterval(term.poll);term.poll=null;term.id=null;termAppend('\n[terminal session lost: '+j.error+']\n[Ấn New để mở session mới.]\n'); return}
-      termSetStatus(j);
-      if(j.data)termAppend(j.data);
-      if(j.alive===false){termAppend('\n[terminal detached]\n');clearInterval(term.poll)}
-    }catch(e){}
+      if(!r.ok||j.error){clearInterval(term.poll);term.poll=null;term.id=null;termSetConnection('error','Session lost');termAppend('\n[terminal session lost: '+(j.error||`HTTP ${r.status}`)+']\n[Ấn New để mở session mới.]\n');return}
+      termSetStatus(j);if(j.data)termAppend(j.data);
+      if(j.alive===false){termSetConnection('error','Session ended');termAppend('\n[terminal detached]\n');clearInterval(term.poll)}
+    }catch(e){termSetConnection('error','Read failed')}
   }
-  once(); term.poll=setInterval(once, ms);
+  once();term.poll=setInterval(once,ms);
 }
-async function termSend(data){ if(!term.id){await openTerminal(false)} if(term.mode==='command')return; try{await termApi('/api/term/input',{id:term.id,data})}catch(e){termAppend('\n[input error: '+e.message+']\n')}}
-function termSendCtrl(ch){ const code=ch.toLowerCase().charCodeAt(0)-96; if(code>0&&code<27)termSend(String.fromCharCode(code));}
+async function termSend(data){
+  if(!term.id)await openTerminal(false);
+  if(!term.id||term.mode==='command')return;
+  try{await termApi('/api/term/input',{id:term.id,data})}
+  catch(e){termSetConnection('error','Input failed');termAppend('\n[input error: '+e.message+']\n')}
+}
+function termSendCtrl(ch){const code=ch.toLowerCase().charCodeAt(0)-96;if(code>0&&code<27)termSend(String.fromCharCode(code))}
+function termFocusInput(){const target=term.mode==='command'?$('#termLine'):termScreen();target?.focus()}
 function termSelectedText(){const scr=termScreen(),sel=window.getSelection?.();if(!scr||!sel||sel.isCollapsed)return'';const a=sel.anchorNode,f=sel.focusNode;if((a&&scr.contains(a))||(f&&scr.contains(f)))return sel.toString();return''}
-async function termWriteClipboardText(text){try{await navigator.clipboard.writeText(text);return true}catch(e){try{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();const ok=document.execCommand('copy');ta.remove();return !!ok}catch(_){return false}}}
+async function termWriteClipboardText(text){
+  try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(text);return true}}
+  catch(e){}
+  try{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();const ok=document.execCommand('copy');ta.remove();return !!ok}catch(e){return false}
+}
 async function termReadClipboardText(){try{if(navigator.clipboard?.readText)return await navigator.clipboard.readText()}catch(e){}return''}
-async function termCopySelectionOrOutput(){const selected=termSelectedText();const text=selected||termScreen()?.textContent||'';if(!text)return false;const ok=await termWriteClipboardText(text);if(ok)toast(selected?'Đã copy selection':'Đã copy terminal output');else toast('Không copy được');return ok}
-async function termPasteClipboard(){let text=await termReadClipboardText();if(!text){text=prompt('Browser chặn đọc clipboard. Dán nội dung cần paste vào đây:','')||''}if(!text)return false;await termSend(text);return true}
-async function termResize(){ const rc=termRowsCols(); if(term.screen){term.screen.cols=rc.cols; term.screen.rows=rc.rows; termRender(true);} if(!term.id||term.mode==='command')return; try{await termApi('/api/term/resize',{id:term.id,...rc})}catch(e){}}
-async function termDetach(){ if(!term.id)return; try{await termApi('/api/term/detach',{id:term.id})}catch(e){} clearInterval(term.poll); term.id=null; termAppend('\n[detached]\n'); }
-async function termKill(){ if(!term.id)return; if(!confirm('Kill terminal/session này? Với tmux, lệnh này kill cả tmux session.'))return; try{await termApi('/api/term/kill',{id:term.id})}catch(e){} clearInterval(term.poll); term.id=null; termAppend('\n[killed]\n'); }
-function termClear(){ termResetScreen(); if(term.id&&term.mode!=='command')termSend('\x0c');}
+async function termCopySelectionOrOutput(){
+  const selected=termSelectedText(),text=selected||termScreen()?.textContent||'';if(!text)return false;
+  const ok=await termWriteClipboardText(text);toast(ok?(selected?'Đã copy selection':'Đã copy terminal output'):'Không copy được');termFocusInput();return ok;
+}
+async function termPasteClipboard(){
+  let text=await termReadClipboardText();if(!text)text=prompt('Browser chặn đọc clipboard. Dán nội dung cần paste vào đây:','')||'';if(!text)return false;
+  if(term.mode==='command'){
+    const input=$('#termLine');if(!input)return false;
+    const start=Number.isInteger(input.selectionStart)?input.selectionStart:input.value.length;
+    const end=Number.isInteger(input.selectionEnd)?input.selectionEnd:start;
+    if(typeof input.setRangeText==='function')input.setRangeText(text,start,end,'end');else input.value=input.value.slice(0,start)+text+input.value.slice(end);
+    input.focus();return true;
+  }
+  await termSend(text);termFocusInput();return true;
+}
+async function termResize(){
+  const rc=termUpdateDimensions();
+  if(term.screen){term.screen.cols=rc.cols;term.screen.rows=rc.rows;termRender(true)}
+  if(!term.id||term.mode==='command')return;
+  try{await termApi('/api/term/resize',{id:term.id,...rc})}catch(e){termSetConnection('error','Resize failed')}
+}
+async function termDetach(){if(!term.id)return;try{await termApi('/api/term/detach',{id:term.id})}catch(e){}clearInterval(term.poll);term.id=null;termSetConnection('idle','Detached');termAppend('\n[detached]\n')}
+async function termKill(){if(!term.id)return;if(!confirm('Kill terminal/session này? Với tmux, lệnh này kill cả tmux session.'))return;try{await termApi('/api/term/kill',{id:term.id})}catch(e){}clearInterval(term.poll);term.id=null;termSetConnection('error','Killed');termAppend('\n[killed]\n')}
+function termClear(){termResetScreen();if(term.id&&term.mode!=='command')termSend('\x0c')}
 async function termCopy(){await termCopySelectionOrOutput()}
-function termStartTmux(){ const cmd='tmux new-session -A -s landrive'; if(term.mode==='command'){termRunCommand(cmd);return;} termSend(cmd+'\r'); }
-function termFullscreen(){termEl()?.classList.toggle('full'); setTimeout(termResize,120)}
+function termStartTmux(){const cmd='tmux new-session -A -s landrive';if(term.mode==='command'){termRunCommand(cmd);return}termSend(cmd+'\r')}
+function termFullscreen(){const drawer=termEl();if(!drawer)return;drawer.classList.toggle('full');setTimeout(termResize,120)}
 async function termRunCommand(cmd){
   if(!cmd.trim())return;
-  term.cmdHistory.push(cmd); term.cmdIndex=term.cmdHistory.length;
+  term.cmdHistory.push(cmd);term.cmdIndex=term.cmdHistory.length;termSetConnection('busy','Running command');
   termAppend(($('#termPrompt')?.textContent||'>')+' '+cmd+'\n');
   try{
     const j=await termApi('/api/term/run',{id:term.id,cmd});
     if(j.output)termAppend(j.output);
-    term.commandCwd=j.cwd||term.commandCwd; $('#termPrompt').textContent=term.commandCwd+'>';
-  }catch(e){termAppend('[command error: '+e.message+']\n')}
+    term.commandCwd=j.cwd||term.commandCwd;$('#termPrompt').textContent=term.commandCwd+'>';termSetStatus({mode:term.mode,cwd:term.commandCwd,alive:true});
+  }catch(e){termSetConnection('error','Command failed');termAppend('[command error: '+e.message+']\n')}
 }
-document.addEventListener('keydown', async e=>{
+document.addEventListener('keydown',async e=>{
   const active=document.activeElement;
-  const inEditor=active && ['INPUT','TEXTAREA'].includes(active.tagName) && active.id!=='termLine';
-  if((e.ctrlKey||e.metaKey) && e.key==='`'){e.preventDefault();toggleTerminal();return}
+  const inEditor=active&&['INPUT','TEXTAREA'].includes(active.tagName)&&active.id!=='termLine';
+  if((e.ctrlKey||e.metaKey)&&e.key==='`'){e.preventDefault();toggleTerminal();return}
   if(!termEl()?.classList.contains('show'))return;
-  if(e.key==='Escape' && termEl()?.classList.contains('full')){e.preventDefault();termEl().classList.remove('full');setTimeout(termResize,80);return}
-  if(inEditor || term.mode==='command' || active!==termScreen())return;
+  if(e.key==='Escape'&&termEl()?.classList.contains('full')){e.preventDefault();termEl().classList.remove('full');termRestoreHeight();setTimeout(termResize,80);return}
+  if(inEditor||term.mode==='command'||active!==termScreen()||e.isComposing||term.composing)return;
   if(e.ctrlKey||e.metaKey){
     const k=e.key.toLowerCase();
-    if(k==='c'){e.preventDefault();if(termSelectedText()){await termCopySelectionOrOutput();return}termSendCtrl('c');return}
-    if(k==='v'){return}
+    if(k==='c'){
+      if(termSelectedText())return;
+      e.preventDefault();termSendCtrl('c');return;
+    }
+    if(k==='v')return;
     if(k==='d'){e.preventDefault();termSendCtrl('d');return}
     if(k==='l'){e.preventDefault();termClear();return}
   }
-  if(e.altKey && e.key==='Enter'){e.preventDefault();termFullscreen();return}
-  if(e.key==='Backspace' || e.code==='Backspace'){e.preventDefault();termSend('\x7f');return}
-  if(e.key==='Delete' || e.code==='Delete'){e.preventDefault();termSend('\x1b[3~');return}
-  const map={Enter:'\r',Tab:'\t',Escape:'\x1b',ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D',Home:'\x1b[H',End:'\x1b[F',PageUp:'\x1b[5~',PageDown:'\x1b[6~'};
+  if(e.altKey&&e.key==='Enter'){e.preventDefault();termFullscreen();return}
+  if(e.key==='Backspace'||e.code==='Backspace'){e.preventDefault();termSend('\x7f');return}
+  if(e.key==='Delete'||e.code==='Delete'){e.preventDefault();termSend('\x1b[3~');return}
+  const map={Enter:'\r',Tab:'\t',Escape:'\x1b',ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D',Home:'\x1b[H',End:'\x1b[F',PageUp:'\x1b[5~',PageDown:'\x1b[6~',Insert:'\x1b[2~'};
   if(map[e.key]){e.preventDefault();termSend(map[e.key]);return}
-  if(e.key.length===1 && !e.metaKey && !e.altKey){e.preventDefault();termSend(e.key)}
+  if(e.key.length===1&&!e.metaKey&&!e.altKey){e.preventDefault();termSend(e.key)}
 });
-termScreen()?.addEventListener('paste',e=>{if(term.mode==='command')return;e.preventDefault();const t=(e.clipboardData||window.clipboardData).getData('text');termSend(t)});
-termScreen()?.addEventListener('copy',async e=>{const t=termSelectedText();if(!t)return;e.preventDefault();e.clipboardData?.setData('text/plain',t);if(!e.clipboardData)await termWriteClipboardText(t)});
+const terminalScreen=termScreen();
+terminalScreen?.addEventListener('paste',e=>{
+  if(term.mode==='command')return;
+  e.preventDefault();const t=(e.clipboardData||window.clipboardData)?.getData('text')||'';if(t)termSend(t);
+});
+terminalScreen?.addEventListener('copy',e=>{
+  const t=termSelectedText();if(!t||!e.clipboardData)return;
+  e.preventDefault();e.clipboardData.setData('text/plain',t);
+});
+terminalScreen?.addEventListener('beforeinput',e=>{
+  if(term.mode==='command')return;
+  e.preventDefault();
+  if(!term.composing&&e.inputType==='insertText'&&e.data)termSend(e.data);
+});
+terminalScreen?.addEventListener('compositionstart',()=>{term.composing=true});
+terminalScreen?.addEventListener('compositionend',e=>{term.composing=false;if(e.data)termSend(e.data);termRender(true)});
+document.addEventListener('selectionchange',()=>{if(term.renderPending&&!termSelectedText())termRender(false)});
 $('#termLine')?.addEventListener('keydown',e=>{
   if(e.key==='Enter'){const v=e.target.value;e.target.value='';termRunCommand(v)}
-  else if(e.key==='ArrowUp'){e.preventDefault(); if(term.cmdHistory.length){term.cmdIndex=Math.max(0,term.cmdIndex-1); e.target.value=term.cmdHistory[term.cmdIndex]||''}}
-  else if(e.key==='ArrowDown'){e.preventDefault(); term.cmdIndex=Math.min(term.cmdHistory.length,term.cmdIndex+1); e.target.value=term.cmdHistory[term.cmdIndex]||''}
+  else if(e.key==='ArrowUp'){e.preventDefault();if(term.cmdHistory.length){term.cmdIndex=Math.max(0,term.cmdIndex-1);e.target.value=term.cmdHistory[term.cmdIndex]||''}}
+  else if(e.key==='ArrowDown'){e.preventDefault();term.cmdIndex=Math.min(term.cmdHistory.length,term.cmdIndex+1);e.target.value=term.cmdHistory[term.cmdIndex]||''}
 });
-window.addEventListener('resize',()=>{clearTimeout(window.__termResizeTimer);window.__termResizeTimer=setTimeout(termResize,250)});
+function termInitResize(){
+  const handle=$('#termResizeHandle'),drawer=termEl();if(!handle||!drawer)return;
+  let startY=0,startHeight=0;
+  const move=e=>{if(!startHeight)return;e.preventDefault();termSetHeight(startHeight+(startY-e.clientY),false)};
+  const stop=e=>{
+    if(!startHeight)return;
+    try{handle.releasePointerCapture?.(e.pointerId)}catch(_){}
+    handle.classList.remove('dragging');startHeight=0;termSetHeight(drawer.getBoundingClientRect().height,true);
+    window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',stop);
+  };
+  handle.addEventListener('pointerdown',e=>{
+    if(drawer.classList.contains('full'))return;
+    e.preventDefault();startY=e.clientY;startHeight=drawer.getBoundingClientRect().height;handle.classList.add('dragging');
+    try{handle.setPointerCapture?.(e.pointerId)}catch(_){}
+    window.addEventListener('pointermove',move);window.addEventListener('pointerup',stop);
+  });
+}
+termInitResize();
+if(window.ResizeObserver&&termEl())new ResizeObserver(()=>{clearTimeout(term.observeResizeTimer);term.observeResizeTimer=setTimeout(termResize,100)}).observe(termEl());
+window.addEventListener('resize',()=>{clearTimeout(window.__termResizeTimer);window.__termResizeTimer=setTimeout(()=>{termRestoreHeight();termResize()},180)});
 
 """
 
@@ -2493,15 +2688,29 @@ def terminal_run_command(sess: TerminalSession, cmd: str) -> Dict[str, Any]:
         timeout = 0
     try:
         shell_windows = str(CONFIG.terminal_shell_windows or "powershell").lower()
+        output_encoding: Optional[str] = None
         if os.name == "nt" and "cmd" not in shell_windows:
-            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd]
+            # Windows PowerShell inherits a legacy console code page when stdout is
+            # redirected. Force UTF-8 before running the user's command so file
+            # names, CJK text and symbols survive the API round trip unchanged.
+            utf8_prefix = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+            argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", utf8_prefix + cmd]
             if not shutil.which("powershell") and shutil.which("pwsh"):
                 argv[0] = "pwsh"
+            output_encoding = "utf-8"
         elif os.name == "nt":
-            argv = ["cmd", "/C", cmd]
+            argv = ["cmd", "/D", "/S", "/C", cmd]
         else:
             argv = [str(CONFIG.terminal_shell_linux or "/bin/sh"), "-lc", cmd]
-        r = subprocess.run(argv, cwd=str(sess.cwd), capture_output=True, text=True, timeout=timeout if timeout > 0 else None, errors="replace")
+        r = subprocess.run(
+            argv,
+            cwd=str(sess.cwd),
+            capture_output=True,
+            text=True,
+            encoding=output_encoding,
+            timeout=timeout if timeout > 0 else None,
+            errors="replace",
+        )
         output = (r.stdout or "") + (r.stderr or "")
         if len(output) > int(CONFIG.terminal_max_buffer_chars):
             output = output[-int(CONFIG.terminal_max_buffer_chars):]
@@ -3334,26 +3543,44 @@ class Handler(SimpleHTTPRequestHandler):
     <div class="upload-foot"><div id="uploadSummary" class="upload-summary">0 file</div><div class="upload-progress"><span id="uploadModalBar"></span></div><button class="btn ghost" onclick="clearUploadQueue()">Clear</button><button class="btn primary" onclick="startUploadQueue()">Start Upload</button></div>
   </div>
 </div>
-<div id="termDrawer" class="term-drawer" style="height:{int(CONFIG.terminal_start_height_px)}px">
+<div id="termDrawer" class="term-drawer" style="height:{int(CONFIG.terminal_start_height_px)}px" role="region" aria-label="Terminal">
+  <div id="termResizeHandle" class="term-resize-handle" title="Kéo để đổi chiều cao terminal" aria-hidden="true"></div>
   <div class="term-head">
-    <div class="term-title">⌨️ Terminal <span id="termMode" class="term-mode"></span><span id="termCwd" class="term-cwd"></span></div>
+    <div class="term-identity">
+      <div class="term-mark" aria-hidden="true">&gt;_</div>
+      <div class="term-title-wrap">
+        <div class="term-title-row"><span class="term-title">Terminal</span><span id="termMode" class="term-mode">idle</span></div>
+        <div id="termCwd" class="term-cwd">No active session</div>
+      </div>
+    </div>
     <div class="term-actions">
-      <button class="btn small" onclick="newTerminalSession()">New</button>
-      <button class="btn small" onclick="termStartTmux()">tmux</button>
-      <button class="btn small" onclick="termClear()">Clear</button>
-      <button class="btn small" onclick="termCopy()" title="Copy selection hoặc toàn bộ terminal output">Copy</button>
-      <button class="btn small" onclick="termPasteClipboard()" title="Paste clipboard vào terminal">Paste</button>
-      <button class="btn small" onclick="refreshFolder()">Refresh</button>
-      <button class="btn small" onclick="termFullscreen()">⛶</button>
-      <button class="btn small warn" onclick="termDetach()">Detach</button>
-      <button class="btn small danger" onclick="termKill()">Kill</button>
-      <button class="btn small" onclick="termHide()">✕</button>
+      <div class="term-action-group">
+        <button class="term-btn" onclick="newTerminalSession()" title="Mở terminal session mới"><span aria-hidden="true">＋</span> <span class="term-btn-label">New</span></button>
+        <button class="term-btn" onclick="termCopy()" title="Copy selection; nếu chưa chọn thì copy toàn bộ output"><span aria-hidden="true">⧉</span> <span class="term-btn-label">Copy</span></button>
+        <button class="term-btn" onclick="termPasteClipboard()" title="Paste clipboard vào terminal"><span aria-hidden="true">▣</span> <span class="term-btn-label">Paste</span></button>
+        <button class="term-btn" onclick="termClear()" title="Xóa màn hình terminal"><span aria-hidden="true">⌫</span> <span class="term-btn-label">Clear</span></button>
+      </div>
+      <div class="term-action-group">
+        <button class="term-btn" onclick="termStartTmux()" title="Mở hoặc attach tmux session"><span aria-hidden="true">T</span> <span class="term-btn-label">tmux</span></button>
+        <button class="term-btn" onclick="refreshFolder()" title="Refresh danh sách file"><span aria-hidden="true">↻</span> <span class="term-btn-label">Files</span></button>
+      </div>
+      <div class="term-action-group">
+        <button class="term-btn icon" onclick="termFullscreen()" title="Toàn màn hình (Alt+Enter)" aria-label="Toàn màn hình">⛶</button>
+        <button class="term-btn warn" onclick="termDetach()" title="Detach nhưng giữ tmux session"><span aria-hidden="true">↗</span> <span class="term-btn-label">Detach</span></button>
+        <button class="term-btn danger" onclick="termKill()" title="Dừng terminal session"><span aria-hidden="true">■</span> <span class="term-btn-label">Kill</span></button>
+        <button class="term-btn icon" onclick="termHide()" title="Đóng terminal" aria-label="Đóng terminal">×</button>
+      </div>
     </div>
   </div>
-  <pre id="termScreen" class="term-screen" tabindex="0" contenteditable="true" spellcheck="false" autocapitalize="off" autocomplete="off"></pre>
-  <div id="termCommand" class="term-command hidden"><span id="termPrompt"></span><input id="termLine" autocomplete="off" spellcheck="false" placeholder="gõ lệnh rồi Enter"></div>
+  <pre id="termScreen" class="term-screen" tabindex="0" contenteditable="plaintext-only" role="textbox" aria-label="Terminal output và input" aria-multiline="true" spellcheck="false" autocapitalize="off" autocomplete="off"></pre>
+  <div id="termCommand" class="term-command hidden"><span id="termPrompt"></span><input id="termLine" autocomplete="off" spellcheck="false" aria-label="Command" placeholder="Nhập lệnh rồi nhấn Enter"></div>
   <div id="termKeys" class="term-keys">
-    <button onclick="termSendCtrl('c')">Ctrl-C</button><button onclick="termSend('\x7f')">⌫</button><button onclick="termSend('\t')">Tab</button><button onclick="termSend('\x1b[A')">↑</button><button onclick="termSend('\x1b[B')">↓</button><button onclick="termSend('\x1b')">Esc</button><button onclick="termSend('/')">/</button><button onclick="termSend('..')">..</button>
+    <button onclick="termSendCtrl('c')">Ctrl-C</button><button onclick="termSend('\x7f')">⌫</button><button onclick="termSend('\t')">Tab</button><button onclick="termSend('\x1b[A')">↑</button><button onclick="termSend('\x1b[B')">↓</button><button onclick="termSend('\x1b[D')">←</button><button onclick="termSend('\x1b[C')">→</button><button onclick="termSend('\x1b')">Esc</button><button onclick="termSend('/')">/</button><button onclick="termSend('..')">..</button>
+  </div>
+  <div class="term-footer">
+    <span id="termStatus" class="term-status" data-state="idle"><span class="term-status-dot" aria-hidden="true"></span><span class="term-status-text">Idle</span></span>
+    <span class="term-shortcuts"><kbd>Ctrl+C</kbd> copy khi có selection · interrupt khi không chọn · <kbd>Ctrl+V</kbd> paste · <kbd>Alt+Enter</kbd> fullscreen</span>
+    <span id="termCols" class="term-cols">— × —</span>
   </div>
 </div>
 <div id="ctxMenu" class="ctx-menu hidden" onclick="event.stopPropagation()">
