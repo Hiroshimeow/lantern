@@ -4,6 +4,8 @@ A one-file web file manager for your LAN or Tailscale network.
 
 It lets you browse, preview, upload, edit, download, stream, and manage files from a browser — because emailing files to yourself in 2026 would be embarrassing.
 
+<img width="2535" height="1450" alt="{FE52BE8D-0285-4C21-8380-FC5BD22036B2}" src="https://github.com/user-attachments/assets/22a7fee0-93c2-4e62-9301-ca210cfc2ae9" />
+
 ## What it does
 
 - Browse folders in grid or list view with breadcrumbs, sorting, quick search, and recursive search.
