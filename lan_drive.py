@@ -28,7 +28,7 @@ Tính năng chính:
   - Rename, delete, download file, download nhiều file/folder dạng zip stream
   - Share link đơn giản: copy URL trực tiếp tới file/thư mục trong LAN/Tailscale
   - Không cần tài khoản, không DB, không Docker, không framework ngoài stdlib
-  - Terminal drawer: Linux ưu tiên tmux + PTY thật, fallback PTY; Windows command mode cơ bản
+  - Terminal drawer: xterm.js + WebSocket, PTY thật trên Unix và ConPTY trên Windows; Git/SCM tích hợp
   - Nếu có Pillow thì thumbnail ảnh đẹp hơn; nếu có ffmpeg thì thumbnail video tốt hơn
 
 Lưu ý: File này được thiết kế cho LAN/Tailscale tin cậy. Không phơi thẳng ra Internet.
@@ -69,6 +69,9 @@ try:
 except Exception:
     LAN_PLUGIN = None  # lan_drive.py must remain standalone
 from http.server import SimpleHTTPRequestHandler
+from lantern_terminal import TerminalManager
+from lantern_scm import ScmService
+from lantern_ws import WebSocketHub, upgrade as upgrade_websocket
 
 try:
     from PIL import Image, ImageOps  # type: ignore
@@ -149,20 +152,8 @@ class AppConfig:
     folders_first: bool = True
     search_debounce_ms: int = 240
     terminal_enabled: bool = True
-    terminal_backend_linux: str = "pty"
-    terminal_backend_linux_fallback: str = "pty"
-    terminal_shell_linux: str = "/bin/bash"
-    terminal_tmux_bin: str = "tmux"
-    terminal_tmux_session_prefix: str = "landrive"
-    terminal_tmux_status_bar: bool = False
-    terminal_session_mode: str = "per_folder"
-    terminal_backend_windows: str = "command"
-    terminal_shell_windows: str = "powershell"
-    terminal_command_timeout: int = 0
-    terminal_max_sessions: int = 8
-    terminal_idle_detach_minutes: int = 120
-    terminal_max_buffer_chars: int = 500000
-    terminal_poll_ms: int = 150
+    terminal_max_sessions: int = 16
+    terminal_max_buffer_chars: int = 204800
     terminal_start_height_px: int = 380
     terminal_mobile_extra_keys: bool = True
     thumb_fit: str = "contain"
@@ -225,20 +216,8 @@ DEFAULT_CONFIG_DATA: Dict[str, Any] = {
     "folders_first": True,
     "search_debounce_ms": 240,
     "terminal_enabled": True,
-    "terminal_backend_linux": "pty",
-    "terminal_backend_linux_fallback": "pty",
-    "terminal_shell_linux": "/bin/bash",
-    "terminal_tmux_bin": "tmux",
-    "terminal_tmux_session_prefix": "landrive",
-    "terminal_tmux_status_bar": False,
-    "terminal_session_mode": "per_folder",
-    "terminal_backend_windows": "command",
-    "terminal_shell_windows": "powershell",
-    "terminal_command_timeout": 0,
-    "terminal_max_sessions": 8,
-    "terminal_idle_detach_minutes": 120,
-    "terminal_max_buffer_chars": 500000,
-    "terminal_poll_ms": 150,
+    "terminal_max_sessions": 16,
+    "terminal_max_buffer_chars": 204800,
     "terminal_start_height_px": 380,
     "terminal_mobile_extra_keys": True,
     "thumb_fit": "contain",
@@ -323,20 +302,8 @@ def config_to_dict(cfg: "AppConfig") -> Dict[str, Any]:
         "folders_first": cfg.folders_first,
         "search_debounce_ms": cfg.search_debounce_ms,
         "terminal_enabled": cfg.terminal_enabled,
-        "terminal_backend_linux": cfg.terminal_backend_linux,
-        "terminal_backend_linux_fallback": cfg.terminal_backend_linux_fallback,
-        "terminal_shell_linux": cfg.terminal_shell_linux,
-        "terminal_tmux_bin": cfg.terminal_tmux_bin,
-        "terminal_tmux_session_prefix": cfg.terminal_tmux_session_prefix,
-        "terminal_tmux_status_bar": cfg.terminal_tmux_status_bar,
-        "terminal_session_mode": cfg.terminal_session_mode,
-        "terminal_backend_windows": cfg.terminal_backend_windows,
-        "terminal_shell_windows": cfg.terminal_shell_windows,
-        "terminal_command_timeout": cfg.terminal_command_timeout,
         "terminal_max_sessions": cfg.terminal_max_sessions,
-        "terminal_idle_detach_minutes": cfg.terminal_idle_detach_minutes,
         "terminal_max_buffer_chars": cfg.terminal_max_buffer_chars,
-        "terminal_poll_ms": cfg.terminal_poll_ms,
         "terminal_start_height_px": cfg.terminal_start_height_px,
         "terminal_mobile_extra_keys": cfg.terminal_mobile_extra_keys,
         "thumb_fit": cfg.thumb_fit,
@@ -366,11 +333,8 @@ def write_config_file(cfg: "AppConfig") -> None:
         "root", "port", "host", "title", "cache_dir",
         "show_hidden", "show_system", "default_sort", "default_view",
         "page_limit", "folders_first", "search_debounce_ms",
-        "terminal_enabled", "terminal_backend_linux", "terminal_backend_linux_fallback",
-        "terminal_shell_linux", "terminal_tmux_bin", "terminal_tmux_session_prefix",
-        "terminal_tmux_status_bar", "terminal_session_mode", "terminal_backend_windows", "terminal_shell_windows",
-        "terminal_command_timeout", "terminal_max_sessions", "terminal_idle_detach_minutes", "terminal_max_buffer_chars",
-        "terminal_poll_ms", "terminal_start_height_px", "terminal_mobile_extra_keys",
+        "terminal_enabled", "terminal_max_sessions", "terminal_max_buffer_chars",
+        "terminal_start_height_px", "terminal_mobile_extra_keys",
         "thumb_fit", "folder_preview_enabled", "folder_preview_mode", "folder_preview_fit",
         "folder_preview_rotate", "folder_preview_animation", "folder_preview_interval_ms",
         "folder_preview_scan_limit", "folder_preview_max_items", "folder_preview_include_video",
@@ -1212,15 +1176,7 @@ body.thumb-cover .folder-mosaic img{object-fit:cover;background:#000}
 .view-list:not(.preview-pane) .browser-area{display:block}.view-list:not(.preview-pane) .side-preview{display:none}.preview-pane .browser-area{display:grid;grid-template-columns:minmax(420px,1fr) minmax(360px,.85fr);gap:12px;align-items:start}.preview-pane .side-preview{display:flex;position:sticky;top:118px;min-height:62vh;height:calc(100vh - 132px);max-height:calc(100vh - 132px);border:1px solid rgba(255,255,255,.1);border-radius:16px;background:#0b1018;overflow:hidden;flex-direction:column}.side-title{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.side-title-text{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.side-nav{display:inline-flex;gap:5px}.side-nav button{width:28px;height:26px;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:#151c28;color:#f8fafc;cursor:pointer;font-weight:900}.side-nav button:hover{background:#243044}.side-body{position:relative;overflow:hidden;display:block;background:#000}.side-content{width:100%;height:100%;display:grid;place-items:center;overflow:hidden}.side-media{width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;background:#000}.side-frame{width:100%;height:100%;border:0;background:#080a0f}.side-frame,.side-text{overflow:auto}.side-text{display:block}.preview-pane .side-preview{height:calc(100dvh - 132px)!important;max-height:calc(100dvh - 132px)!important;overflow:hidden!important}.side-body{flex:1!important;min-height:0!important;position:relative!important;overflow:hidden!important;display:block!important}.side-content{position:absolute!important;inset:0!important;width:auto!important;height:auto!important;display:grid!important;place-items:center!important;overflow:hidden!important}.side-content.doc,.side-content.text{display:block!important;overflow:auto!important}.side-fit-bg{position:absolute!important;inset:0!important;background-color:#000!important;background-repeat:no-repeat!important;background-position:center center!important;background-size:contain!important}.side-video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;display:block!important;background:#000}.side-frame{width:100%!important;height:100%!important}.side-text{min-height:100%;width:100%;height:auto}.side-arrow{position:absolute;top:50%;transform:translateY(-50%);z-index:5;width:42px;height:58px;border:1px solid rgba(255,255,255,.16);border-radius:14px;background:rgba(8,12,18,.58);color:#fff;font-size:34px;font-weight:900;cursor:pointer;opacity:0;transition:.12s}.side-body:hover .side-arrow{opacity:1}.side-arrow:hover{background:rgba(24,32,44,.88)}.side-prev{left:10px}.side-next{right:10px}.side-audio{width:92%;align-self:center}.grid:not(.list) .check{z-index:12;pointer-events:auto}.grid:not(.list) .check:hover,.grid.list .check:hover{border-color:var(--accent);box-shadow:0 0 0 3px rgba(104,227,122,.13)}.card.selected .check{background:var(--accent)!important;color:#061007!important;border-color:var(--accent)!important}.card.selected .check:after{content:'✓';font-weight:950}.btn.active,#previewPaneBtn.active{background:#243044;border-color:rgba(104,227,122,.45);color:#fff}body.thumb-contain .grid:not(.list) .thumb,body.thumb-contain .grid:not(.list) .folder-mosaic img{object-fit:contain!important;background:#000!important}body.thumb-cover .grid:not(.list) .thumb,body.thumb-cover .grid:not(.list) .folder-mosaic img{object-fit:cover!important;background:#000!important}@media(max-width:900px){.preview-pane .browser-area{grid-template-columns:1fr}.preview-pane .side-preview{position:static;height:55vh;min-height:300px;max-height:55vh}}
 
 .download-choice-backdrop{position:fixed;inset:0;z-index:240;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}.download-choice-box{width:min(430px,94vw);background:#0d1118;border:1px solid rgba(255,255,255,.14);border-radius:20px;box-shadow:var(--shadow);padding:16px;display:flex;flex-direction:column;gap:12px}.download-choice-title{font-weight:850;font-size:16px}.download-choice-desc{color:var(--muted);line-height:1.45}.download-choice-actions{display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.side-video-fit{position:absolute!important;inset:0!important;display:grid!important;place-items:center!important;background:#000!important;overflow:hidden!important}.side-video-fit video,.side-video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important;display:block!important;background:#000!important}
-.term-drawer{--term-bg:#070a0d;--term-panel:#0d1218;--term-line:#25303a;--term-text:#e8edf2;--term-muted:#8e9aa6;--term-accent:#73d18a;position:fixed;left:14px;right:14px;bottom:14px;z-index:80;display:none;flex-direction:column;min-height:260px;max-height:88vh;background:var(--term-bg);border:1px solid var(--term-line);border-radius:14px;box-shadow:0 26px 90px rgba(0,0,0,.66);overflow:hidden;isolation:isolate}
-.term-drawer.show{display:flex}.term-drawer.full{inset:8px;height:auto!important;max-height:none}.term-resize-handle{height:9px;flex:0 0 9px;cursor:ns-resize;background:#0a0e12;position:relative;touch-action:none}.term-resize-handle:after{content:"";position:absolute;left:50%;top:3px;translate:-50% 0;width:44px;height:3px;border-radius:999px;background:#34424d}.term-resize-handle:hover:after,.term-resize-handle.dragging:after{background:var(--term-accent)}
-.term-head{min-height:56px;display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:12px;align-items:center;padding:8px 10px 8px 14px;background:linear-gradient(180deg,#111820,#0c1117);border-bottom:1px solid var(--term-line)}.term-identity{display:flex;align-items:center;gap:10px;min-width:0}.term-mark{display:grid;place-items:center;width:34px;height:34px;flex:0 0 34px;border:1px solid #30404b;border-radius:9px;background:#090d11;color:var(--term-accent);font:800 12px/1 "Cascadia Mono",Consolas,monospace}.term-title-wrap{min-width:0}.term-title-row{display:flex;align-items:center;gap:8px;min-width:0}.term-title{font-weight:800;letter-spacing:.01em}.term-mode{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid #2d4235;border-radius:999px;background:#101b14;color:#9be5ab;padding:2px 7px;font:700 10px/1.4 ui-monospace,monospace}.term-cwd{margin-top:3px;color:var(--term-muted);font:11px/1.35 ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.term-actions{display:flex;gap:7px;align-items:center;justify-content:flex-end;min-width:0}.term-action-group{display:flex;gap:4px;padding:3px;border:1px solid #202a32;border-radius:9px;background:#080c10}.term-btn{height:30px;padding:0 9px;border:1px solid transparent;border-radius:7px;background:transparent;color:#cfd7df;cursor:pointer;font-size:11px;font-weight:750;white-space:nowrap}.term-btn:hover{background:#172029;border-color:#2b3944;color:#fff}.term-btn:focus-visible{outline:2px solid var(--term-accent);outline-offset:1px}.term-btn.warn{color:#f0c178}.term-btn.danger{color:#ff9b9b}.term-btn.icon{width:30px;padding:0;font-size:15px}
-.term-screen{-webkit-user-select:text;user-select:text;caret-color:var(--term-accent);flex:1;min-height:0;width:100%;margin:0;padding:14px 16px 20px;background:linear-gradient(180deg,#070a0d,#050709);color:var(--term-text);font:13px/1.5 "Cascadia Mono","JetBrains Mono",Consolas,"Liberation Mono",ui-monospace,monospace;font-variant-ligatures:none;overflow:auto;white-space:pre;word-break:normal;outline:none;tab-size:8;letter-spacing:0;text-rendering:optimizeLegibility;scrollbar-color:#35434e #0a0e12}.term-screen[contenteditable]{cursor:text}.term-screen::selection,.term-screen *::selection{background:#315c44;color:#fff}.term-screen:empty::before{content:"Terminal chưa có output. Gõ lệnh trực tiếp hoặc bấm New để mở session.";color:#64717c}.term-screen:focus{box-shadow:inset 0 0 0 1px rgba(115,209,138,.5)}
-.term-command{display:flex;align-items:center;gap:9px;padding:9px 12px;border-top:1px solid var(--term-line);background:#090d11}.term-command.hidden{display:none}.term-command span{max-width:42%;overflow:hidden;text-overflow:ellipsis;font:12px ui-monospace,monospace;color:var(--term-accent);white-space:nowrap}.term-command input{flex:1;min-width:0;background:#05080b;color:#f3f6f8;border:1px solid #27343e;border-radius:7px;outline:0;padding:7px 9px;font:12px ui-monospace,monospace}.term-command input:focus{border-color:var(--term-accent);box-shadow:0 0 0 3px rgba(115,209,138,.1)}
-.term-footer{min-height:31px;display:flex;align-items:center;gap:12px;padding:5px 12px;border-top:1px solid var(--term-line);background:#0b1015;color:var(--term-muted);font-size:10px}.term-status{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.term-status-dot{width:7px;height:7px;border-radius:50%;background:#6f7a84;box-shadow:0 0 0 3px rgba(111,122,132,.12)}.term-status[data-state=online] .term-status-dot{background:var(--term-accent);box-shadow:0 0 0 3px rgba(115,209,138,.14)}.term-status[data-state=busy] .term-status-dot{background:#e8b45d}.term-status[data-state=error] .term-status-dot{background:#ff7676}.term-shortcuts{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.term-footer kbd{padding:1px 5px;border:1px solid #34414b;border-bottom-color:#1b242b;border-radius:4px;background:#121920;color:#cfd7df;font:9px ui-monospace,monospace}.term-cols{white-space:nowrap;font:10px ui-monospace,monospace;color:#aab5bf}
-.term-keys{display:none;gap:5px;align-items:center;overflow:auto;padding:7px;border-top:1px solid var(--term-line);background:#090d11}.term-keys button{border:1px solid #2d3943;background:#121920;color:#eef2f5;border-radius:7px;padding:6px 10px;font-weight:800;white-space:nowrap}
-@media(max-width:900px){.term-head{grid-template-columns:1fr}.term-actions{justify-content:flex-start;overflow:auto;padding-bottom:1px}.term-action-group{flex:0 0 auto}.term-cwd{max-width:82vw}}
-@media(max-width:720px){.term-drawer{left:5px;right:5px;bottom:5px;height:58vh!important;min-height:240px;border-radius:11px}.term-drawer.full{inset:4px}.term-head{padding:7px 8px 8px}.term-mark{display:none}.term-title-row{gap:6px}.term-btn{height:29px;padding:0 8px}.term-btn .term-btn-label{display:none}.term-shortcuts{display:none}.term-keys{display:flex}.terminal-btn .label{display:none}}
+
 
 """
 
@@ -1750,408 +1706,7 @@ if(grid){
   updateSelectionUI();
 }
 
-// ---------------- Terminal drawer ----------------
-const term = {
-  id:null, mode:null, poll:null, shown:false, started:false,
-  cmdHistory:[], cmdIndex:0, commandCwd:'',
-  screen:null, renderPending:false, composing:false
-};
-function termEl(){return $('#termDrawer')}
-function termScreen(){return $('#termScreen')}
-function termRowsColsEstimate(){
-  const scr=termScreen(); if(!scr)return {cols:100,rows:30};
-  const cs=getComputedStyle(scr);
-  let cw=7.8;
-  try{
-    const canvas=term.measureCanvas||(term.measureCanvas=document.createElement('canvas'));
-    const ctx=canvas.getContext?.('2d');
-    if(ctx){ctx.font=cs.font;cw=Math.max(5,ctx.measureText('0000000000').width/10);}
-    else{
-      const span=document.createElement('span');
-      span.textContent='0000000000';span.style.visibility='hidden';span.style.position='absolute';span.style.font=cs.font;
-      document.body.appendChild(span);cw=Math.max(5,span.getBoundingClientRect().width/10);span.remove();
-    }
-  }catch(e){}
-  const lh=parseFloat(cs.lineHeight)||19;
-  const padX=(parseFloat(cs.paddingLeft)||0)+(parseFloat(cs.paddingRight)||0);
-  const padY=(parseFloat(cs.paddingTop)||0)+(parseFloat(cs.paddingBottom)||0);
-  const usableW=Math.max(20,scr.clientWidth-padX);
-  const usableH=Math.max(40,scr.clientHeight-padY);
-  return {cols:Math.max(20,Math.floor(usableW/cw)),rows:Math.max(6,Math.floor(usableH/lh))};
-}
-const TERM_CONT='\x00';
-function termIsCombining(cp){
-  return (cp>=0x0300&&cp<=0x036f)||(cp>=0x1ab0&&cp<=0x1aff)||(cp>=0x1dc0&&cp<=0x1dff)||
-    (cp>=0x20d0&&cp<=0x20ff)||(cp>=0xfe00&&cp<=0xfe0f)||(cp>=0xfe20&&cp<=0xfe2f)||
-    (cp>=0xe0100&&cp<=0xe01ef)||(cp>=0x1f3fb&&cp<=0x1f3ff)||cp===0x200b||cp===0x200c||cp===0x200d||cp===0x2060;
-}
-function termIsWide(cp){
-  return cp>=0x1100&&(
-    cp<=0x115f||cp===0x2329||cp===0x232a||(cp>=0x2e80&&cp<=0xa4cf&&cp!==0x303f)||
-    (cp>=0xac00&&cp<=0xd7a3)||(cp>=0xf900&&cp<=0xfaff)||(cp>=0xfe10&&cp<=0xfe19)||
-    (cp>=0xfe30&&cp<=0xfe6f)||(cp>=0xff00&&cp<=0xff60)||(cp>=0xffe0&&cp<=0xffe6)||
-    (cp>=0x1f300&&cp<=0x1faff)||(cp>=0x20000&&cp<=0x3fffd)
-  );
-}
-function termCharWidth(ch){
-  const cp=ch.codePointAt(0)||0;
-  if(cp===0||cp<32||(cp>=0x7f&&cp<0xa0)||termIsCombining(cp))return 0;
-  return termIsWide(cp)?2:1;
-}
-function termInitScreen(){const rc=termRowsColsEstimate();term.screen={cols:rc.cols,rows:rc.rows,r:0,c:0,lines:[[]],saved:null,joinNext:false};term.renderPending=false;}
-function termResetScreen(){termInitScreen();termRender(true)}
-function termEnsureScreen(){if(!term.screen)termInitScreen();return term.screen}
-function termEnsureLine(st,r){while(st.lines.length<=r)st.lines.push([]);return st.lines[r]}
-function termSetLine(st,r,line){while(st.lines.length<=r)st.lines.push([]);st.lines[r]=line}
-function termClearCell(line,col){
-  if(col<0)return;
-  if(line[col]===TERM_CONT){line[col]=undefined;if(col>0)line[col-1]=undefined;return;}
-  if(line[col+1]===TERM_CONT)line[col+1]=undefined;
-  line[col]=undefined;
-}
-function termFixLine(line){
-  for(let i=0;i<line.length;i++){
-    const cell=line[i];
-    if(cell===TERM_CONT){if(i===0||!line[i-1]||termCharWidth(line[i-1])!==2)line[i]=undefined;continue;}
-    if(cell&&termCharWidth(cell)===2){line[i+1]=TERM_CONT;i++;}
-  }
-  return line;
-}
-function termTrimBuffer(st){
-  const maxLines=Math.max(st.rows*8,Math.ceil(Number(defaults.terminal_max_buffer_chars||500000)/80));
-  if(st.lines.length<=maxLines)return;
-  const drop=st.lines.length-maxLines;st.lines.splice(0,drop);st.r=Math.max(0,st.r-drop);
-}
-function termNewLine(st,resetColumn=true){
-  st.r++;if(resetColumn)st.c=0;st.joinNext=false;
-  termEnsureLine(st,st.r);termTrimBuffer(st);
-}
-function termPreviousCell(st){
-  let r=st.r,c=st.c-1;
-  while(r>=0){
-    const line=termEnsureLine(st,r);c=Math.min(c,line.length-1);
-    while(c>=0&&(line[c]===TERM_CONT||line[c]===undefined))c--;
-    if(c>=0&&line[c])return {line,col:c};
-    r--;if(r>=0)c=termEnsureLine(st,r).length-1;
-  }
-  return null;
-}
-function termAppendCombining(st,ch){
-  const prev=termPreviousCell(st);
-  if(prev)prev.line[prev.col]+=ch;
-  if(ch.codePointAt(0)===0x200d)st.joinNext=true;
-}
-function termPutChar(ch){
-  const st=termEnsureScreen();
-  if(ch==='\t'){const n=8-(st.c%8);for(let i=0;i<n;i++)termPutChar(' ');return;}
-  const width=termCharWidth(ch);
-  if(width===0){termAppendCombining(st,ch);return;}
-  if(st.joinNext){
-    const prev=termPreviousCell(st);st.joinNext=false;
-    if(prev){prev.line[prev.col]+=ch;return;}
-  }
-  if(st.c>=st.cols||(width===2&&st.c===st.cols-1))termNewLine(st,true);
-  const line=termEnsureLine(st,st.r);
-  termClearCell(line,st.c);if(width===2)termClearCell(line,st.c+1);
-  line[st.c]=ch;if(width===2)line[st.c+1]=TERM_CONT;
-  st.c+=width;termTrimBuffer(st);
-}
-function termBackspace(st){
-  st.c=Math.max(0,st.c-1);
-  const line=termEnsureLine(st,st.r);
-  if(line[st.c]===TERM_CONT)st.c=Math.max(0,st.c-1);
-}
-function termBlankRange(line,start,end){for(let i=Math.max(0,start);i<Math.max(start,end);i++)termClearCell(line,i);}
-function termNormalizeCursor(st){
-  const line=termEnsureLine(st,st.r);
-  if(st.c>0&&line[st.c]===TERM_CONT)st.c--;
-}
-function termCSI(params,final){
-  const st=termEnsureScreen();
-  if(params.startsWith('?'))params=params.slice(1);
-  const nums=params.split(';').filter(x=>x!=='').map(x=>parseInt(x,10));
-  const n=(i,def)=>Number.isFinite(nums[i])?nums[i]:def;
-  if(final==='A')st.r=Math.max(0,st.r-n(0,1));
-  else if(final==='B')st.r+=n(0,1);
-  else if(final==='C')st.c=Math.min(st.cols-1,st.c+n(0,1));
-  else if(final==='D')st.c=Math.max(0,st.c-n(0,1));
-  else if(final==='E'){st.r+=n(0,1);st.c=0;}
-  else if(final==='F'){st.r=Math.max(0,st.r-n(0,1));st.c=0;}
-  else if(final==='G')st.c=Math.max(0,Math.min(st.cols-1,n(0,1)-1));
-  else if(final==='H'||final==='f'){st.r=Math.max(0,n(0,1)-1);st.c=Math.max(0,Math.min(st.cols-1,n(1,1)-1));}
-  else if(final==='d')st.r=Math.max(0,n(0,1)-1);
-  else if(final==='J'){
-    const mode=n(0,0),line=termEnsureLine(st,st.r);
-    if(mode===2||mode===3){st.lines=[[]];st.r=0;st.c=0;}
-    else if(mode===0){termBlankRange(line,st.c,line.length);st.lines=st.lines.slice(0,st.r+1);}
-    else if(mode===1){for(let i=0;i<st.r;i++)st.lines[i]=[];termBlankRange(line,0,st.c+1);}
-  }
-  else if(final==='K'){
-    const mode=n(0,0),line=termEnsureLine(st,st.r);
-    if(mode===0)termBlankRange(line,st.c,line.length);
-    else if(mode===1)termBlankRange(line,0,st.c+1);
-    else if(mode===2)termSetLine(st,st.r,[]);
-  }
-  else if(final==='P'){
-    const count=Math.max(1,n(0,1)),line=termEnsureLine(st,st.r);line.splice(st.c,count);termFixLine(line);
-  }
-  else if(final==='X'){
-    const count=Math.max(1,n(0,1)),line=termEnsureLine(st,st.r);termBlankRange(line,st.c,st.c+count);
-  }
-  else if(final==='@'){
-    const count=Math.max(1,n(0,1)),line=termEnsureLine(st,st.r);line.splice(st.c,0,...Array(count));termFixLine(line);
-  }
-  else if(final==='S'){
-    const count=Math.max(1,n(0,1));st.lines.splice(0,count);while(st.lines.length<=st.r)st.lines.push([]);st.r=Math.max(0,st.r-count);
-  }
-  else if(final==='T'){
-    const count=Math.max(1,n(0,1));st.lines.unshift(...Array.from({length:count},()=>[]));st.r+=count;termTrimBuffer(st);
-  }
-  else if(final==='s')st.saved={r:st.r,c:st.c};
-  else if(final==='u'&&st.saved){st.r=st.saved.r;st.c=st.saved.c;}
-  termEnsureLine(st,st.r);termNormalizeCursor(st);
-}
-function termLineText(line){
-  let end=line.length;
-  while(end>0&&(line[end-1]===undefined||line[end-1]===TERM_CONT))end--;
-  let out='';
-  for(let i=0;i<end;i++){
-    const cell=line[i];
-    if(cell===TERM_CONT)continue;
-    out+=cell===undefined?' ':cell;
-  }
-  return out;
-}
-function termRender(forceStick=false){
-  const scr=termScreen();if(!scr)return;
-  if(!forceStick&&termSelectedText()){term.renderPending=true;return;}
-  const st=termEnsureScreen();
-  const stick=forceStick||(scr.scrollTop+scr.clientHeight>=scr.scrollHeight-24);
-  const maxChars=Number(defaults.terminal_max_buffer_chars||500000);
-  let text=st.lines.map(termLineText).join('\n');
-  if(text.length>maxChars){text=text.slice(-maxChars);if(text&&/[\uDC00-\uDFFF]/.test(text[0]))text=text.slice(1);}
-  scr.textContent=text;term.renderPending=false;if(stick)scr.scrollTop=scr.scrollHeight;
-}
-function termAppend(s){
-  const scr=termScreen();if(!scr||!s)return;
-  const st=termEnsureScreen();s=String(s);
-  for(let i=0;i<s.length;i++){
-    let ch=s[i];
-    if(ch==='\x1b'){
-      const next=s[i+1];
-      if(next===']'){
-        let end=s.indexOf('\x07',i+2),end2=s.indexOf('\x1b\\',i+2);
-        if(end<0||(end2>=0&&end2<end))end=end2>=0?end2+1:end;
-        i=end>=0?end:s.length-1;continue;
-      }
-      if(next==='['){
-        let j=i+2;while(j<s.length&&(s.charCodeAt(j)<0x40||s.charCodeAt(j)>0x7e))j++;
-        if(j<s.length){termCSI(s.slice(i+2,j),s[j]);i=j;continue;}
-      }
-      if(next==='7'){st.saved={r:st.r,c:st.c};i++;continue;}
-      if(next==='8'&&st.saved){st.r=st.saved.r;st.c=st.saved.c;i++;continue;}
-      if(next==='D'){termNewLine(st,false);i++;continue;}
-      if(next==='E'){termNewLine(st,true);i++;continue;}
-      if(next==='M'){st.r=Math.max(0,st.r-1);i++;continue;}
-      if(next&&'=>()#'.includes(next)){i+=2;continue;}
-      continue;
-    }
-    if(ch==='\x07')continue;
-    if(ch==='\x0c'){st.lines=[[]];st.r=0;st.c=0;continue;}
-    if(ch==='\r'){st.c=0;continue;}
-    if(ch==='\n'){termNewLine(st,true);continue;}
-    if(ch==='\b'||ch==='\x7f'){termBackspace(st);continue;}
-    const cp=s.codePointAt(i);ch=String.fromCodePoint(cp);if(ch.length===2)i++;
-    if(cp<32&&ch!=='\t')continue;
-    termPutChar(ch);
-  }
-  termRender(false);
-}
-function termSetConnection(state,label){
-  const el=$('#termStatus');if(!el)return;
-  el.dataset.state=state||'idle';const text=el.querySelector?.('.term-status-text');if(text)text.textContent=label||state||'Idle';
-}
-function termUpdateDimensions(){const rc=termRowsColsEstimate(),el=$('#termCols');if(el)el.textContent=`${rc.cols} × ${rc.rows}`;return rc;}
-function termSetStatus(j){
-  $('#termMode')&&($('#termMode').textContent=j?.mode?`${j.mode}${j.tmux_name?' · '+j.tmux_name:''}`:'idle');
-  $('#termCwd')&&($('#termCwd').textContent=j?.cwd?j.cwd:'No active session');
-  termSetConnection(j?.alive===false?'error':'online',j?.alive===false?'Session ended':'Connected');
-  termUpdateDimensions();
-}
-async function termApi(path,data){
-  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{})});
-  const j=await r.json().catch(()=>({}));
-  if(!r.ok||j.error) throw new Error(j.error||`HTTP ${r.status}`);
-  return j;
-}
-function termRowsCols(){return termRowsColsEstimate()}
-function termSetHeight(px,save=false){
-  const drawer=termEl();if(!drawer||drawer.classList.contains('full'))return;
-  const min=240,max=Math.max(min,Math.floor(window.innerHeight*.88));
-  const height=Math.max(min,Math.min(Number(px)||Number(defaults.terminal_start_height_px||380),max));
-  drawer.style.height=`${height}px`;
-  if(save){try{localStorage.setItem('lanDriveTerminalHeight',String(Math.round(height)))}catch(e){}}
-  clearTimeout(term.resizeTimer);term.resizeTimer=setTimeout(termResize,60);
-}
-function termRestoreHeight(){
-  let saved=0;try{saved=Number(localStorage.getItem('lanDriveTerminalHeight')||0)}catch(e){}
-  termSetHeight(saved||Number(defaults.terminal_start_height_px||380),false);
-}
-async function openTerminal(forceNew=false){
-  const drawer=termEl();if(!drawer){toast('Terminal UI không có trên trang này');return}
-  if(!defaults.terminal_enabled){toast('Terminal đang tắt trong config');return}
-  drawer.classList.add('show');term.shown=true;termRestoreHeight();termUpdateDimensions();
-  if(term.id&&!forceNew){termScreen()?.focus();return}
-  termSetConnection('busy','Connecting');
-  try{
-    termAppend('\n[opening terminal...]\n');
-    const j=await termApi('/api/term/new',{path:currentPath()});
-    term.id=j.id;term.mode=j.mode;term.started=true;term.commandCwd=j.cwd||'';termSetStatus(j);
-    drawer.classList.toggle('command-mode',term.mode==='command');
-    $('#termCommand')?.classList.toggle('hidden',term.mode!=='command');
-    if(term.mode==='command'){$('#termPrompt').textContent=(term.commandCwd||'>')+'>';$('#termLine')?.focus();}
-    else{termScreen()?.focus();await termResize();termPoll();}
-  }catch(e){termSetConnection('error','Connection failed');termAppend('\n[terminal error: '+e.message+']\n');}
-}
-function toggleTerminal(){const d=termEl();if(!d)return;if(d.classList.contains('show'))termHide();else openTerminal(false)}
-function termHide(){termEl()?.classList.remove('show');term.shown=false}
-async function newTerminalSession(){
-  if(term.id){try{await termApi('/api/term/detach',{id:term.id})}catch(e){}}
-  clearInterval(term.poll);term.id=null;term.mode=null;termResetScreen();termSetConnection('busy','Opening session');await openTerminal(true);
-}
-function termPoll(){
-  clearInterval(term.poll);
-  const ms=Number(defaults.terminal_poll_ms||150);
-  async function once(){
-    if(!term.id||term.mode==='command')return;
-    try{
-      const r=await fetch('/api/term/read?id='+encodeURIComponent(term.id));
-      const j=await r.json();
-      if(!r.ok||j.error){clearInterval(term.poll);term.poll=null;term.id=null;termSetConnection('error','Session lost');termAppend('\n[terminal session lost: '+(j.error||`HTTP ${r.status}`)+']\n[Ấn New để mở session mới.]\n');return}
-      termSetStatus(j);if(j.data)termAppend(j.data);
-      if(j.alive===false){termSetConnection('error','Session ended');termAppend('\n[terminal detached]\n');clearInterval(term.poll)}
-    }catch(e){termSetConnection('error','Read failed')}
-  }
-  once();term.poll=setInterval(once,ms);
-}
-async function termSend(data){
-  if(!term.id)await openTerminal(false);
-  if(!term.id||term.mode==='command')return;
-  try{await termApi('/api/term/input',{id:term.id,data})}
-  catch(e){termSetConnection('error','Input failed');termAppend('\n[input error: '+e.message+']\n')}
-}
-function termSendCtrl(ch){const code=ch.toLowerCase().charCodeAt(0)-96;if(code>0&&code<27)termSend(String.fromCharCode(code))}
-function termFocusInput(){const target=term.mode==='command'?$('#termLine'):termScreen();target?.focus()}
-function termSelectedText(){const scr=termScreen(),sel=window.getSelection?.();if(!scr||!sel||sel.isCollapsed)return'';const a=sel.anchorNode,f=sel.focusNode;if((a&&scr.contains(a))||(f&&scr.contains(f)))return sel.toString();return''}
-async function termWriteClipboardText(text){
-  try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(text);return true}}
-  catch(e){}
-  try{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();const ok=document.execCommand('copy');ta.remove();return !!ok}catch(e){return false}
-}
-async function termReadClipboardText(){try{if(navigator.clipboard?.readText)return await navigator.clipboard.readText()}catch(e){}return''}
-async function termCopySelectionOrOutput(){
-  const selected=termSelectedText(),text=selected||termScreen()?.textContent||'';if(!text)return false;
-  const ok=await termWriteClipboardText(text);toast(ok?(selected?'Đã copy selection':'Đã copy terminal output'):'Không copy được');termFocusInput();return ok;
-}
-async function termPasteClipboard(){
-  let text=await termReadClipboardText();if(!text)text=prompt('Browser chặn đọc clipboard. Dán nội dung cần paste vào đây:','')||'';if(!text)return false;
-  if(term.mode==='command'){
-    const input=$('#termLine');if(!input)return false;
-    const start=Number.isInteger(input.selectionStart)?input.selectionStart:input.value.length;
-    const end=Number.isInteger(input.selectionEnd)?input.selectionEnd:start;
-    if(typeof input.setRangeText==='function')input.setRangeText(text,start,end,'end');else input.value=input.value.slice(0,start)+text+input.value.slice(end);
-    input.focus();return true;
-  }
-  await termSend(text);termFocusInput();return true;
-}
-async function termResize(){
-  const rc=termUpdateDimensions();
-  if(term.screen){term.screen.cols=rc.cols;term.screen.rows=rc.rows;termRender(true)}
-  if(!term.id||term.mode==='command')return;
-  try{await termApi('/api/term/resize',{id:term.id,...rc})}catch(e){termSetConnection('error','Resize failed')}
-}
-async function termDetach(){if(!term.id)return;try{await termApi('/api/term/detach',{id:term.id})}catch(e){}clearInterval(term.poll);term.id=null;termSetConnection('idle','Detached');termAppend('\n[detached]\n')}
-async function termKill(){if(!term.id)return;if(!confirm('Kill terminal/session này? Với tmux, lệnh này kill cả tmux session.'))return;try{await termApi('/api/term/kill',{id:term.id})}catch(e){}clearInterval(term.poll);term.id=null;termSetConnection('error','Killed');termAppend('\n[killed]\n')}
-function termClear(){termResetScreen();if(term.id&&term.mode!=='command')termSend('\x0c')}
-async function termCopy(){await termCopySelectionOrOutput()}
-function termStartTmux(){const cmd='tmux new-session -A -s landrive';if(term.mode==='command'){termRunCommand(cmd);return}termSend(cmd+'\r')}
-function termFullscreen(){const drawer=termEl();if(!drawer)return;drawer.classList.toggle('full');setTimeout(termResize,120)}
-async function termRunCommand(cmd){
-  if(!cmd.trim())return;
-  term.cmdHistory.push(cmd);term.cmdIndex=term.cmdHistory.length;termSetConnection('busy','Running command');
-  termAppend(($('#termPrompt')?.textContent||'>')+' '+cmd+'\n');
-  try{
-    const j=await termApi('/api/term/run',{id:term.id,cmd});
-    if(j.output)termAppend(j.output);
-    term.commandCwd=j.cwd||term.commandCwd;$('#termPrompt').textContent=term.commandCwd+'>';termSetStatus({mode:term.mode,cwd:term.commandCwd,alive:true});
-  }catch(e){termSetConnection('error','Command failed');termAppend('[command error: '+e.message+']\n')}
-}
-document.addEventListener('keydown',async e=>{
-  const active=document.activeElement;
-  const inEditor=active&&['INPUT','TEXTAREA'].includes(active.tagName)&&active.id!=='termLine';
-  if((e.ctrlKey||e.metaKey)&&e.key==='`'){e.preventDefault();toggleTerminal();return}
-  if(!termEl()?.classList.contains('show'))return;
-  if(e.key==='Escape'&&termEl()?.classList.contains('full')){e.preventDefault();termEl().classList.remove('full');termRestoreHeight();setTimeout(termResize,80);return}
-  if(inEditor||term.mode==='command'||active!==termScreen()||e.isComposing||term.composing)return;
-  if(e.ctrlKey||e.metaKey){
-    const k=e.key.toLowerCase();
-    if(k==='c'){
-      if(termSelectedText())return;
-      e.preventDefault();termSendCtrl('c');return;
-    }
-    if(k==='v')return;
-    if(k==='d'){e.preventDefault();termSendCtrl('d');return}
-    if(k==='l'){e.preventDefault();termClear();return}
-  }
-  if(e.altKey&&e.key==='Enter'){e.preventDefault();termFullscreen();return}
-  if(e.key==='Backspace'||e.code==='Backspace'){e.preventDefault();termSend('\x7f');return}
-  if(e.key==='Delete'||e.code==='Delete'){e.preventDefault();termSend('\x1b[3~');return}
-  const map={Enter:'\r',Tab:'\t',Escape:'\x1b',ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D',Home:'\x1b[H',End:'\x1b[F',PageUp:'\x1b[5~',PageDown:'\x1b[6~',Insert:'\x1b[2~'};
-  if(map[e.key]){e.preventDefault();termSend(map[e.key]);return}
-  if(e.key.length===1&&!e.metaKey&&!e.altKey){e.preventDefault();termSend(e.key)}
-});
-const terminalScreen=termScreen();
-terminalScreen?.addEventListener('paste',e=>{
-  if(term.mode==='command')return;
-  e.preventDefault();const t=(e.clipboardData||window.clipboardData)?.getData('text')||'';if(t)termSend(t);
-});
-terminalScreen?.addEventListener('copy',e=>{
-  const t=termSelectedText();if(!t||!e.clipboardData)return;
-  e.preventDefault();e.clipboardData.setData('text/plain',t);
-});
-terminalScreen?.addEventListener('beforeinput',e=>{
-  if(term.mode==='command')return;
-  e.preventDefault();
-  if(!term.composing&&e.inputType==='insertText'&&e.data)termSend(e.data);
-});
-terminalScreen?.addEventListener('compositionstart',()=>{term.composing=true});
-terminalScreen?.addEventListener('compositionend',e=>{term.composing=false;if(e.data)termSend(e.data);termRender(true)});
-document.addEventListener('selectionchange',()=>{if(term.renderPending&&!termSelectedText())termRender(false)});
-$('#termLine')?.addEventListener('keydown',e=>{
-  if(e.key==='Enter'){const v=e.target.value;e.target.value='';termRunCommand(v)}
-  else if(e.key==='ArrowUp'){e.preventDefault();if(term.cmdHistory.length){term.cmdIndex=Math.max(0,term.cmdIndex-1);e.target.value=term.cmdHistory[term.cmdIndex]||''}}
-  else if(e.key==='ArrowDown'){e.preventDefault();term.cmdIndex=Math.min(term.cmdHistory.length,term.cmdIndex+1);e.target.value=term.cmdHistory[term.cmdIndex]||''}
-});
-function termInitResize(){
-  const handle=$('#termResizeHandle'),drawer=termEl();if(!handle||!drawer)return;
-  let startY=0,startHeight=0;
-  const move=e=>{if(!startHeight)return;e.preventDefault();termSetHeight(startHeight+(startY-e.clientY),false)};
-  const stop=e=>{
-    if(!startHeight)return;
-    try{handle.releasePointerCapture?.(e.pointerId)}catch(_){}
-    handle.classList.remove('dragging');startHeight=0;termSetHeight(drawer.getBoundingClientRect().height,true);
-    window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',stop);
-  };
-  handle.addEventListener('pointerdown',e=>{
-    if(drawer.classList.contains('full'))return;
-    e.preventDefault();startY=e.clientY;startHeight=drawer.getBoundingClientRect().height;handle.classList.add('dragging');
-    try{handle.setPointerCapture?.(e.pointerId)}catch(_){}
-    window.addEventListener('pointermove',move);window.addEventListener('pointerup',stop);
-  });
-}
-termInitResize();
-if(window.ResizeObserver&&termEl())new ResizeObserver(()=>{clearTimeout(term.observeResizeTimer);term.observeResizeTimer=setTimeout(termResize,100)}).observe(termEl());
-window.addEventListener('resize',()=>{clearTimeout(window.__termResizeTimer);window.__termResizeTimer=setTimeout(()=>{termRestoreHeight();termResize()},180)});
+// Terminal + SCM use xterm.js over the persistent WebSocket bridge in /static/terminal_scm.js.
 
 """
 
@@ -2168,7 +1723,6 @@ def page_shell(title: str, body: str, current_path: str = "/") -> bytes:
             "folders_first": CONFIG.folders_first,
             "search_debounce_ms": CONFIG.search_debounce_ms,
             "terminal_enabled": CONFIG.terminal_enabled,
-            "terminal_poll_ms": CONFIG.terminal_poll_ms,
             "terminal_max_buffer_chars": CONFIG.terminal_max_buffer_chars,
             "terminal_start_height_px": CONFIG.terminal_start_height_px,
             "terminal_mobile_extra_keys": CONFIG.terminal_mobile_extra_keys,
@@ -2195,11 +1749,16 @@ def page_shell(title: str, body: str, current_path: str = "/") -> bytes:
 <meta name="robots" content="noindex,nofollow">
 <title>{html_escape(title)}</title>
 <style>{CSS}</style>
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<link rel="stylesheet" href="/static/terminal_scm.css">
 </head>
 <body>
 {body}
 <script>window.APP={json_dumps(app)};</script>
 <script>{JS}</script>
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/addon-fit.js"></script>
+<script src="/static/terminal_scm.js"></script>
 </body>
 </html>"""
     return html_doc.encode("utf-8", "surrogateescape")
@@ -2358,367 +1917,9 @@ def list_entries_page(path: Path, offset: int, limit: int, sort_mode: str, query
 
 
 
-# ---------------------------------------------------------------------------
-# Terminal backend
-# ---------------------------------------------------------------------------
-
-class TerminalSession:
-    """One browser-attached terminal client.
-
-    Linux tmux mode:
-      this object owns only the tmux attach client. The real tmux session can
-      continue after detach/reload.
-    Linux pty mode:
-      this object owns the real shell process.
-    Windows command mode:
-      this object owns only a cwd and runs one command per Enter.
-    """
-    def __init__(self, sid: str, mode: str, cwd: Path, tmux_name: str = "") -> None:
-        self.id = sid
-        self.mode = mode
-        self.cwd = cwd
-        self.tmux_name = tmux_name
-        self.proc: Optional[subprocess.Popen[Any]] = None
-        self.fd: Optional[int] = None
-        self.buffer = ""
-        self.lock = threading.Lock()
-        self.alive = True
-        self.created = time.time()
-        self.last_seen = time.time()
-        self.reader: Optional[threading.Thread] = None
-
-    def append(self, text: str) -> None:
-        if not text:
-            return
-        with self.lock:
-            self.buffer += text
-            max_chars = int(getattr(CONFIG, "terminal_max_buffer_chars", 500000))
-            if len(self.buffer) > max_chars:
-                self.buffer = self.buffer[-max_chars:]
-
-    def drain(self) -> str:
-        self.last_seen = time.time()
-        with self.lock:
-            out = self.buffer
-            self.buffer = ""
-            return out
-
-    def start_pty(self, argv: List[str], env: Optional[Dict[str, str]] = None) -> None:
-        if not HAS_UNIX_PTY or pty is None:
-            raise RuntimeError("PTY is not available on this platform")
-        master, slave = pty.openpty()
-        self.fd = master
-        child_env = os.environ.copy()
-        child_env.update(env or {})
-        child_env.setdefault("TERM", "xterm-256color")
-        child_env.setdefault("COLORTERM", "truecolor")
-        self.proc = subprocess.Popen(
-            argv,
-            cwd=str(self.cwd),
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            env=child_env,
-            close_fds=True,
-            preexec_fn=os.setsid if os.name != "nt" else None,
-        )
-        try:
-            os.close(slave)
-        except Exception:
-            pass
-        self.reader = threading.Thread(target=self._reader_loop, name=f"term-reader-{self.id}", daemon=True)
-        self.reader.start()
-
-    def _reader_loop(self) -> None:
-        fd = self.fd
-        if fd is None:
-            return
-        while self.alive:
-            try:
-                if select is not None:
-                    r, _, _ = select.select([fd], [], [], 0.25)
-                    if not r:
-                        if self.proc and self.proc.poll() is not None:
-                            break
-                        continue
-                raw = os.read(fd, 65536)
-                if not raw:
-                    break
-                self.append(raw.decode("utf-8", "replace"))
-            except OSError:
-                break
-            except Exception as e:
-                self.append(f"\n[terminal read error: {e}]\n")
-                break
-        self.alive = False
-
-    def write(self, data: str) -> None:
-        self.last_seen = time.time()
-        if not self.alive:
-            return
-        if self.fd is None:
-            return
-        try:
-            os.write(self.fd, data.encode("utf-8", "surrogatepass"))
-        except Exception as e:
-            self.append(f"\n[terminal write error: {e}]\n")
-
-    def resize(self, cols: int, rows: int) -> None:
-        if not self.fd or not HAS_UNIX_PTY or fcntl is None or termios is None or struct is None:
-            return
-        try:
-            cols = max(20, min(int(cols or 100), 300))
-            rows = max(8, min(int(rows or 30), 100))
-            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        except Exception:
-            pass
-
-    def detach(self) -> None:
-        self.alive = False
-        if self.proc and self.proc.poll() is None:
-            try:
-                if os.name != "nt" and signal is not None:
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGHUP)
-                else:
-                    self.proc.terminate()
-            except Exception:
-                try:
-                    self.proc.terminate()
-                except Exception:
-                    pass
-        if self.fd is not None:
-            try:
-                os.close(self.fd)
-            except Exception:
-                pass
-            self.fd = None
-
-    def kill(self) -> None:
-        if self.mode == "tmux" and self.tmux_name:
-            tmux_bin = shutil.which(CONFIG.terminal_tmux_bin) or CONFIG.terminal_tmux_bin
-            try:
-                subprocess.run([tmux_bin, "kill-session", "-t", self.tmux_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-            except Exception as e:
-                self.append(f"\n[tmux kill error: {e}]\n")
-        self.detach()
-
-
-class TerminalManager:
-    def __init__(self) -> None:
-        self.sessions: Dict[str, TerminalSession] = {}
-        self.lock = threading.Lock()
-        self._cleaner_started = False
-
-    def _ensure_cleaner(self) -> None:
-        if self._cleaner_started:
-            return
-        self._cleaner_started = True
-        threading.Thread(target=self._cleaner_loop, name="term-cleaner", daemon=True).start()
-
-    def _cleaner_loop(self) -> None:
-        while True:
-            time.sleep(30)
-            try:
-                idle = max(5, int(getattr(CONFIG, "terminal_idle_detach_minutes", 120))) * 60
-            except Exception:
-                idle = 7200
-            now = time.time()
-            stale: List[str] = []
-            with self.lock:
-                for sid, sess in list(self.sessions.items()):
-                    if now - sess.last_seen > idle or (sess.mode != "command" and not sess.alive):
-                        stale.append(sid)
-                for sid in stale:
-                    sess = self.sessions.pop(sid, None)
-                    if sess:
-                        sess.detach()
-
-    def _new_sid(self) -> str:
-        raw = f"{time.time()}:{threading.get_ident()}:{os.urandom(8).hex()}"
-        return hashlib.sha1(raw.encode()).hexdigest()[:16]
-
-    def _tmux_name_for(self, cwd: Path) -> str:
-        prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", str(CONFIG.terminal_tmux_session_prefix or "landrive")).strip("_") or "landrive"
-        if CONFIG.terminal_session_mode == "global":
-            return prefix + "_main"
-        try:
-            rel = cwd.resolve().relative_to(CONFIG.root.resolve()).as_posix()
-        except Exception:
-            rel = str(cwd)
-        base = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(rel).name or "root").strip("_")[:24] or "root"
-        h = hashlib.sha1(str(cwd.resolve()).encode("utf-8", "surrogateescape")).hexdigest()[:10]
-        return f"{prefix}_{base}_{h}"
-
-    def new(self, cwd: Path) -> TerminalSession:
-        if not CONFIG.terminal_enabled:
-            raise RuntimeError("Terminal is disabled in config")
-        self._ensure_cleaner()
-        cwd = cwd.resolve()
-        try:
-            cwd.relative_to(CONFIG.root.resolve())
-        except ValueError:
-            cwd = CONFIG.root.resolve()
-        if not cwd.is_dir():
-            cwd = cwd.parent
-
-        with self.lock:
-            if len(self.sessions) >= int(CONFIG.terminal_max_sessions):
-                # Detach oldest browser client. For tmux this does not kill tmux session itself.
-                oldest_sid = min(self.sessions, key=lambda k: self.sessions[k].last_seen)
-                old = self.sessions.pop(oldest_sid)
-                old.detach()
-
-        if os.name == "nt":
-            sess = TerminalSession(self._new_sid(), "command", cwd)
-            sess.append(f"Windows command mode. cwd: {cwd}\n")
-            with self.lock:
-                self.sessions[sess.id] = sess
-            return sess
-
-        backend = str(CONFIG.terminal_backend_linux or "pty").lower()
-        tmux_bin = shutil.which(CONFIG.terminal_tmux_bin) if CONFIG.terminal_tmux_bin else None
-        use_tmux = backend == "tmux" and bool(tmux_bin)
-        if backend == "tmux" and not tmux_bin and str(CONFIG.terminal_backend_linux_fallback).lower() != "pty":
-            raise RuntimeError("tmux not found and fallback is disabled")
-
-        sid = self._new_sid()
-        if use_tmux:
-            tmux_name = self._tmux_name_for(cwd)
-            sess = TerminalSession(sid, "tmux", cwd, tmux_name)
-            shell = str(CONFIG.terminal_shell_linux or "/bin/bash")
-            if not Path(shell).exists():
-                shell = os.environ.get("SHELL", "/bin/sh")
-            shell_cmd = f"exec {shlex.quote(shell)} -l" if shell.endswith(("bash", "zsh")) else f"exec {shlex.quote(shell)}"
-            tmux_env = os.environ.copy()
-            tmux_env.update({"LAN_DRIVE_TERM": "1", "TERM": "xterm-256color", "COLORTERM": "truecolor"})
-            has = subprocess.run([tmux_bin, "has-session", "-t", tmux_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=tmux_env)
-            if has.returncode != 0:
-                subprocess.run([tmux_bin, "new-session", "-d", "-s", tmux_name, "-c", str(cwd), shell_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=tmux_env, check=True)
-            # The browser UI is a lightweight renderer, so hide tmux status/bell noise by default.
-            status_value = "on" if bool(getattr(CONFIG, "terminal_tmux_status_bar", False)) else "off"
-            for opt, val in [
-                ("status", status_value), ("visual-bell", "off"), ("bell-action", "none"),
-                ("monitor-bell", "off"), ("set-clipboard", "off"), ("mouse", "off"),
-            ]:
-                subprocess.run([tmux_bin, "set-option", "-t", tmux_name, opt, val], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=tmux_env)
-            argv = [tmux_bin, "attach-session", "-t", tmux_name]
-            sess.start_pty(argv, env={"LAN_DRIVE_TERM": "1", "TERM": "xterm-256color", "COLORTERM": "truecolor"})
-            sess.append(f"\n[tmux attached: {tmux_name} | cwd: {cwd}]\n[Tip: bạn đang ở trong tmux rồi; dùng 'tmux ls' để xem session, hoặc SSH rồi chạy: tmux attach -t {tmux_name}]\n")
-        else:
-            shell = str(CONFIG.terminal_shell_linux or "/bin/bash")
-            if not Path(shell).exists():
-                shell = os.environ.get("SHELL", "/bin/sh")
-            sess = TerminalSession(sid, "pty", cwd)
-            sess.start_pty([shell, "-l"] if shell.endswith(("bash", "zsh", "fish")) else [shell], env={"LAN_DRIVE_TERM": "1"})
-            sess.append(f"\n[pty shell | cwd: {cwd}]\n[Tip: gõ 'tmux new-session -A -s landrive' hoặc bấm nút tmux để vào tmux Linux.]\n")
-
-        with self.lock:
-            self.sessions[sid] = sess
-        return sess
-
-    def get(self, sid: str) -> TerminalSession:
-        with self.lock:
-            sess = self.sessions.get(sid)
-        if not sess:
-            raise KeyError("Terminal session not found")
-        sess.last_seen = time.time()
-        return sess
-
-    def detach(self, sid: str) -> None:
-        with self.lock:
-            sess = self.sessions.pop(sid, None)
-        if sess:
-            sess.detach()
-
-    def kill(self, sid: str) -> None:
-        with self.lock:
-            sess = self.sessions.pop(sid, None)
-        if sess:
-            sess.kill()
-
-    def list_tmux_sessions(self) -> List[Dict[str, str]]:
-        if os.name == "nt":
-            return []
-        tmux_bin = shutil.which(CONFIG.terminal_tmux_bin) if CONFIG.terminal_tmux_bin else None
-        if not tmux_bin:
-            return []
-        prefix = str(CONFIG.terminal_tmux_session_prefix or "landrive")
-        try:
-            r = subprocess.run([tmux_bin, "list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_windows}"], capture_output=True, text=True, timeout=3)
-            out = []
-            for line in (r.stdout or "").splitlines():
-                parts = line.split("\t")
-                if parts and parts[0].startswith(prefix):
-                    out.append({"name": parts[0], "created": parts[1] if len(parts) > 1 else "", "windows": parts[2] if len(parts) > 2 else ""})
-            return out
-        except Exception:
-            return []
-
-
-TERM_MANAGER = TerminalManager()
-
-
-def terminal_run_command(sess: TerminalSession, cmd: str) -> Dict[str, Any]:
-    """Windows/simple command fallback."""
-    cmd = (cmd or "").strip()
-    if not cmd:
-        return {"ok": True, "cwd": str(sess.cwd), "output": ""}
-    if cmd.lower() in {"clear", "cls"}:
-        return {"ok": True, "cwd": str(sess.cwd), "output": "\x0c"}
-    if cmd.lower().startswith("cd"):
-        rest = cmd[2:].strip().strip('"')
-        if not rest:
-            return {"ok": True, "cwd": str(sess.cwd), "output": str(sess.cwd) + "\n"}
-        target = Path(rest)
-        if not target.is_absolute():
-            target = (sess.cwd / rest)
-        try:
-            target = target.resolve()
-            if target.is_dir():
-                sess.cwd = target
-                return {"ok": True, "cwd": str(sess.cwd), "output": ""}
-            return {"ok": False, "cwd": str(sess.cwd), "output": f"cd: not a directory: {rest}\n"}
-        except Exception as e:
-            return {"ok": False, "cwd": str(sess.cwd), "output": f"cd: {e}\n"}
-
-    timeout = 0
-    try:
-        timeout = int(getattr(CONFIG, "terminal_command_timeout", 0) or 0)
-    except Exception:
-        timeout = 0
-    try:
-        shell_windows = str(CONFIG.terminal_shell_windows or "powershell").lower()
-        output_encoding: Optional[str] = None
-        if os.name == "nt" and "cmd" not in shell_windows:
-            # Windows PowerShell inherits a legacy console code page when stdout is
-            # redirected. Force UTF-8 before running the user's command so file
-            # names, CJK text and symbols survive the API round trip unchanged.
-            utf8_prefix = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-            argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", utf8_prefix + cmd]
-            if not shutil.which("powershell") and shutil.which("pwsh"):
-                argv[0] = "pwsh"
-            output_encoding = "utf-8"
-        elif os.name == "nt":
-            argv = ["cmd", "/D", "/S", "/C", cmd]
-        else:
-            argv = [str(CONFIG.terminal_shell_linux or "/bin/sh"), "-lc", cmd]
-        r = subprocess.run(
-            argv,
-            cwd=str(sess.cwd),
-            capture_output=True,
-            text=True,
-            encoding=output_encoding,
-            timeout=timeout if timeout > 0 else None,
-            errors="replace",
-        )
-        output = (r.stdout or "") + (r.stderr or "")
-        if len(output) > int(CONFIG.terminal_max_buffer_chars):
-            output = output[-int(CONFIG.terminal_max_buffer_chars):]
-        return {"ok": r.returncode == 0, "cwd": str(sess.cwd), "code": r.returncode, "output": output}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "cwd": str(sess.cwd), "output": "\n[command timeout]\n"}
-    except Exception as e:
-        return {"ok": False, "cwd": str(sess.cwd), "output": f"\n[command error: {e}]\n"}
+WS_HUB = WebSocketHub()
+TERM_MANAGER: Optional[TerminalManager] = None
+SCM_SERVICE: Optional[ScmService] = None
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -2788,6 +1989,18 @@ class Handler(SimpleHTTPRequestHandler):
             raise BadRequest("JSON body must be an object")
         return data
 
+    def serve_app_asset(self, url_path: str) -> None:
+        root = (Path(__file__).resolve().parent / "static").resolve()
+        rel = url_path[len("/static/"):].replace("\\", "/")
+        target = (root / rel).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            self.send_error(403, "invalid asset path"); return
+        if not target.is_file():
+            self.send_error(404, "asset not found"); return
+        return self.serve_static_file(target)
+
     def do_HEAD(self) -> None:
         self.do_GET()
 
@@ -2796,6 +2009,12 @@ class Handler(SimpleHTTPRequestHandler):
             parsed = urllib.parse.urlsplit(self.path)
             if parsed.path == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
+            if parsed.path == "/ws":
+                if TERM_MANAGER is None or SCM_SERVICE is None:
+                    self.send_error(503, "runtime not initialized"); return
+                return upgrade_websocket(self, WS_HUB, TERM_MANAGER, SCM_SERVICE)
+            if parsed.path.startswith("/static/"):
+                return self.serve_app_asset(parsed.path)
             if parsed.path == "/api/info":
                 return self.api_info()
             if parsed.path == "/api/config":
@@ -2814,10 +2033,6 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_plugin_info()
             if parsed.path in ("/api/plugin/preview", "/api/preview"):
                 return self.api_plugin_preview(parsed.query)
-            if parsed.path == "/api/term/read":
-                return self.api_term_read(parsed.query)
-            if parsed.path == "/api/term/sessions":
-                return self.api_term_sessions()
 
             target = safe_join(parsed.path)
             qs = urllib.parse.parse_qs(parsed.query)
@@ -2856,12 +2071,6 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/zip": return self.api_zip()
             if route == "/api/config": return self.api_config_post()
             if route == "/api/plugin/extensions": return self.api_plugin_extensions()
-            if route == "/api/term/new": return self.api_term_new()
-            if route == "/api/term/input": return self.api_term_input()
-            if route == "/api/term/resize": return self.api_term_resize()
-            if route == "/api/term/detach": return self.api_term_detach()
-            if route == "/api/term/kill": return self.api_term_kill()
-            if route == "/api/term/run": return self.api_term_run()
             self.send_error(404, "API not found")
         except BadRequest as e:
             self.send_json(400, {"error": str(e)})
@@ -2869,81 +2078,6 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(403, {"error": str(e)})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
-
-    def api_term_sessions(self) -> None:
-        self.send_json(200, {"ok": True, "sessions": TERM_MANAGER.list_tmux_sessions()})
-
-    def api_term_new(self) -> None:
-        data = self.read_json()
-        rel = str(data.get("path", ""))
-        cwd = safe_join("/" + rel)
-        if not cwd.is_dir():
-            cwd = cwd.parent
-        sess = TERM_MANAGER.new(cwd)
-        self.send_json(200, {
-            "ok": True,
-            "id": sess.id,
-            "mode": sess.mode,
-            "cwd": str(sess.cwd),
-            "tmux_name": sess.tmux_name,
-            "poll_ms": CONFIG.terminal_poll_ms,
-            "height_px": CONFIG.terminal_start_height_px,
-        })
-
-    def api_term_read(self, query: str) -> None:
-        qs = urllib.parse.parse_qs(query)
-        sid = qs.get("id", [""])[0]
-        try:
-            sess = TERM_MANAGER.get(sid)
-            self.send_json(200, {"ok": True, "id": sid, "alive": sess.alive, "mode": sess.mode, "data": sess.drain(), "cwd": str(sess.cwd), "tmux_name": sess.tmux_name})
-        except KeyError:
-            self.send_json(404, {"error": "terminal session not found"})
-
-    def api_term_input(self) -> None:
-        data = self.read_json()
-        sid = str(data.get("id", ""))
-        payload = str(data.get("data", "")).replace("\x08", "\x7f")
-        try:
-            sess = TERM_MANAGER.get(sid)
-            if sess.mode == "command":
-                self.send_json(400, {"error": "command-mode terminal uses /api/term/run"}); return
-            sess.write(payload)
-            self.send_json(200, {"ok": True})
-        except KeyError:
-            self.send_json(404, {"error": "terminal session not found"})
-
-    def api_term_resize(self) -> None:
-        data = self.read_json()
-        sid = str(data.get("id", ""))
-        try:
-            sess = TERM_MANAGER.get(sid)
-            sess.resize(int(data.get("cols") or 100), int(data.get("rows") or 30))
-            self.send_json(200, {"ok": True})
-        except KeyError:
-            self.send_json(404, {"error": "terminal session not found"})
-
-    def api_term_detach(self) -> None:
-        data = self.read_json()
-        sid = str(data.get("id", ""))
-        TERM_MANAGER.detach(sid)
-        self.send_json(200, {"ok": True})
-
-    def api_term_kill(self) -> None:
-        data = self.read_json()
-        sid = str(data.get("id", ""))
-        TERM_MANAGER.kill(sid)
-        self.send_json(200, {"ok": True})
-
-    def api_term_run(self) -> None:
-        data = self.read_json()
-        sid = str(data.get("id", ""))
-        cmd = str(data.get("cmd", ""))
-        try:
-            sess = TERM_MANAGER.get(sid)
-            result = terminal_run_command(sess, cmd)
-            self.send_json(200, result)
-        except KeyError:
-            self.send_json(404, {"error": "terminal session not found"})
 
     def api_info(self) -> None:
         data = {
@@ -2961,9 +2095,6 @@ class Handler(SimpleHTTPRequestHandler):
                 "folders_first": CONFIG.folders_first,
                 "search_debounce_ms": CONFIG.search_debounce_ms,
                 "terminal_enabled": CONFIG.terminal_enabled,
-                "terminal_backend_linux": CONFIG.terminal_backend_linux,
-                "terminal_backend_windows": CONFIG.terminal_backend_windows,
-                "terminal_poll_ms": CONFIG.terminal_poll_ms,
                 "terminal_max_buffer_chars": CONFIG.terminal_max_buffer_chars,
                 "terminal_start_height_px": CONFIG.terminal_start_height_px,
                 "terminal_mobile_extra_keys": CONFIG.terminal_mobile_extra_keys,
@@ -2975,9 +2106,9 @@ class Handler(SimpleHTTPRequestHandler):
             },
             "terminal": {
                 "enabled": CONFIG.terminal_enabled,
-                "pty_available": HAS_UNIX_PTY,
-                "tmux": bool(shutil.which(CONFIG.terminal_tmux_bin)) if os.name != "nt" else False,
-                "mode": "command" if os.name == "nt" else CONFIG.terminal_backend_linux,
+                "transport": "websocket",
+                "renderer": "xterm.js",
+                "pty": "conpty" if os.name == "nt" else "pty",
             },
             "plugin": {
                 "enabled": plugin_enabled(),
@@ -3543,47 +2674,7 @@ class Handler(SimpleHTTPRequestHandler):
     <div class="upload-foot"><div id="uploadSummary" class="upload-summary">0 file</div><div class="upload-progress"><span id="uploadModalBar"></span></div><button class="btn ghost" onclick="clearUploadQueue()">Clear</button><button class="btn primary" onclick="startUploadQueue()">Start Upload</button></div>
   </div>
 </div>
-<div id="termDrawer" class="term-drawer" style="height:{int(CONFIG.terminal_start_height_px)}px" role="region" aria-label="Terminal">
-  <div id="termResizeHandle" class="term-resize-handle" title="Kéo để đổi chiều cao terminal" aria-hidden="true"></div>
-  <div class="term-head">
-    <div class="term-identity">
-      <div class="term-mark" aria-hidden="true">&gt;_</div>
-      <div class="term-title-wrap">
-        <div class="term-title-row"><span class="term-title">Terminal</span><span id="termMode" class="term-mode">idle</span></div>
-        <div id="termCwd" class="term-cwd">No active session</div>
-      </div>
-    </div>
-    <div class="term-actions">
-      <div class="term-action-group">
-        <button class="term-btn" onclick="newTerminalSession()" title="Mở terminal session mới"><span aria-hidden="true">＋</span> <span class="term-btn-label">New</span></button>
-        <button class="term-btn" onclick="termCopy()" title="Copy selection; nếu chưa chọn thì copy toàn bộ output"><span aria-hidden="true">⧉</span> <span class="term-btn-label">Copy</span></button>
-        <button class="term-btn" onclick="termPasteClipboard()" title="Paste clipboard vào terminal"><span aria-hidden="true">▣</span> <span class="term-btn-label">Paste</span></button>
-        <button class="term-btn" onclick="termClear()" title="Xóa màn hình terminal"><span aria-hidden="true">⌫</span> <span class="term-btn-label">Clear</span></button>
-      </div>
-      <div class="term-action-group">
-        <button class="term-btn" onclick="termStartTmux()" title="Mở hoặc attach tmux session"><span aria-hidden="true">T</span> <span class="term-btn-label">tmux</span></button>
-        <button class="term-btn" onclick="refreshFolder()" title="Refresh danh sách file"><span aria-hidden="true">↻</span> <span class="term-btn-label">Files</span></button>
-      </div>
-      <div class="term-action-group">
-        <button class="term-btn icon" onclick="termFullscreen()" title="Toàn màn hình (Alt+Enter)" aria-label="Toàn màn hình">⛶</button>
-        <button class="term-btn warn" onclick="termDetach()" title="Detach nhưng giữ tmux session"><span aria-hidden="true">↗</span> <span class="term-btn-label">Detach</span></button>
-        <button class="term-btn danger" onclick="termKill()" title="Dừng terminal session"><span aria-hidden="true">■</span> <span class="term-btn-label">Kill</span></button>
-        <button class="term-btn icon" onclick="termHide()" title="Đóng terminal" aria-label="Đóng terminal">×</button>
-      </div>
-    </div>
-  </div>
-  <pre id="termScreen" class="term-screen" tabindex="0" contenteditable="plaintext-only" role="textbox" aria-label="Terminal output và input" aria-multiline="true" spellcheck="false" autocapitalize="off" autocomplete="off"></pre>
-  <div id="termCommand" class="term-command hidden"><span id="termPrompt"></span><input id="termLine" autocomplete="off" spellcheck="false" aria-label="Command" placeholder="Nhập lệnh rồi nhấn Enter"></div>
-  <div id="termKeys" class="term-keys">
-    <button onclick="termSendCtrl('c')">Ctrl-C</button><button onclick="termSend('\x7f')">⌫</button><button onclick="termSend('\t')">Tab</button><button onclick="termSend('\x1b[A')">↑</button><button onclick="termSend('\x1b[B')">↓</button><button onclick="termSend('\x1b[D')">←</button><button onclick="termSend('\x1b[C')">→</button><button onclick="termSend('\x1b')">Esc</button><button onclick="termSend('/')">/</button><button onclick="termSend('..')">..</button>
-  </div>
-  <div class="term-footer">
-    <span id="termStatus" class="term-status" data-state="idle"><span class="term-status-dot" aria-hidden="true"></span><span class="term-status-text">Idle</span></span>
-    <span class="term-shortcuts"><kbd>Ctrl+C</kbd> copy khi có selection · interrupt khi không chọn · <kbd>Ctrl+V</kbd> paste · <kbd>Alt+Enter</kbd> fullscreen</span>
-    <span id="termCols" class="term-cols">— × —</span>
-  </div>
-</div>
-<div id="ctxMenu" class="ctx-menu hidden" onclick="event.stopPropagation()">
+<div id="termDrawer" class="term-drawer" style="height:{int(CONFIG.terminal_start_height_px)}px" role="region" aria-label="Terminal and source control"></div>\n<div id="ctxMenu" class="ctx-menu hidden" onclick="event.stopPropagation()">
   <button data-act="open" onclick="contextAction('open')">↗ Open</button>
   <button data-act="preview" onclick="contextAction('preview')">👁 Preview</button>
   <button data-act="edit" onclick="contextAction('edit')">📝 Edit</button>
@@ -3757,20 +2848,8 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         folders_first=bool(data.get("folders_first", True)),
         search_debounce_ms=max(100, min(int(data.get("search_debounce_ms") or 240), 1500)),
         terminal_enabled=bool(data.get("terminal_enabled", True)),
-        terminal_backend_linux=str(data.get("terminal_backend_linux") or "pty"),
-        terminal_backend_linux_fallback=str(data.get("terminal_backend_linux_fallback") or "pty"),
-        terminal_shell_linux=str(data.get("terminal_shell_linux") or "/bin/bash"),
-        terminal_tmux_bin=str(data.get("terminal_tmux_bin") or "tmux"),
-        terminal_tmux_session_prefix=str(data.get("terminal_tmux_session_prefix") or "landrive"),
-        terminal_tmux_status_bar=bool(data.get("terminal_tmux_status_bar", False)),
-        terminal_session_mode=str(data.get("terminal_session_mode") or "per_folder"),
-        terminal_backend_windows=str(data.get("terminal_backend_windows") or "command"),
-        terminal_shell_windows=str(data.get("terminal_shell_windows") or "powershell"),
-        terminal_command_timeout=max(0, min(int(data.get("terminal_command_timeout") or 0), 86400)),
-        terminal_max_sessions=max(1, min(int(data.get("terminal_max_sessions") or 8), 32)),
-        terminal_idle_detach_minutes=max(5, min(int(data.get("terminal_idle_detach_minutes") or 120), 1440)),
-        terminal_max_buffer_chars=max(10000, min(int(data.get("terminal_max_buffer_chars") or 500000), 5000000)),
-        terminal_poll_ms=max(80, min(int(data.get("terminal_poll_ms") or 150), 2000)),
+        terminal_max_sessions=max(1, min(int(data.get("terminal_max_sessions") or 16), 32)),
+        terminal_max_buffer_chars=max(10000, min(int(data.get("terminal_max_buffer_chars") or 204800), 5000000)),
         terminal_start_height_px=max(220, min(int(data.get("terminal_start_height_px") or 380), 900)),
         terminal_mobile_extra_keys=bool(data.get("terminal_mobile_extra_keys", True)),
         thumb_fit=normalize_fit(data.get("thumb_fit")),
@@ -3790,11 +2869,13 @@ def build_config(args: argparse.Namespace) -> AppConfig:
 
 
 def main() -> None:
-    global CONFIG
+    global CONFIG, TERM_MANAGER, SCM_SERVICE
     args = parse_args()
     config_path = Path(args.config).expanduser().resolve()
     config_existed = config_path.exists()
     CONFIG = build_config(args)
+    TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
+    SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():
         print(f"Root does not exist: {CONFIG.root}", file=sys.stderr)
         sys.exit(2)
@@ -3822,6 +2903,11 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nStopping...")
             httpd.shutdown()
+        finally:
+            if SCM_SERVICE is not None:
+                SCM_SERVICE.close()
+            if TERM_MANAGER is not None:
+                TERM_MANAGER.kill_all()
 
 if __name__ == "__main__":
     main()

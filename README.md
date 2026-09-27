@@ -17,9 +17,11 @@ It lets you browse, preview, upload, edit, download, stream, and manage files fr
 - Download multiple files or folders as a streamed ZIP archive.
 - Copy direct share links for files and folders.
 - Generate image and video thumbnails when optional tools are available.
-- Open a responsive terminal drawer:
-  - Linux: real PTY, with optional `tmux` sessions.
-  - Windows: PowerShell or Command Prompt command mode.
+- Open a responsive multi-terminal drawer powered by local xterm.js + FitAddon.
+  - Linux/macOS: real PTY sessions.
+  - Windows: real ConPTY sessions via `pywinpty`.
+  - WebSocket transport keeps terminal processes alive across browser reconnects and replays bounded scrollback.
+- Use the integrated Git/SCM panel for status, diffs, history, branch switching, stage/unstage, commit, pull, and push. Git reads run directly; writes run in visible terminal tabs.
 - Work on desktop and mobile without requiring a database, Docker, or a ceremonial JavaScript framework sacrifice.
 
 ## Important security warning
@@ -43,11 +45,18 @@ Required:
 - A browser
 - A network containing at least two devices, unless you enjoy sharing files with yourself
 
+Runtime dependencies for Terminal/Git parity:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+`pywinpty` is installed only on Windows; `watchdog` provides low-latency Git metadata change notifications with a polling fallback.
+
 Optional:
 
 - [Pillow](https://python-pillow.org/) for better image thumbnails
 - `ffmpeg` and `ffprobe` for video metadata and thumbnails
-- `tmux` on Linux for persistent terminal sessions
 
 Install Pillow:
 
@@ -58,7 +67,7 @@ python -m pip install pillow
 Ubuntu/Debian optional packages:
 
 ```bash
-sudo apt install ffmpeg tmux python3-pil
+sudo apt install ffmpeg python3-pil
 ```
 
 ## Quick start
@@ -141,10 +150,8 @@ page_limit: 100
 folders_first: true
 
 terminal_enabled: true
-terminal_backend_linux: "pty"
-terminal_shell_linux: "/bin/bash"
-terminal_backend_windows: "command"
-terminal_shell_windows: "powershell"
+terminal_max_sessions: 16
+terminal_max_buffer_chars: 204800
 terminal_start_height_px: 380
 
 thumb_fit: "cover"
@@ -184,9 +191,9 @@ Useful shortcuts:
 | Shortcut | Action |
 |---|---|
 | `Ctrl+C` | Copy selected terminal text; send interrupt when nothing is selected |
-| `Ctrl+V` | Paste into the active terminal or Windows command input |
-| `Ctrl+L` | Clear the terminal |
-| `Ctrl+D` | Send EOF on PTY terminals |
+| `Ctrl+V` | Browser-native paste into xterm |
+| `Ctrl+L` | Clear via the active shell/readline binding |
+| `Ctrl+D` | Send EOF through xterm to the PTY |
 | `Alt+Enter` | Toggle terminal fullscreen mode |
 | `Esc` | Leave terminal fullscreen mode |
 
@@ -203,18 +210,23 @@ The terminal tests cover:
 
 - CJK and Unicode cell widths
 - Combining characters and joined emoji
-- Carriage-return line updates
-- `Ctrl+C` copy-versus-interrupt behavior
-- Windows command-mode clipboard insertion
-- UTF-8 PowerShell output
+- PTY lifecycle, replay, bounded history/output, live-session limits, resize, rename, and byte-exact key encoding
+- xterm/WebSocket client wiring and absence of the retired custom ANSI/polling path
+- Git status/history/diff parsing, path validation, request correlation, watcher notifications, and visible-terminal write commands
+- Real Windows ConPTY and disposable Git repository runtime smoke
 
 ## Project layout
 
 ```text
-lan_drive.py              Main application, server, UI, and terminal implementation
+lan_drive.py              Main file-manager application and HTTP integration
+lantern_terminal.py       Persistent PTY/ConPTY terminal manager
+lantern_scm.py            Direct Git query/parser/watcher service
+lantern_ws.py             Same-origin WebSocket protocol bridge
+static/terminal_scm.js    xterm multi-terminal + Git/SCM browser UI
 lan_drive_config.yaml     Runtime configuration
-test_terminal_ui.py       Terminal renderer and Windows command-mode tests
-README.md                 You are here. Congratulations on finding documentation.
+test_terminal_ui.py       Browser client/static migration contracts
+test_terminal_scm.py      Terminal + SCM deterministic tests
+README.md                 Project documentation
 ```
 
 ## Design philosophy
