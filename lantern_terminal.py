@@ -21,6 +21,10 @@ _VALID_ID = re.compile(r"^[A-Za-z0-9._:/-]{1,80}$")
 
 def encode_terminal_key(key: str, modifiers: Optional[Dict[str, bool]] = None) -> str:
     modifiers = modifiers or {}
+    ctrl = bool(modifiers.get("ctrl"))
+    alt = bool(modifiers.get("alt"))
+    shift = bool(modifiers.get("shift"))
+    modifier = 1 + (1 if shift else 0) + (2 if alt else 0) + (4 if ctrl else 0)
     named = {
         "Enter": "\r", "Return": "\r", "Tab": "\t", "Backspace": "\x7f", "Escape": "\x1b",
         "Up": "\x1b[A", "ArrowUp": "\x1b[A", "Down": "\x1b[B", "ArrowDown": "\x1b[B",
@@ -29,13 +33,17 @@ def encode_terminal_key(key: str, modifiers: Optional[Dict[str, bool]] = None) -
         "PageUp": "\x1b[5~", "PageDown": "\x1b[6~",
         "F1": "\x1bOP", "F2": "\x1bOQ", "F3": "\x1bOR", "F4": "\x1bOS",
     }
+    if key == "Tab" and shift and not ctrl and not alt:
+        return "\x1b[Z"
+    if key == "Backspace":
+        data = "\x08" if ctrl else "\x7f"
+        return ("\x1b" if alt else "") + data
+    if key in {"Insert", "Delete", "PageUp", "PageDown"} and modifier != 1:
+        code = {"Insert": 2, "Delete": 3, "PageUp": 5, "PageDown": 6}[key]
+        return f"\x1b[{code};{modifier}~"
     data = named.get(key, key if len(key) == 1 else "")
     if not data:
         raise ValueError(f"Unsupported terminal key: {key}")
-    ctrl = bool(modifiers.get("ctrl"))
-    alt = bool(modifiers.get("alt"))
-    shift = bool(modifiers.get("shift"))
-    modifier = 1 + (1 if shift else 0) + (2 if alt else 0) + (4 if ctrl else 0)
     arrow = re.match(r"^\x1b\[([A-DHF])$", data)
     function_key = re.match(r"^\x1bO([P-S])$", data)
     named_code = {
@@ -118,16 +126,23 @@ class WinConPty(NativePty):
         on_exit: Callable[[int], None],
     ) -> None:
         try:
-            from winpty import PtyProcess
+            from winpty import Backend, PtyProcess
         except ImportError as exc:
             raise RuntimeError("Windows terminal requires pywinpty (pip install -r requirements.txt)") from exc
         env = os.environ.copy()
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("LANG", "en_US.UTF-8")
-        self._proc = PtyProcess.spawn(argv, cwd=cwd, env=env, dimensions=(rows, cols), backend=1)
+        requested = os.environ.get("LANTERN_PTY_BACKEND", "conpty").strip().lower()
+        if requested not in {"conpty", "winpty"}:
+            raise RuntimeError("LANTERN_PTY_BACKEND must be 'conpty' or 'winpty'")
+        backend = Backend.ConPTY if requested == "conpty" else Backend.WinPTY
+        self._proc = PtyProcess.spawn(argv, cwd=cwd, env=env, dimensions=(rows, cols), backend=backend)
         self._on_data = on_data
         self._on_exit = on_exit
         self._closed = False
+        self._filter_da1 = backend == Backend.ConPTY
+        self._da1_carry = ""
+        self._da1_deadline = time.monotonic() + 1.0
         self._reader = threading.Thread(target=self._read_loop, name=f"conpty-{id(self)}", daemon=True)
         self._reader.start()
 
@@ -145,7 +160,9 @@ class WinConPty(NativePty):
                     time.sleep(0.02)
                     continue
                 if data:
-                    self._on_data(data)
+                    data = self._filter_startup_da1(data)
+                    if data:
+                        self._on_data(data)
                 if not self._proc.isalive():
                     break
             try:
@@ -155,6 +172,33 @@ class WinConPty(NativePty):
             code = int(self._proc.exitstatus or 0)
         finally:
             self._on_exit(code)
+
+    def _filter_startup_da1(self, data: str) -> str:
+        if not self._filter_da1:
+            return data
+        combined = self._da1_carry + data
+        marker = "\x1b[c"
+        index = combined.find(marker)
+        if index >= 0:
+            self._filter_da1 = False
+            self._da1_carry = ""
+            # pywinpty's out-of-band OpenConsole host asks DA1 before the child
+            # prints its prompt. Reply only after observing that exact query so
+            # a future backend build that omits it never receives unsolicited
+            # bytes. The query itself is hidden from xterm to avoid a second
+            # browser-generated DA1 response entering the child.
+            try:
+                self._proc.write("\x1b[?1;2c")
+            except Exception:
+                pass
+            return combined[:index] + combined[index + len(marker):]
+        if time.monotonic() >= self._da1_deadline:
+            self._filter_da1 = False
+            self._da1_carry = ""
+            return combined
+        keep = min(len(marker) - 1, len(combined))
+        self._da1_carry = combined[-keep:] if keep else ""
+        return combined[:-keep] if keep else combined
 
     def write(self, data: str) -> None:
         self._proc.write(data)
@@ -276,8 +320,6 @@ class TerminalEntry:
     exit_code: Optional[int] = None
     output: str = ""
     output_offset: int = 0
-    pending: str = ""
-    flush_timer: Optional[threading.Timer] = None
     command: Optional[str] = None
 
 
@@ -396,39 +438,29 @@ class TerminalManager:
         if not data:
             return
         with self.lock:
-            self._append_retained(entry, data)
-            entry.pending += data
-            if entry.flush_timer:
+            if self.live.get(entry.id) is not entry:
                 return
-            timer = threading.Timer(self.flush_ms, self._flush_pending, args=(entry,))
-            timer.daemon = True
-            entry.flush_timer = timer
-            timer.start()
-
-    def _flush_pending(self, entry: TerminalEntry) -> None:
-        with self.lock:
-            data = entry.pending
-            entry.pending = ""
-            entry.flush_timer = None
-        if data:
-            self.emit({"type": "terminal_output", "terminalId": entry.id, "data": data})
+            self._append_retained(entry, data)
+        self.emit({"type": "terminal_output", "terminalId": entry.id, "data": data})
 
     def _handle_exit(self, entry: TerminalEntry, code: int) -> None:
+        evicted = []
         with self.lock:
             current = self.live.get(entry.id)
             if current is not entry:
                 return
-            self._flush_pending(entry)
             entry.running = False
             entry.exit_code = code
             self.live.pop(entry.id, None)
             self.history[entry.id] = entry
             while len(self.history) > self.max_history:
                 _, old = self.history.popitem(last=False)
-                try:
-                    old.pty.close(graceful=False)
-                except Exception:
-                    pass
+                evicted.append(old)
+        for old in evicted:
+            try:
+                old.pty.close(graceful=False)
+            except Exception:
+                pass
         self.emit({"type": "terminal_exit", "terminalId": entry.id, "exitCode": code})
         self._emit_list()
 
@@ -443,13 +475,13 @@ class TerminalManager:
         self.input(term_id, encode_terminal_key(key, modifiers))
 
     def resize(self, term_id: str, cols: int, rows: int) -> None:
-        with self.lock:
-            entry = self.live.get(term_id)
-        if not entry:
-            return
         cols = max(2, int(cols or 80))
         rows = max(2, int(rows or 24))
-        entry.cols, entry.rows = cols, rows
+        with self.lock:
+            entry = self.live.get(term_id)
+            if not entry or (entry.cols == cols and entry.rows == rows):
+                return
+            entry.cols, entry.rows = cols, rows
         entry.pty.resize(cols, rows)
 
     def rename(self, term_id: str, title: str) -> None:
@@ -467,20 +499,17 @@ class TerminalManager:
         with self.lock:
             entry = self.live.pop(term_id, None)
             if entry:
-                if entry.flush_timer:
-                    entry.flush_timer.cancel()
-                    entry.flush_timer = None
-                self._flush_pending(entry)
                 entry.running = False
-                try:
-                    entry.pty.close(graceful=True)
-                except Exception:
-                    pass
-                if emit_exit:
-                    self.emit({"type": "terminal_exit", "terminalId": term_id, "exitCode": None})
-                self._emit_list()
-                return
-            hist = self.history.pop(term_id, None)
+            hist = None if entry else self.history.pop(term_id, None)
+        if entry:
+            try:
+                entry.pty.close(graceful=True)
+            except Exception:
+                pass
+            if emit_exit:
+                self.emit({"type": "terminal_exit", "terminalId": term_id, "exitCode": None})
+            self._emit_list()
+            return
         if hist:
             try:
                 hist.pty.close(graceful=False)

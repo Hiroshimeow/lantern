@@ -1,14 +1,15 @@
 ﻿from __future__ import annotations
 
+import socket
 import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from lantern_terminal import TerminalManager, encode_terminal_key
+from lantern_terminal import TerminalManager, WinConPty, encode_terminal_key
 from lantern_scm import ScmService, build_git_command
-from lantern_ws import dispatch
+from lantern_ws import WebSocketPeer, dispatch
 
 
 class FakePty:
@@ -43,12 +44,36 @@ class TerminalParityTests(unittest.TestCase):
         self.assertEqual(encode_terminal_key("ArrowUp"), "\x1b[A")
         self.assertEqual(encode_terminal_key("ArrowUp", {"alt": True}), "\x1b[1;3A")
         self.assertEqual(encode_terminal_key("ArrowUp", {"ctrl": True, "shift": True}), "\x1b[1;6A")
-        self.assertEqual(encode_terminal_key("Tab", {"shift": True}), "\x1b[9;2u")
+        self.assertEqual(encode_terminal_key("Tab", {"shift": True}), "\x1b[Z")
+        self.assertEqual(encode_terminal_key("Backspace", {"alt": True}), "\x1b\x7f")
+        self.assertEqual(encode_terminal_key("Backspace", {"ctrl": True}), "\x08")
+        self.assertEqual(encode_terminal_key("Delete", {"ctrl": True}), "\x1b[3;5~")
+        self.assertEqual(encode_terminal_key("PageUp", {"shift": True}), "\x1b[5;2~")
         self.assertEqual(encode_terminal_key("Enter"), "\r")
         self.assertEqual(encode_terminal_key("c", {"ctrl": True}), "\x03")
         self.assertEqual(encode_terminal_key("c", {"alt": True}), "\x1bc")
         with self.assertRaises(ValueError):
             encode_terminal_key("F20")
+
+    def test_conpty_startup_da1_filter_handles_split_query(self) -> None:
+        class Proc:
+            def __init__(self) -> None:
+                self.writes = []
+
+            def write(self, data: str) -> None:
+                self.writes.append(data)
+
+        pty = WinConPty.__new__(WinConPty)
+        pty._proc = Proc()
+        pty._filter_da1 = True
+        pty._da1_carry = ""
+        pty._da1_deadline = time.monotonic() + 1.0
+        self.assertEqual(pty._filter_startup_da1("\x1b[1tprefix\x1b["), "\x1b[1tprefix")
+        self.assertEqual(pty._proc.writes, [], "DA1 response must not be sent before the query is observed")
+        self.assertEqual(pty._filter_startup_da1("c\x1b[?1004h"), "\x1b[?1004h")
+        self.assertEqual(pty._proc.writes, ["\x1b[?1;2c"])
+        self.assertFalse(pty._filter_da1)
+        self.assertEqual(pty._filter_startup_da1("\x1b[c-live"), "\x1b[c-live")
 
     def test_live_limit_history_replay_and_output_before_exit(self) -> None:
         events = []
@@ -141,10 +166,11 @@ class TerminalParityTests(unittest.TestCase):
             manager.input("t", "echo hi\r")
             manager.key("t", "ArrowUp", {"ctrl": True})
             manager.resize("t", 120, 40)
+            manager.resize("t", 120, 40)
             manager.rename("t", "Renamed")
             first = spawned["t"][0]
             self.assertEqual(first.writes, ["echo hi\r", "\x1b[1;5A"])
-            self.assertEqual(first.resizes[-1], (120, 40))
+            self.assertEqual(first.resizes, [(120, 40)], "identical resize requests must be ignored")
             self.assertEqual(next(x for x in manager.list() if x["id"] == "t")["title"], "Renamed")
             first.exit(0)
             time.sleep(0.02)
@@ -228,6 +254,39 @@ class ScmParityTests(unittest.TestCase):
 
 
 class WsProtocolTests(unittest.TestCase):
+    def test_slow_peer_overflow_stops_writer_thread(self) -> None:
+        class Handler:
+            pass
+
+        server, client = socket.socketpair()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        handler = Handler()
+        handler.connection = server
+        handler.rfile = server.makefile("rb", buffering=0)
+        handler.wfile = server.makefile("wb", buffering=0)
+        peer = WebSocketPeer(handler)
+        try:
+            payload = "x" * 65536
+            with self.assertRaises(ConnectionError):
+                for _ in range(300):
+                    peer.send({"type": "terminal_output", "terminalId": "t", "data": payload})
+            deadline = time.time() + 3.0
+            while peer._writer.is_alive() and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(peer._writer.is_alive(), "overflowed slow peer writer must terminate")
+        finally:
+            try:
+                peer.close()
+            except Exception:
+                pass
+            for stream in (handler.rfile, handler.wfile):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            server.close()
+            client.close()
+
     class Peer:
         def __init__(self):
             self.messages = []
