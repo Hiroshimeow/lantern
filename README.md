@@ -83,7 +83,7 @@ python lan_drive.py --root "$env:USERPROFILE" --host 127.0.0.1 --port 9999
 On a clean Windows machine, run this one command in PowerShell:
 
 ```powershell
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP 'lantern-install.ps1'; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Hiroshimeow/lantern/main/install.ps1' -OutFile $p; & $p"
+$p=Join-Path $env:TEMP 'lantern-install.ps1'; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Hiroshimeow/lantern/main/install.ps1' -OutFile $p; & $p
 ```
 
 It installs Lantern into `%LOCALAPPDATA%\Lantern`, prepares an isolated Python 3.12 environment with `uv`, creates a machine-local config, and starts Lantern.
