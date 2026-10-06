@@ -71,7 +71,7 @@ except Exception:
 from http.server import SimpleHTTPRequestHandler
 from lantern_terminal import TerminalManager
 from lantern_scm import ScmService
-from lantern_ws import WebSocketHub, upgrade as upgrade_websocket
+from lantern_ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
 
 try:
     from PIL import Image, ImageOps  # type: ignore
@@ -2069,6 +2069,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            # Browser-originated mutations must stay same-origin. Requests without
+            # Origin remain allowed for CLI/API clients on trusted networks.
+            if self.headers.get("Origin") and not same_origin(self):
+                self.send_error(403, "POST Origin must match Host")
+                return
             parsed = urllib.parse.urlsplit(self.path)
             route = parsed.path
             if route == "/api/upload": return self.api_upload(parsed.query)

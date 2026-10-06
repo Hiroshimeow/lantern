@@ -75,8 +75,60 @@ sudo apt install ffmpeg python3-pil
 ### Windows
 
 ```powershell
-python lan_drive.py --root "E:\" --port 9999
+python lan_drive.py --root "$env:USERPROFILE" --host 127.0.0.1 --port 9999
 ```
+
+### One-command Windows install
+
+On a clean Windows machine, run this one command in PowerShell:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP 'lantern-install.ps1'; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Hiroshimeow/lantern/main/install.ps1' -OutFile $p; & $p"
+```
+
+It installs Lantern into `%LOCALAPPDATA%\Lantern`, prepares an isolated Python 3.12 environment with `uv`, creates a machine-local config, and starts Lantern.
+
+Safe defaults:
+
+- Bind only to `127.0.0.1`.
+- Share `%USERPROFILE%`.
+- Terminal disabled.
+- Port `9999`.
+- Machine-specific settings live in `%LOCALAPPDATA%\Lantern\lan_drive_config.local.yaml`.
+
+After installation:
+
+```text
+%LOCALAPPDATA%\Lantern\Run-Lantern.bat
+```
+
+Open `http://127.0.0.1:9999` in a browser.
+
+Common install variants:
+
+```powershell
+# Share only one folder
+.\install.bat -Root "D:\Share"
+
+# Listen on a specific trusted LAN or Tailscale IP
+.\install.bat -Root "D:\Share" -HostAddress "100.x.y.z"
+
+# Listen on every interface. Use only on a trusted network.
+.\install.bat -Root "D:\Share" -BindAll
+
+# Enable the browser terminal. Anyone who can reach Lantern can execute
+# commands as the Windows user running Lantern.
+.\install.bat -Root "D:\Share" -HostAddress "100.x.y.z" -EnableTerminal
+
+# Install/update files without starting Lantern
+.\install.bat -NoStart
+```
+
+When you already have a clone of this repository, run the examples above from the repository root. Running the installer again refreshes the installed application from the requested branch and rebuilds its managed virtual environment. Re-pass any non-default `-Root`, bind address, port, or terminal option because the installer regenerates the machine-local config.
+
+To uninstall, stop Lantern and remove `%LOCALAPPDATA%\Lantern`.
+
+> Lantern has no authentication. Do not expose `-BindAll` or `-EnableTerminal` to an untrusted network or the public internet.
 
 ### Linux
 

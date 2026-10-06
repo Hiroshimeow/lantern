@@ -1,10 +1,10 @@
 # LAN Drive config - file này có thể sửa tay hoặc đổi trong UI.
 # Chạy: python3 lan_drive.py --config lan_drive_config.yaml
-root: "E:\\"
+root: "."
 port: 9999
 host: "0.0.0.0"
 title: "LAN Drive"
-cache_dir: "E:\\tmp\\lan-drive-onefile-cache"
+cache_dir: ""
 show_hidden: true
 show_system: true
 default_sort: "name-asc"
