@@ -202,10 +202,17 @@ class ScmParityTests(unittest.TestCase):
             repo = self.make_repo(root)
             (repo / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
             (repo / "new.txt").write_text("new\n", encoding="utf-8")
+            nested = repo / ".plan" / "review"
+            nested.mkdir(parents=True)
+            (nested / "report.md").write_text("# Review\n\nall green\n", encoding="utf-8")
             svc = ScmService(root, lambda _msg: None)
             st = svc.status(repo)
             self.assertEqual(st["branch"], "main")
-            self.assertEqual({f["path"] for f in st["files"]}, {"a.txt", "new.txt"})
+            self.assertEqual(
+                {f["path"] for f in st["files"]},
+                {"a.txt", "new.txt", ".plan/review/report.md"},
+                "untracked directories must expand to individual files",
+            )
             self.assertIn("a.txt", st["stats"])
             self.assertTrue(any(b["name"] == "main" and b["current"] for b in st["branches"]))
             subprocess.run(["git", "update-ref", "refs/remotes/origin/feature", "HEAD"], cwd=repo, check=True)
@@ -213,6 +220,10 @@ class ScmParityTests(unittest.TestCase):
             self.assertTrue(any(b["name"] == "origin/feature" and b.get("remote") == "origin" for b in st_remote["branches"]))
             diff = svc.file_diff(repo, "a.txt")
             self.assertIn("+two", diff["worktree"])
+            new_diff = svc.file_diff(repo, ".plan/review/report.md")
+            self.assertIn("new file mode", new_diff["worktree"])
+            self.assertIn("+++ b/.plan/review/report.md", new_diff["worktree"])
+            self.assertIn("+# Review", new_diff["worktree"])
             hist = svc.history(repo)
             self.assertEqual(hist[0]["subject"], "init")
             self.assertTrue(svc.status(root)["notRepo"])

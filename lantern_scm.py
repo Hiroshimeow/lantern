@@ -124,7 +124,7 @@ class ScmService:
     def status(self, cwd: str | Path) -> Dict[str, Any]:
         safe = self._safe_cwd(cwd)
         try:
-            status_text = self._git(safe, ["status", "--porcelain=v1", "-b", "--find-renames"])
+            status_text = self._git(safe, ["status", "--porcelain=v1", "-b", "--find-renames", "--untracked-files=all"])
         except RuntimeError as exc:
             if self._is_not_repo_error(exc):
                 self.stop_watch()
@@ -192,6 +192,14 @@ class ScmService:
         rel = self._safe_diff_path(safe, path)
         staged = self._git(safe, ["diff", "--cached", "--no-color", "--no-ext-diff", "--", rel], allow_failure=True)
         worktree = self._git(safe, ["diff", "--no-color", "--no-ext-diff", "--", rel], allow_failure=True)
+        if not staged and not worktree:
+            untracked = self._git(safe, ["ls-files", "--others", "--exclude-standard", "--", rel], allow_failure=True)
+            if any(line.strip() == rel for line in untracked.splitlines()):
+                worktree = self._git(
+                    safe,
+                    ["diff", "--no-index", "--no-color", "--no-ext-diff", "--", "/dev/null", rel],
+                    allow_failure=True,
+                )
         return {"staged": staged, "worktree": worktree}
 
     def commit_detail(self, cwd: str | Path, commit_hash: str) -> str:
