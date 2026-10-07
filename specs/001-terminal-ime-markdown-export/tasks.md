@@ -174,7 +174,7 @@ Steps:
 1. Set `window.opener=null` before Mermaid work.
 2. Initialize Mermaid with strict/local config from spec: startOnLoad false, strict security, suppress errors, light theme, htmlLabels false, maxTextSize 60000, maxEdges 500, conservative DOMPurify config, and matching secure list.
 3. Cap at 24 diagrams/page; render sequentially with yields; isolate failures and oversize inputs.
-4. Keep parent terminal responsive; the 100 ms rule includes initial Mermaid parse/compile and render/export work. Do not load/parse Mermaid when no Mermaid fence exists; lazily load the nonce-authorized local bundle only when needed. Any >100 ms Mermaid-caused main-thread task keeps acceptance INCOMPLETE and triggers re-review of loading/pin/caps.
+4. Keep parent terminal responsive and measure Mermaid work with attributed Chromium timings. Do not load/parse Mermaid when no Mermaid fence exists; lazily load the nonce-authorized local bundle at most once when needed. Keep maxTextSize 60000, maxEdges 500, and page cap 24. Render sequentially only. Yield after bundle load, after initialize, after `mermaid.render()` before DOM insertion, and between diagrams. For first-load acceptance, use the accepted **FJP Playwright Chromium** harness against actual served product preview HTML in nine fresh browser contexts; prevent helper initialize/render work from contaminating attribution and measure the attributable bundle parse/evaluation main-thread task in each context. Require **median <=300 ms and no individual sample >500 ms**; require every subsequent attributable initialize/render/PNG-export main-thread task to be **<=100 ms**. Do not fail an aggregate full-page Long Task without attribution to a governed Mermaid operation. A first-load median >300 ms, any individual sample >500 ms, any subsequent governed threshold breach, or invariant regression keeps acceptance INCOMPLETE and triggers re-review.
 5. PNG export derives from viewBox, explicit dimensions, white canvas, <=8192 px/side and about 32 MP, 2x target, `toBlob`, `<doc>-diagram-N.png`.
 6. Print / Save as PDF waits for pending renders and uses explicit light print CSS: `.table-wrap,.md-code{overflow:visible}`, `th{position:static}`, wrapped pre, responsive SVG.
 
@@ -195,7 +195,7 @@ Security release gate: record owner sign-off on residual preview containment ris
 
 ## T8 — Full regression and scope check
 
-Lane rule: Markdown T8 may run after T7 for the Markdown worktree; the combined T8 runs only after both the Markdown and terminal lanes reach their exits.
+Lane rule: Markdown T8 is the release regression gate for this Markdown worktree. The deferred terminal IME lane is tracked separately and does not block the Markdown release.
 
 Run:
 

@@ -23,11 +23,13 @@ import io
 import json
 import os
 import re
+import secrets
 import subprocess
 import zipfile
 import zlib
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 VERSION = "0.1.0"
@@ -228,66 +230,143 @@ def _render_text(path: Path) -> Tuple[str, str]:
     return "Text preview", f"{note}<pre class='text-preview'>{h(text)}</pre>"
 
 
-def _safe_href(url: str) -> str:
-    raw = url.strip()
-    lowered = raw.lower()
-    if lowered.startswith(("javascript:", "data:", "vbscript:")):
-        return "#"
-    return h(raw)
+def _trim_c0(value: str) -> str:
+    return value.strip("".join(chr(i) for i in range(33)))
 
 
-def _md_inline(text: str) -> str:
-    escaped = h(text)
+def _safe_markdown_target(url: str, source_path: Path, root: Path, image: bool = False) -> Optional[str]:
+    raw = re.sub(r"[\t\r\n]", "", url)
+    raw = _trim_c0(html.unescape(raw)).replace("\\", "/")
+    if not raw or raw.startswith("//"):
+        return None
+    if raw.startswith("#"):
+        return raw
+
+    split = urlsplit(raw)
+    scheme = split.scheme.lower()
+    if scheme:
+        if image or scheme not in {"http", "https", "mailto"}:
+            return None
+        return urlunsplit((scheme, split.netloc, split.path, split.query, split.fragment))
+
+    decoded_path = unquote(split.path)
+    if re.search(r"%(?:2e%?2e|2f)", decoded_path, flags=re.I):
+        return None
+
+    root_resolved = root.resolve()
+    parent = source_path.resolve().parent
+    if decoded_path.startswith("/"):
+        relative = decoded_path.lstrip("/")
+    else:
+        try:
+            parent_rel = parent.relative_to(root_resolved).as_posix()
+        except ValueError:
+            return None
+        relative = "/".join(x for x in (parent_rel, decoded_path) if x)
+
+    target = (root_resolved / Path(*[x for x in relative.split("/") if x not in {"", "."}])).resolve()
+    try:
+        rel = target.relative_to(root_resolved).as_posix()
+    except ValueError:
+        return None
+
+    encoded = "/" + "/".join(quote(segment, safe="") for segment in rel.split("/") if segment)
+    if split.query:
+        encoded += "?" + split.query
+    if split.fragment:
+        encoded += "#" + split.fragment
+    return encoded or "/"
+
+
+def _md_inline(text: str, source_path: Path, root: Path) -> str:
     stash: List[str] = []
 
-    def keep(html_fragment: str) -> str:
+    def keep(fragment: str) -> str:
         token = f"\u0000MD{len(stash)}\u0000"
-        stash.append(html_fragment)
+        stash.append(fragment)
         return token
 
-    def code_repl(m: re.Match[str]) -> str:
-        return keep(f"<code>{m.group(1)}</code>")
+    work = re.sub(
+        r"`([^`\n]+)`",
+        lambda m: keep(f"<code>{h(m.group(1))}</code>"),
+        text,
+    )
 
-    escaped = re.sub(r"`([^`]+)`", code_repl, escaped)
+    def image_repl(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        target = _safe_markdown_target(match.group(2), source_path, root, image=True)
+        if target is None:
+            return alt
+        return keep(f'<img src="{h(target)}" alt="{h(alt)}">')
 
-    def link_repl(m: re.Match[str]) -> str:
-        label = m.group(1)
-        url = _safe_href(html.unescape(m.group(2)))
-        return f"<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">{label}</a>"
+    work = re.sub(r"!\[([^\]]*)\]\(([^)\r\n]*)\)", image_repl, work)
 
-    escaped = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link_repl, escaped)
+    def link_repl(match: re.Match[str]) -> str:
+        label = match.group(1)
+        target = _safe_markdown_target(match.group(2), source_path, root, image=False)
+        if target is None:
+            return label
+        return keep(
+            f'<a href="{h(target)}" target="_blank" rel="noopener noreferrer">{h(label)}</a>'
+        )
+
+    work = re.sub(r"\[([^\]]+)\]\(([^)\r\n]*)\)", link_repl, work)
+    escaped = h(work)
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
     escaped = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", escaped)
     escaped = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<em>\1</em>", escaped)
-    for i, html_fragment in enumerate(stash):
-        escaped = escaped.replace(f"\u0000MD{i}\u0000", html_fragment)
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(stash) - 1, -1, -1):
+            token = f"\u0000MD{i}\u0000"
+            if token in escaped:
+                escaped = escaped.replace(token, stash[i])
+                changed = True
     return escaped
 
 
-def _flush_md_paragraph(out: List[str], lines: List[str]) -> None:
+def _flush_md_paragraph(out: List[str], lines: List[str], source_path: Path, root: Path) -> None:
     if not lines:
         return
     text = " ".join(x.strip() for x in lines).strip()
     if text:
-        out.append(f"<p>{_md_inline(text)}</p>")
+        out.append(f"<p>{_md_inline(text, source_path, root)}</p>")
     lines.clear()
 
 
-def _render_markdown(path: Path) -> Tuple[str, str]:
+def _split_table_row(line: str) -> List[str]:
+    cells = line.strip()
+    if cells.startswith("|"):
+        cells = cells[1:]
+    if cells.endswith("|"):
+        cells = cells[:-1]
+    return [cell.strip() for cell in cells.split("|")][:MAX_TABLE_COLS]
+
+
+def _is_table_separator(line: str) -> bool:
+    cells = _split_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
+def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
     data, truncated = _read_limited_bytes(path)
-    if _is_probably_binary(data):
-        return "Markdown preview", "<p>File này có vẻ là binary. Không render dạng Markdown.</p>"
-    text = _decode_text(data)
+    text = _decode_text(data).replace("\x00", "")
     if len(text) > MAX_TEXT_CHARS:
         text = text[:MAX_TEXT_CHARS]
         truncated = True
+
+    lines = text.splitlines()
     out: List[str] = []
     para: List[str] = []
-    in_code = False
-    code_lines: List[str] = []
     list_type = ""
     in_quote = False
+    mermaid_count = 0
+
+    def flush() -> None:
+        _flush_md_paragraph(out, para, path, root)
 
     def close_list() -> None:
         nonlocal list_type
@@ -301,58 +380,144 @@ def _render_markdown(path: Path) -> Tuple[str, str]:
             out.append("</blockquote>")
             in_quote = False
 
-    for raw in text.splitlines():
-        line = raw.rstrip("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
-        fence = re.match(r"^(```+|~~~+)(.*)$", stripped)
-        if fence:
-            _flush_md_paragraph(out, para); close_list(); close_quote()
-            if not in_code:
-                in_code = True
-                code_lines = []
+
+        opener = re.match(r"^ {0,3}([`~])\1{2,}(.*)$", line)
+        if opener:
+            flush()
+            close_list()
+            close_quote()
+            char = opener.group(1)
+            run = len(line.lstrip()) - len(line.lstrip().lstrip(char))
+            info = opener.group(2).strip()
+            close_re = re.compile(rf"^ {{0,3}}{re.escape(char)}{{{run},}}\s*$")
+            end = i + 1
+            while end < len(lines) and not close_re.match(lines[end]):
+                end += 1
+            code_lines = lines[i + 1:end]
+            language = info.split(None, 1)[0] if info else ""
+            if end >= len(lines):
+                body = "\n".join(code_lines)
+                attr = f' data-language="{h(language)}"' if language else ""
+                out.append(f'<pre class="md-code"{attr}><code>{h(body)}</code></pre>')
+                break
+            body = "\n".join(code_lines)
+            if language.lower() == "mermaid" and mermaid_count < 24:
+                mermaid_count += 1
+                out.append(
+                    f'<div class="mermaid-diagram" data-diagram-index="{mermaid_count}">'
+                    f'<pre class="mermaid-source"><code>{h(body)}</code></pre>'
+                    '<div class="mermaid-output"></div>'
+                    f'<button class="btn" type="button" data-action="png" data-diagram-index="{mermaid_count}" hidden>PNG</button>'
+                    "</div>"
+                )
             else:
-                out.append(f"<pre class='md-code'><code>{h(chr(10).join(code_lines))}</code></pre>")
-                in_code = False
-                code_lines = []
+                attr = f' data-language="{h(language)}"' if language else ""
+                out.append(f'<pre class="md-code"{attr}><code>{h(body)}</code></pre>')
+            i = end + 1
             continue
-        if in_code:
-            code_lines.append(line)
+
+        if i + 1 < len(lines) and "|" in line and _is_table_separator(lines[i + 1]):
+            flush()
+            close_list()
+            close_quote()
+            headers = _split_table_row(line)
+            rows: List[List[str]] = []
+            i += 2
+            while i < len(lines) and "|" in lines[i] and lines[i].strip() and len(rows) < MAX_TABLE_ROWS:
+                rows.append(_split_table_row(lines[i]))
+                i += 1
+            head = "".join(f"<th>{_md_inline(cell, path, root)}</th>" for cell in headers)
+            body_rows = []
+            for row in rows:
+                cells = row + [""] * max(0, len(headers) - len(row))
+                body_rows.append(
+                    "<tr>" + "".join(f"<td>{_md_inline(cell, path, root)}</td>" for cell in cells[:len(headers)]) + "</tr>"
+                )
+            out.append(
+                '<div class="table-wrap"><table><thead><tr>'
+                + head
+                + "</tr></thead><tbody>"
+                + "".join(body_rows)
+                + "</tbody></table></div>"
+            )
             continue
+
         if not stripped:
-            _flush_md_paragraph(out, para); close_list(); close_quote(); continue
+            flush()
+            close_list()
+            close_quote()
+            i += 1
+            continue
+
         heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", stripped)
         if heading:
-            _flush_md_paragraph(out, para); close_list(); close_quote()
+            flush()
+            close_list()
+            close_quote()
             level = len(heading.group(1))
-            out.append(f"<h{level}>{_md_inline(heading.group(2))}</h{level}>")
+            out.append(f"<h{level}>{_md_inline(heading.group(2), path, root)}</h{level}>")
+            i += 1
             continue
+
         if re.match(r"^(-{3,}|\*{3,}|_{3,})$", stripped):
-            _flush_md_paragraph(out, para); close_list(); close_quote(); out.append("<hr>"); continue
-        quote = re.match(r"^>\s?(.*)$", line)
-        if quote:
-            _flush_md_paragraph(out, para); close_list()
-            if not in_quote:
-                out.append("<blockquote>"); in_quote = True
-            out.append(f"<p>{_md_inline(quote.group(1))}</p>")
+            flush()
+            close_list()
+            close_quote()
+            out.append("<hr>")
+            i += 1
             continue
+
+        quote_match = re.match(r"^>\s?(.*)$", line)
+        if quote_match:
+            flush()
+            close_list()
+            if not in_quote:
+                out.append("<blockquote>")
+                in_quote = True
+            out.append(f"<p>{_md_inline(quote_match.group(1), path, root)}</p>")
+            i += 1
+            continue
+
         close_quote()
         ul = re.match(r"^\s*[-+*]\s+(.+)$", line)
         ol = re.match(r"^\s*\d+[.)]\s+(.+)$", line)
         if ul or ol:
-            _flush_md_paragraph(out, para)
+            flush()
             tag = "ul" if ul else "ol"
             if list_type != tag:
-                close_list(); out.append(f"<{tag}>"); list_type = tag
-            out.append(f"<li>{_md_inline((ul or ol).group(1))}</li>")
+                close_list()
+                out.append(f"<{tag}>")
+                list_type = tag
+            item = (ul or ol).group(1)
+            task = re.match(r"^\[([ xX])\]\s+(.*)$", item)
+            if task:
+                checked = " checked" if task.group(1).lower() == "x" else ""
+                out.append(
+                    '<li class="task-item"><input type="checkbox" disabled aria-label="task"'
+                    + checked
+                    + ">"
+                    + _md_inline(task.group(2), path, root)
+                    + "</li>"
+                )
+            else:
+                out.append(f"<li>{_md_inline(item, path, root)}</li>")
+            i += 1
             continue
+
         close_list()
         para.append(line)
-    if in_code:
-        out.append(f"<pre class='md-code'><code>{h(chr(10).join(code_lines))}</code></pre>")
-    _flush_md_paragraph(out, para); close_list(); close_quote()
-    note = "<div class='note'>Markdown preview dùng parser nhẹ, raw HTML bị escape.</div>"
+        i += 1
+
+    flush()
+    close_list()
+    close_quote()
+    note = "<div class='note'>Markdown preview uses a bounded parser; raw HTML is escaped.</div>"
     if truncated:
-        note += "<div class='note'>Đã cắt preview để giữ UI nhẹ.</div>"
+        note += "<div class='note'>Preview truncated to keep the UI bounded.</div>"
     return "Markdown preview", note + "<article class='md-preview'>" + "\n".join(out) + "</article>"
 
 
@@ -563,11 +728,11 @@ def _render_pdf(path: Path) -> Tuple[str, str]:
     return "PDF preview", note + f"<pre class='text-preview'>{h(text)}</pre>"
 
 
-def render_content(path: Path | str, config_path: Optional[Path | str] = None) -> Tuple[str, str]:
+def render_content(path: Path | str, config_path: Optional[Path | str] = None, root: Optional[Path | str] = None) -> Tuple[str, str]:
     p = Path(path)
     kind = _kind(p, config_path)
     if kind == "markdown":
-        return _render_markdown(p)
+        return _render_markdown(p, Path(root) if root is not None else p.parent)
     if kind == "pdf":
         return _render_pdf(p)
     if kind == "docx":
@@ -586,17 +751,35 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         rel = p.resolve().relative_to(rootp.resolve()).as_posix()
     except Exception:
         rel = p.name
-    title, body = render_content(p, config_path)
+    title, body = render_content(p, config_path, rootp)
     raw_url = "/" + "/".join([quote_component(x) for x in rel.split("/")])
+    nonce = secrets.token_urlsafe(24)
+    csp = (
+        "default-src 'none'; "
+        f"script-src 'nonce-{nonce}'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'none'; "
+        "base-uri 'none'; "
+        "object-src 'none'; "
+        "form-action 'none'"
+    )
     css = """
 :root{color-scheme:dark;--bg:#080a0f;--panel:#10151e;--line:#283343;--text:#f8fafc;--muted:#b9c4d0;--accent:#68e37a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.md-preview{max-width:980px;margin:0 auto;padding:18px 22px;border:1px solid var(--line);border-radius:16px;background:#0b1018;color:#edf5ff;font-size:15px;line-height:1.72}.md-preview h1,.md-preview h2,.md-preview h3{line-height:1.25;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:.28em}.md-preview a{color:#8db4ff}.md-preview code{background:#18202c;border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:.1em .35em}.md-code{padding:12px 14px;border:1px solid #263142;border-radius:13px;background:#05070b;overflow:auto}.md-preview blockquote{margin:10px 0;padding:4px 12px;border-left:4px solid var(--accent);background:rgba(104,227,122,.06);color:var(--muted)}.md-preview hr{border:0;border-top:1px solid var(--line);margin:18px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}td,th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750;cursor:pointer}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.md-preview{max-width:980px;margin:0 auto;padding:18px 22px;border:1px solid var(--line);border-radius:16px;background:#0b1018;color:#edf5ff;font-size:15px;line-height:1.72}.md-preview h1,.md-preview h2,.md-preview h3{line-height:1.25;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:.28em}.md-preview a{color:#8db4ff}.md-preview code{background:#18202c;border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:.1em .35em}.md-code{padding:12px 14px;border:1px solid #263142;border-radius:13px;background:#05070b;overflow:auto}.md-preview blockquote{margin:10px 0;padding:4px 12px;border-left:4px solid var(--accent);background:rgba(104,227,122,.06);color:var(--muted)}.md-preview hr{border:0;border-top:1px solid var(--line);margin:18px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}td,th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}.task-item{list-style:none}.task-item input{margin-right:.5em}.mermaid-diagram{margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:14px;background:#fff;color:#111}.mermaid-output svg{max-width:100%;height:auto}
+@media print{:root{color-scheme:light}body,.md-preview{background:#fff!important;color:#111!important}.bar,.muted,.note,.mermaid-diagram>.btn{display:none!important}.content{padding:0}.md-preview{max-width:none;border:0;padding:0}.table-wrap,.md-code{overflow:visible!important}th{position:static!important}pre{white-space:pre-wrap!important;overflow:visible!important}.mermaid-output svg{max-width:100%!important;height:auto!important}.mermaid-diagram{border:0;padding:0}}
 """
+    mermaid_script = (
+        f'<script nonce="{h(nonce)}" src="/static/vendor/mermaid-11.17.2.min.js" defer></script>\n'
+        if 'class="mermaid-diagram"' in body else ""
+    )
+    helper_script = f'<script nonce="{h(nonce)}" src="/static/markdown_preview.js" defer></script>'
     page = f"""<!doctype html>
-<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{h(title)} - {h(rel)}</title><style>{css}</style></head>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
+{mermaid_script}{helper_script}</head>
 <body>
-<div class="bar"><a class="btn" href="javascript:history.back()">↩ Back</a><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><a class="btn" href="/api/plugin/preview?p={h(rel)}">Preview</a><a class="btn" href="{h(raw_url)}?edit=1">Edit</a><a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
-<div class="content"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
+<div class="bar"><button class="btn" type="button" data-action="back">↩ Back</button><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><button class="btn" type="button" data-action="print">Print / Save as PDF</button><a class="btn" href="/api/plugin/preview?p={h(rel)}">Preview</a><a class="btn" href="{h(raw_url)}?edit=1">Edit</a><a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
+<div class="content" data-doc-name="{h(p.stem)}"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
 </body></html>"""
     return page.encode("utf-8", "surrogateescape")
 

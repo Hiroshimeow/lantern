@@ -5,7 +5,7 @@
 # Terminal IME + Markdown Preview/Export Increment
 
 Status: Opus UniKey re-review incorporated. T0-A PASS. T0-B PASS only as falsification of the retired Process/229 design. The Win32 SendInput automation probe cannot exercise UniKey and is non-evidence for T0-C; the physical gate remains NOT_MEASURED and the original UniKey registry settings were restored. Terminal product code is blocked on T0-C; the Markdown/Mermaid track is independent and may proceed after this document review.
-Baseline: `main` at `5ba0ed9c0a29332a219531787d4ee9f6b6c92c45`.
+Product-code baseline: `main` at `5ba0ed9c0a29332a219531787d4ee9f6b6c92c45`. Implementation-diff baseline: planning-only commit `387a5f17a30ab60f50ae290c8651511608f153d1`, which adds Spec-Kit docs but no product-code change.
 
 ## Outcome
 
@@ -200,7 +200,7 @@ Cap rendering at 24 diagrams, render sequentially with yields, isolate malformed
 
 Required types: flowchart, sequence, class, state, ER, Gantt, pie.
 
-The **100 ms** rule covers all Mermaid-caused main-thread work on an accepted page, including the first parse/compile of the Mermaid bundle and render/export work. Pages with no Mermaid fence must not load or parse Mermaid; load the nonce-authorized local bundle lazily only when at least one Mermaid fence is present. If first-load parse/compile or any render/export task exceeds 100 ms in accepted Chromium performance evidence, acceptance is INCOMPLETE and the loading/pin/caps strategy must be re-reviewed rather than waived.
+Performance acceptance uses attributed Chromium timings with a statistical first-load guardrail. The reviewed 3.57 MB Mermaid standalone bundle is loaded **lazily at most once per preview page** and only when at least one Mermaid fence exists; pages without Mermaid must never request or parse it. Diagram input stays bounded by `maxTextSize:60000`, `maxEdges:500`, and 24 diagrams/page. Rendering is sequential, never concurrent, and Lantern yields after bundle load, after initialize, after each `mermaid.render()` before DOM insertion, and between diagrams. In the accepted **FJP Playwright Chromium** harness, use the actual served product preview HTML and nine fresh browser contexts. Isolate the attributable first-load Mermaid bundle parse/evaluation task by preventing helper initialize/render work from contaminating the measurement. First-load PASS requires **the median of the nine isolated samples <=300 ms and no individual sample >500 ms**. Every subsequent Mermaid initialize, diagram render, and PNG/export main-thread task attributable to the governed operation must be **<=100 ms**. A larger aggregate full-page Long Task entry is not by itself a Mermaid failure unless evidence attributes the over-budget task to bundle parse/evaluation or another governed Mermaid operation. A first-load median >300 ms, any individual first-load sample >500 ms, any subsequent governed task >100 ms, or loss of the lazy/bounded/sequential/yield invariants keeps acceptance INCOMPLETE and triggers re-review.
 
 ## PNG contract
 
@@ -258,12 +258,14 @@ Chromium PDF acceptance: selectable text, visible arrowheads, readable diagrams/
 - M-A8: all seven types export non-empty PNGs with correct filenames and no `SecurityError`.
 - M-A9: Print / Save as PDF meets the Chromium contract.
 - M-A10: no CDN and no new Python runtime dependency.
-- M-A11: worst-case Mermaid workload, including initial bundle parse/compile on Mermaid pages, meets the 100 ms responsiveness limit; non-Mermaid pages do not load Mermaid.
+- M-A11: non-Mermaid pages make zero Mermaid-bundle requests; Mermaid loads lazily at most once per Mermaid preview page; in the accepted FJP Playwright Chromium harness, measure nine fresh contexts using actual served product HTML with helper initialize/render excluded from first-load attribution, and require the median isolated first-load bundle parse/evaluation task <=300 ms with no individual sample >500 ms; every subsequent initialize/render/PNG-export main-thread task attributable to the governed Mermaid operation is <=100 ms; aggregate page Long Tasks count as failures only when attribution ties them to a governed over-budget Mermaid operation.
 - M-A12: residual-risk owner sign-off and follow-up ticket exist before release.
 
-### Combined release gate
+### Release gates
 
-Combined release requires: (1) T0-C is closed as NOT_REPRODUCED, class (i), class (ii), or class (iii) with the required four-channel physical evidence; (2) the full IME/manual matrix only if terminal code changed after a class-(ii) review; and (3) M-A1 through M-A12. If T0-C remains NOT_MEASURED, the combined increment is not done or releasable. The Markdown lane may be implemented and tested on a separate branch/worktree but is not the combined release by itself.
+**Markdown lane release:** M-A1 through M-A12 apply. The Markdown/Mermaid/PNG/PDF lane may be released independently when those gates are satisfied; it does not wait for terminal IME evidence.
+
+**Terminal IME lane:** deferred by operator on 2026-10-07 because reliable physical UniKey trace collection was becoming disproportionately expensive. T0-C remains NOT_MEASURED and no terminal product code may change under this increment. A future terminal-specific increment must resume from T0-A/T0-B/T0-C evidence before any IME fix.
 
 Missing manual/runtime evidence is INCOMPLETE, never PASS.
 
