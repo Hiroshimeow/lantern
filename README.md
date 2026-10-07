@@ -1,145 +1,110 @@
-# Lantern — LAN Drive
+# 🏮 Lantern
 
-A one-file web file manager for your LAN or Tailscale network.
+**Your LAN has files. Lantern makes them behave.**
 
-It lets you browse, preview, upload, edit, download, stream, and manage files from a browser — because emailing files to yourself in 2026 would be embarrassing.
+A fast, dependency-light web file manager for a trusted LAN or Tailscale network — with real terminals, Git/SCM, rich Markdown preview, Mermaid diagrams, media streaming, and enough file operations to make `scp` feel personally attacked.
 
-<img width="2535" height="1450" alt="{FE52BE8D-0285-4C21-8380-FC5BD22036B2}" src="https://github.com/user-attachments/assets/22a7fee0-93c2-4e62-9301-ca210cfc2ae9" />
+![Lantern file browser](docs/images/lantern-file-browser.png)
 
-## What it does
+> **No cloud. No database. No frontend framework pilgrimage.**
+>
+> Run Python, open a browser, get back to work.
 
-- Browse folders in grid or list view with breadcrumbs, sorting, quick search, and recursive search.
-- Preview images, text, code, documents, audio, and video.
-- Stream video with HTTP Range support, seeking, and automatic next-video playback.
-- Upload multiple files or entire folders with progress tracking and conflict handling.
-- Create folders and text files; edit text, code, config, and log files in the browser.
-- Rename, copy, move, duplicate, delete, archive, extract, and download files.
-- Download multiple files or folders as a streamed ZIP archive.
-- Copy direct share links for files and folders.
-- Generate image and video thumbnails when optional tools are available.
-- Open a responsive multi-terminal drawer powered by local xterm.js + FitAddon.
-  - Linux/macOS: real PTY sessions.
-  - Windows: real ConPTY sessions via `pywinpty`.
-  - WebSocket transport keeps terminal processes alive across browser reconnects and replays bounded scrollback.
-- Use the integrated Git/SCM panel for status, diffs, history, branch switching, stage/unstage, commit, pull, and push. Git reads run directly; writes run in visible terminal tabs.
-- Work on desktop and mobile without requiring a database, Docker, or a ceremonial JavaScript framework sacrifice.
+---
 
-## Important security warning
+## Why Lantern?
 
-Lantern has **no authentication** and can expose file-management operations and a terminal.
+Lantern started as “I just need to move a few files over the LAN.”
 
-Use it only on a trusted LAN or private Tailscale network. Do **not** expose it directly to the public internet unless you place proper authentication, TLS, access controls, and a reverse proxy in front of it.
+That sentence aged poorly.
 
-For a safer deployment:
+It now gives you:
 
-- Set `root` to the smallest directory users actually need.
-- Set `terminal_enabled: false` when remote command execution is unnecessary.
-- Restrict host firewall rules to trusted devices or subnets.
-- Do not run the process as an administrator or root unless you enjoy incident-response paperwork.
+| | Capability | What it means |
+|---|---|---|
+| 📁 | **File manager** | Browse, search, upload, edit, rename, copy, move, duplicate, delete, archive, extract, and download |
+| 🖼️ | **Preview engine** | Images, text/code, CSV/TSV, DOCX, XLSX/XLSM, PDF, audio, video, Markdown |
+| 🧜 | **Markdown + Mermaid** | Local/offline Mermaid rendering, flowcharts, sequence diagrams, PNG export, browser PDF export |
+| 🖥️ | **Real terminal** | xterm.js over WebSocket with real PTY on Linux/macOS and ConPTY on Windows |
+| 🌿 | **Git/SCM panel** | Status, diffs, history, branches, stage/unstage, commit, pull, push |
+| 🎞️ | **Media** | HTTP Range video streaming, seeking, subtitles, thumbnails, automatic next-video playback |
+| 📱 | **Responsive UI** | Desktop and mobile, with no database and no SPA framework required |
 
-## Requirements
+And yes, it still fits inside a very boring Python-shaped deployment model. This is intentional.
 
-Required:
+---
 
-- Python 3
-- A browser
-- A network containing at least two devices, unless you enjoy sharing files with yourself
+## Screenshots
 
-Runtime dependencies for Terminal/Git parity:
+### File browser
 
-```bash
-python -m pip install -r requirements.txt
-```
+![Lantern file manager](docs/images/lantern-file-browser.png)
 
-`pywinpty` is installed only on Windows; `watchdog` provides low-latency Git metadata change notifications with a polling fallback.
+Folders, files, search, preview, copy/move/archive operations, uploads, and the comforting knowledge that the file you need is probably not in `Downloads (37)`.
 
-Optional:
+### Markdown + Mermaid
 
-- [Pillow](https://python-pillow.org/) for better image thumbnails
-- `ffmpeg` and `ffprobe` for video metadata and thumbnails
+![Lantern Markdown and Mermaid preview](docs/images/lantern-markdown-mermaid.png)
 
-Install Pillow:
+Lantern renders Markdown locally, detects Mermaid fences, loads a vendored Mermaid runtime only when needed, and can export individual diagrams to PNG.
 
-```bash
-python -m pip install pillow
-```
+For documents with ambitions:
 
-Ubuntu/Debian optional packages:
+- tables
+- fenced code blocks
+- task lists
+- local links and images
+- Mermaid flowcharts / sequence diagrams / state diagrams
+- **Mermaid → PNG**
+- **Markdown page → Print / Save as PDF**
 
-```bash
-sudo apt install ffmpeg python3-pil
-```
+No CDN is required for Mermaid. Your architecture diagram does not need to phone home to explain itself.
 
-## Quick start
+### Git without leaving the page
+
+![Lantern Git SCM panel](docs/images/lantern-git-panel.png)
+
+The SCM panel handles read-side Git work directly:
+
+- status and file diffs
+- commit history
+- commit detail
+- local and remote branches
+- stage / unstage
+
+Mutating Git operations such as commit, checkout, pull, and push run in a **visible terminal tab**, so Lantern does not perform mysterious Git rituals behind your back.
+
+Untracked directories are expanded into individual files, and untracked text files get a real new-file diff instead of the profoundly useful message: “No textual diff.”
+
+### Real terminal, not terminal-flavored textarea
+
+![Lantern terminal](docs/images/lantern-terminal.png)
+
+The browser terminal uses:
+
+- **xterm.js + FitAddon**
+- **real PTY** on Linux/macOS
+- **real ConPTY via `pywinpty`** on Windows
+- WebSocket transport
+- multiple terminal sessions
+- bounded retained scrollback
+- resize / rename / kill / reconnect
+- ANSI output, progress updates, CJK width handling, combining marks, and emoji
+
+Terminal processes survive browser reconnects while the Lantern process remains alive.
+
+They do **not** survive Lantern itself being killed. Lantern is useful; it is not necromancy.
+
+---
+
+## 30-second start
 
 ### Windows
 
+From a clone:
+
 ```powershell
 python lan_drive.py --root "$env:USERPROFILE" --host 127.0.0.1 --port 9999
-```
-
-### One-command Windows install
-
-On a clean Windows machine, run this one command in PowerShell:
-
-```powershell
-$p=Join-Path $env:TEMP 'lantern-install.ps1'; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Hiroshimeow/lantern/main/install.ps1' -OutFile $p; & $p
-```
-
-It installs Lantern into `%LOCALAPPDATA%\Lantern`, prepares an isolated Python 3.12 environment with `uv`, creates a machine-local config, and starts Lantern.
-
-Safe defaults:
-
-- Bind only to `127.0.0.1`.
-- Share `%USERPROFILE%`.
-- Terminal disabled.
-- Port `9999`.
-- Machine-specific settings live in `%LOCALAPPDATA%\Lantern\lan_drive_config.local.yaml`.
-
-After installation:
-
-```text
-%LOCALAPPDATA%\Lantern\Run-Lantern.bat
-```
-
-Open `http://127.0.0.1:9999` in a browser.
-
-Common install variants:
-
-```powershell
-# Share only one folder
-.\install.bat -Root "D:\Share"
-
-# Listen on a specific trusted LAN or Tailscale IP
-.\install.bat -Root "D:\Share" -HostAddress "100.x.y.z"
-
-# Listen on every interface. Use only on a trusted network.
-.\install.bat -Root "D:\Share" -BindAll
-
-# Enable the browser terminal. Anyone who can reach Lantern can execute
-# commands as the Windows user running Lantern.
-.\install.bat -Root "D:\Share" -HostAddress "100.x.y.z" -EnableTerminal
-
-# Install/update files without starting Lantern
-.\install.bat -NoStart
-```
-
-When you already have a clone of this repository, run the examples above from the repository root. Running the installer again refreshes the installed application from the requested branch and rebuilds its managed virtual environment. Re-pass any non-default `-Root`, bind address, port, or terminal option because the installer regenerates the machine-local config.
-
-To uninstall, stop Lantern and remove `%LOCALAPPDATA%\Lantern`.
-
-> Lantern has no authentication. Do not expose `-BindAll` or `-EnableTerminal` to an untrusted network or the public internet.
-
-### Linux
-
-```bash
-python3 lan_drive.py --root /srv/share --port 9999
-```
-
-### Use the configuration file
-
-```bash
-python lan_drive.py --config lan_drive_config.yaml
 ```
 
 Then open:
@@ -148,51 +113,223 @@ Then open:
 http://127.0.0.1:9999
 ```
 
-From another device on the same LAN or Tailscale network:
-
-```text
-http://SERVER_IP:9999
-```
-
-The server prints its local and LAN addresses at startup, so nobody has to perform interpretive dance with `ipconfig`.
-
-## Command-line options
-
-```text
---config PATH       Configuration file path
---root PATH         Root directory exposed by the file manager
---host HOST         Bind address; default is 0.0.0.0
---port PORT         HTTP port; default is 9999
---title TITLE       Title displayed in the UI
---cache-dir PATH    Thumbnail and preview cache directory
---show-hidden       Show hidden files
---show-system       Show /proc, /sys, /run, and /dev under Linux root
---sort MODE         Initial sort order
---view MODE         Initial grid or list view
---page-limit N      Items loaded per page
---save-config       Persist CLI overrides to the configuration file
-```
-
-Run the authoritative version instead of trusting documentation written by a carbon-based life form:
+### Linux / macOS
 
 ```bash
-python lan_drive.py --help
+python3 lan_drive.py --root ~/ --host 127.0.0.1 --port 9999
 ```
 
-CLI overrides are runtime-only unless `--save-config` is supplied.
+### Want other trusted devices to connect?
+
+Bind a trusted interface or all interfaces:
+
+```powershell
+python lan_drive.py --root "D:\Share" --host 0.0.0.0 --port 9999
+```
+
+Then browse to the machine's **actual LAN or Tailscale IP**, not `0.0.0.0`.
+
+---
+
+## One-command Windows install
+
+On a clean Windows machine:
+
+```powershell
+$p=Join-Path $env:TEMP 'lantern-install.ps1'; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Hiroshimeow/lantern/main/install.ps1' -OutFile $p; & $p
+```
+
+The installer:
+
+1. finds or installs `uv`;
+2. downloads Lantern;
+3. prepares a managed Python 3.12 environment;
+4. installs runtime requirements;
+5. writes a machine-local config;
+6. validates the installation;
+7. starts Lantern unless `-NoStart` is used.
+
+Safe installer defaults:
+
+- bind: `127.0.0.1`
+- root: `%USERPROFILE%`
+- terminal: **disabled**
+- port: `9999`
+
+Common variants:
+
+```powershell
+# Share one folder
+.\install.bat -Root "D:\Share"
+
+# Listen on a specific trusted LAN/Tailscale address
+.\install.bat -Root "D:\Share" -HostAddress "100.x.y.z"
+
+# Listen on every interface
+.\install.bat -Root "D:\Share" -BindAll
+
+# Enable browser terminal
+.\install.bat -Root "D:\Share" -BindAll -EnableTerminal
+
+# Install/update without starting
+.\install.bat -NoStart
+```
+
+Installed launcher:
+
+```text
+%LOCALAPPDATA%\Lantern\Run-Lantern.bat
+```
+
+To uninstall: stop Lantern and remove `%LOCALAPPDATA%\Lantern`.
+
+Elegant? Debatable. Predictable? Yes.
+
+---
+
+## ⚠️ Security model: read this before `-BindAll`
+
+Lantern has **no built-in authentication**.
+
+If someone can reach Lantern, they may be able to access the exposed filesystem. If the browser terminal is enabled, they may also execute commands as the OS user running Lantern.
+
+Use Lantern only on a **trusted LAN or private Tailscale network**, or put proper authentication/TLS/access control in front of it.
+
+Recommended:
+
+- expose the smallest useful `root`;
+- keep `terminal_enabled: false` unless needed;
+- restrict host firewall rules;
+- run as a normal user, not Administrator/root;
+- do **not** expose Lantern directly to the public internet.
+
+The Markdown preview lane adds same-origin checks, path confinement, HTML escaping, URL filtering, nonce-only script CSP, and strict local Mermaid rendering. A follow-up hardening item remains tracked for preview iframe sandboxing and same-origin uploaded HTML/SVG containment.
+
+Security is not improved by saying “but nobody knows the port.”
+
+---
+
+## Markdown / Mermaid details
+
+A fenced Mermaid block:
+
+````markdown
+```mermaid
+flowchart LR
+    Idea --> Code
+    Code --> Test
+    Test --> Ship
+    Ship --> "Definitely no bug reports"
+```
+````
+
+Lantern detects Mermaid blocks server-side and conditionally adds the local Mermaid bundle to the preview page.
+
+The browser then renders diagrams sequentially and exposes a PNG export button for each rendered diagram.
+
+### Architecture docs included in this repository
+
+If you want a realistic stress test instead of a three-box demo:
+
+- [LANTERN_SYSTEM_ARCHITECTURE.md](LANTERN_SYSTEM_ARCHITECTURE.md) — **24 Mermaid diagrams**
+- [LANTERN_FUNCTION_FLOWS.md](LANTERN_FUNCTION_FLOWS.md) — **20 Mermaid diagrams**
+
+Together they document Lantern's HTTP routing, filesystem operations, preview flow, terminal lifecycle, WebSocket protocol, Git/SCM, media path, security boundaries, testing, and module-level function ownership.
+
+That is also a convenient way to test whether the Mermaid renderer regrets its career choices.
+
+---
+
+## File manager features
+
+Lantern supports:
+
+- grid and list views
+- breadcrumbs
+- quick and recursive search
+- sorting by name, time, size, type, or extension
+- show/hide hidden files
+- multi-file and folder upload
+- upload progress and conflict handling
+- create folder / create text file
+- browser text/code editor
+- rename / copy / move / duplicate / delete
+- archive and extract
+- multi-item streamed ZIP download
+- direct share-link copy
+- image thumbnails
+- video thumbnails with optional `ffmpeg`
+- video streaming with HTTP Range
+- subtitle discovery and conversion
+- folder previews
+
+In short: most operations people open Explorer for, plus fewer modal dialogs asking whether you are *really sure* the file named `final_v7_REAL_final.md` should move.
+
+---
+
+## Git / SCM
+
+The Git view includes:
+
+- branch + upstream state
+- ahead / behind counts
+- local and remote branch selector
+- changed files
+- staged / unstaged state
+- untracked file expansion
+- textual diffs for tracked and untracked text files
+- commit history and commit detail
+- stage / unstage
+- commit / commit all
+- checkout
+- pull
+- push
+
+Read operations run through `lantern_scm.py`.
+
+Write operations intentionally run through a real terminal session so command output remains visible.
+
+---
+
+## Terminal controls
+
+Toggle the terminal:
+
+```text
+Ctrl + `
+```
+
+Useful shortcuts:
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+C` | Copy selected text; send interrupt when nothing is selected |
+| `Ctrl+V` | Browser-native paste into xterm |
+| `Ctrl+L` | Clear through the active shell/readline binding |
+| `Ctrl+D` | Send EOF |
+| `Alt+Enter` | Toggle terminal fullscreen |
+| `Esc` | Leave terminal fullscreen |
+
+Mobile gets dedicated Ctrl / Alt / Esc / Tab / arrows / Backspace helpers.
+
+---
 
 ## Configuration
 
-The default configuration file is `lan_drive_config.yaml` next to the script.
+Use a YAML config:
 
-Common settings:
+```bash
+python lan_drive.py --config lan_drive_config.yaml
+```
+
+Example:
 
 ```yaml
-root: "/srv/share"
+root: "."
+host: "127.0.0.1"
 port: 9999
-host: "0.0.0.0"
-title: "LAN Drive"
-cache_dir: "/tmp/lan-drive-cache"
+title: "Lantern"
+cache_dir: ""
 
 show_hidden: false
 show_system: false
@@ -201,7 +338,7 @@ default_view: "grid"
 page_limit: 100
 folders_first: true
 
-terminal_enabled: true
+terminal_enabled: false
 terminal_max_sessions: 16
 terminal_max_buffer_chars: 204800
 terminal_start_height_px: 380
@@ -212,91 +349,149 @@ upload_parallel: 3
 upload_conflict: "ask"
 ```
 
-Valid sort modes:
+Machine-specific configuration should live in `lan_drive_config.local.yaml`, which is ignored by Git.
+
+---
+
+## CLI
 
 ```text
-name-asc, name-desc
-mtime-asc, mtime-desc
-size-asc, size-desc
-type-asc, type-desc
-ext-asc, ext-desc
+--config PATH       Configuration file path
+--root PATH         Root directory exposed by the file manager
+--host HOST         Bind address
+--port PORT         HTTP port
+--title TITLE       UI title
+--cache-dir PATH    Thumbnail / preview cache
+--show-hidden       Show hidden files
+--show-system       Show selected Linux system paths
+--sort MODE         Initial sort order
+--view MODE         Grid or list
+--page-limit N      Items loaded per page
+--save-config       Persist CLI overrides
 ```
 
-Upload conflict policies:
-
-```text
-ask, overwrite, skip, rename
-```
-
-Several UI preferences are saved in the browser and selected server preferences are persisted to the YAML file.
-
-## Terminal controls
-
-Open or close the terminal with the toolbar button or:
-
-```text
-Ctrl + `
-```
-
-Useful shortcuts:
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl+C` | Copy selected terminal text; send interrupt when nothing is selected |
-| `Ctrl+V` | Browser-native paste into xterm |
-| `Ctrl+L` | Clear via the active shell/readline binding |
-| `Ctrl+D` | Send EOF through xterm to the PTY |
-| `Alt+Enter` | Toggle terminal fullscreen mode |
-| `Esc` | Leave terminal fullscreen mode |
-
-The renderer handles ANSI cursor movement, carriage-return progress updates, wide CJK characters, combining marks, and joined emoji. In other words, columns should remain columns instead of becoming modern art.
-
-## Running tests
+For the version that cannot become stale because it comes directly from the code:
 
 ```bash
-python -m py_compile lan_drive.py test_terminal_ui.py
-python -m unittest discover -v
+python lan_drive.py --help
 ```
 
-The terminal tests cover:
+---
 
-- CJK and Unicode cell widths
-- Combining characters and joined emoji
-- PTY lifecycle, replay, bounded history/output, live-session limits, resize, rename, and byte-exact key encoding
-- xterm/WebSocket client wiring and absence of the retired custom ANSI/polling path
-- Git status/history/diff parsing, path validation, request correlation, watcher notifications, and visible-terminal write commands
-- Real Windows ConPTY and disposable Git repository runtime smoke
+## Dependencies
+
+Required runtime packages:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Current important dependencies:
+
+- `pywinpty` on Windows for ConPTY
+- `watchdog` for low-latency Git metadata change notifications
+
+Optional:
+
+- [Pillow](https://python-pillow.org/) — better image thumbnails
+- `ffmpeg` / `ffprobe` — video metadata and thumbnails
+
+Lantern vendors its browser-side terminal and Mermaid assets locally so those core paths do not require a CDN.
+
+---
+
+## Tests
+
+Run the suite:
+
+```bash
+python -m unittest -q
+```
+
+Current coverage includes:
+
+- HTTP mutation security
+- Markdown grammar and URL normalization
+- nonce/CSP preview behavior
+- Mermaid preview contracts
+- terminal lifecycle and replay
+- PTY/ConPTY behavior
+- terminal key encoding
+- WebSocket request correlation
+- Git status / history / diff parsing
+- untracked-file diffs
+- SCM watcher notifications
+- browser terminal/SCM static contracts
+
+A good test suite should make refactoring less exciting. Excitement belongs in production only by accident.
+
+---
 
 ## Project layout
 
 ```text
-lan_drive.py              Main file-manager application and HTTP integration
-lantern_terminal.py       Persistent PTY/ConPTY terminal manager
-lantern_scm.py            Direct Git query/parser/watcher service
-lantern_ws.py             Same-origin WebSocket protocol bridge
-static/terminal_scm.js    xterm multi-terminal + Git/SCM browser UI
-lan_drive_config.yaml     Runtime configuration
-test_terminal_ui.py       Browser client/static migration contracts
-test_terminal_scm.py      Terminal + SCM deterministic tests
-README.md                 Project documentation
+lan_drive.py                    HTTP server, file manager, media, config
+plugin.py                       Rich document / Markdown preview
+lantern_terminal.py             PTY / ConPTY session manager
+lantern_ws.py                   Same-origin WebSocket protocol
+lantern_scm.py                  Git query / parser / watcher service
+
+static/
+  terminal_scm.js               xterm multi-terminal + Git UI
+  markdown_preview.js           Mermaid render + PNG / Print-PDF
+  vendor/
+    xterm.js
+    mermaid-11.17.2.min.js
+
+docs/images/                    README screenshots
+LANTERN_SYSTEM_ARCHITECTURE.md  System architecture diagrams
+LANTERN_FUNCTION_FLOWS.md       Detailed function-flow diagrams
+
+test_security.py
+test_plugin.py
+test_terminal_ui.py
+test_terminal_scm.py
 ```
+
+---
 
 ## Design philosophy
 
-The deployment process is intentionally complicated:
+Lantern optimizes for a few boring properties:
 
-1. Copy the Python file.
-2. Run the Python file.
-3. Open a browser.
-4. Spend the time you saved arguing about whether this should have been a Kubernetes cluster.
+1. **Local-first.**
+2. **Small deployment surface.**
+3. **Real OS primitives where they matter.**
+4. **Visible operations instead of hidden magic.**
+5. **Progressive enhancement instead of mandatory heavyweight dependencies.**
+6. **A trusted-network tool should still have actual security boundaries.**
+
+The deployment flow remains:
+
+1. run Lantern;
+2. open browser;
+3. use files;
+4. resist turning it into twelve microservices.
+
+---
 
 ## Known boundaries
 
-- Windows terminal support is command-oriented, not a full ConPTY terminal emulator.
-- Advanced document preview depends on optional local integrations.
-- Thumbnail quality depends on Pillow and `ffmpeg` availability.
-- This project assumes a trusted private network and does not provide built-in user accounts or authorization.
+- No built-in accounts, authentication, or authorization.
+- Terminal sessions persist across browser reconnects, not Lantern process restarts.
+- Thumbnail/media quality depends on optional local tooling.
+- Browser PDF export uses the browser print pipeline rather than a server-side PDF engine.
+- Markdown/Mermaid preview is same-origin today; additional iframe/content containment remains a tracked hardening follow-up.
+- This project is intended for trusted private networks, not direct public-internet exposure.
+
+---
 
 ## License
 
-No license file is currently included. Until one is added, normal copyright restrictions apply.
+No license file is currently included.
+
+Until one is added, normal copyright restrictions apply.
+
+---
+
+> **Lantern:** because sometimes the correct distributed storage architecture is "the other computer is right there."
