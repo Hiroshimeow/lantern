@@ -195,7 +195,9 @@ def _kind(path: Path, config_path: Optional[Path | str] = None) -> str:
 
 
 def _read_limited_bytes(path: Path, limit: int = MAX_PREVIEW_BYTES) -> Tuple[bytes, bool]:
-    data = path.read_bytes()[: limit + 1]
+    # Slice-after-read defeats the memory cap for multi-gigabyte files.
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
     return data[:limit], len(data) > limit
 
 

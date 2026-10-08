@@ -47,6 +47,18 @@ class MarkdownPreviewTests(unittest.TestCase):
         parser.feed(page)
         return parser
 
+    def test_limited_reader_never_reads_entire_large_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            sample = Path(td) / "large.log"
+            sample.write_bytes(b"a" * (1024 * 1024))
+            from unittest.mock import patch
+
+            # Path.read_bytes() loads the whole file; the reader must use a bounded stream.
+            with patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded file read")):
+                data, truncated = plugin._read_limited_bytes(sample, 4096)
+            self.assertEqual(data, b"a" * 4096)
+            self.assertTrue(truncated)
+
     def test_raw_html_nul_and_adversarial_targets_are_safe(self) -> None:
         page = self.render_markdown(
             "<script src='/owned.js'>boom</script>\n"

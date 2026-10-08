@@ -1301,8 +1301,15 @@ function saveListCache(){try{sessionStorage.setItem(cacheKey(),JSON.stringify({i
 function hydrateCache(){try{const raw=sessionStorage.getItem(cacheKey()); if(!raw)return false; const c=JSON.parse(raw); if(!Array.isArray(c.items))return false; state.items=c.items; state.offset=c.offset||c.items.length; state.hasMore=!!c.hasMore; render(); requestAnimationFrame(()=>window.scrollTo(0,c.scrollY||Number(sessionStorage.getItem(scrollKey())||0))); return true}catch(e){return false}}
 window.addEventListener('pagehide',()=>{if(grid){sessionStorage.setItem(scrollKey(),String(window.scrollY));saveListCache()}});
 window.addEventListener('pageshow',e=>{if(grid&&e.persisted)setTimeout(()=>softRefresh().catch(()=>{}),0)});
-let autoRefreshTimer=setInterval(()=>{if(document.hidden||!grid||state.loading||state.selected.size||state.listPreview||$('#modal')?.classList.contains('show')||$('#uploadModal')?.classList.contains('show')||$('#termDrawer')?.classList.contains('show'))return;softRefresh().catch(()=>{})},4000);
-async function loadMore(reset=false){ if(!grid||state.loading)return; if(reset){state.items=[];state.offset=0;state.hasMore=true;state.selected.clear();grid.innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>'} if(!state.hasMore)return; state.loading=true; updateSelectionUI(); const params=new URLSearchParams({path:currentPath(),offset:String(state.offset),limit:String(state.limit),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)}); try{const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'}); const j=await r.json(); if(!r.ok||j.error)throw new Error(j.error||r.statusText); const newItems=j.items||[]; if(reset)state.items=[]; state.items.push(...newItems); state.offset=j.nextOffset; state.hasMore=!!j.hasMore; if(reset)render(); else appendRender(newItems); saveListCache()}catch(e){grid.innerHTML=`<div class="empty"><div><div style="font-size:42px">⚠️</div><p>Lỗi tải thư mục</p><p>${String(e.message||e)}</p></div></div>`}finally{state.loading=false;updateSelectionUI()} }
+// Existing scroll pagination is lazy. Refresh directory data on return/focus and
+// with a slow fallback, not by rebuilding the grid every four seconds.
+let lastListFetchAt=0;
+function canLazyRefresh(){return !document.hidden&&grid&&!state.loading&&!state.selected.size&&!state.listPreview&&!$('#modal')?.classList.contains('show')&&!$('#uploadModal')?.classList.contains('show')&&!$('#termDrawer')?.classList.contains('show')}
+function refreshWhenActive(minAgeMs=5000){if(canLazyRefresh()&&Date.now()-lastListFetchAt>=minAgeMs)softRefresh().catch(()=>{})}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshWhenActive()});
+window.addEventListener('focus',()=>refreshWhenActive());
+let autoRefreshTimer=setInterval(()=>refreshWhenActive(30000),30000);
+async function loadMore(reset=false){ if(!grid||state.loading)return; if(reset){state.items=[];state.offset=0;state.hasMore=true;state.selected.clear();grid.innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>'} if(!state.hasMore)return; state.loading=true; updateSelectionUI(); const params=new URLSearchParams({path:currentPath(),offset:String(state.offset),limit:String(state.limit),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)}); try{const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'}); const j=await r.json(); if(!r.ok||j.error)throw new Error(j.error||r.statusText); const newItems=j.items||[]; if(reset)state.items=[]; state.items.push(...newItems); state.offset=j.nextOffset; state.hasMore=!!j.hasMore; lastListFetchAt=Date.now(); if(reset)render(); else appendRender(newItems); saveListCache()}catch(e){grid.innerHTML=`<div class="empty"><div><div style="font-size:42px">⚠️</div><p>Lỗi tải thư mục</p><p>${String(e.message||e)}</p></div></div>`}finally{state.loading=false;updateSelectionUI()} }
 let io=null; function observeLoader(){ if(!grid)return; if(io)io.disconnect(); const loader=$('#loader'); if(!loader)return; io=new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore(false)},{rootMargin:'900px'}); io.observe(loader)}
 function filterCards(){clearTimeout(state.searchTimer);state.searchTimer=setTimeout(()=>{clearFolderCache();loadMore(true)}, Number(defaults.search_debounce_ms||240))} q?.addEventListener('input',filterCards);
 function sortCards(mode){if(mode)state.sort=mode; syncControls(); savePrefs({default_sort:state.sort}); clearFolderCache(); loadMore(true)}
@@ -1310,7 +1317,7 @@ function changeSort(sel){sortCards(sel.value)}
 function changeLimit(sel){state.limit=Number(sel.value||220); savePrefs({page_limit:state.limit}); clearFolderCache(); loadMore(true)}
 function changeFoldersFirst(el){state.foldersFirst=!!el.checked; savePrefs({folders_first:state.foldersFirst}); clearFolderCache(); loadMore(true)}
 function changeRecursiveDepth(sel){state.recursiveDepth=String(sel.value||'0');localStorage.setItem(prefKey('recursive_depth'),state.recursiveDepth);clearFolderCache();loadMore(true)}
-async function softRefresh(){if(!grid||state.loading)return;const oldY=window.scrollY, selected=selectedArray(), prevPreview=state.listPreview;state.loading=true;updateSelectionUI();const params=new URLSearchParams({path:currentPath(),offset:'0',limit:String(state.limit),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)});try{const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||r.statusText);state.items=j.items||[];state.offset=j.nextOffset||state.items.length;state.hasMore=!!j.hasMore;render();state.selected=new Set(selected.filter(rel=>state.items.some(it=>it.rel===rel)));if(prevPreview&&!state.items.some(it=>it.rel===prevPreview))clearSidePreview();updateSelectionUI();window.scrollTo(0,oldY);saveListCache()}catch(e){toast('Refresh lỗi: '+e.message)}finally{state.loading=false;updateSelectionUI()}}
+async function softRefresh(){if(!grid||state.loading)return;const oldY=window.scrollY, selected=selectedArray(), prevPreview=state.listPreview;state.loading=true;updateSelectionUI();const params=new URLSearchParams({path:currentPath(),offset:'0',limit:String(state.limit),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)});try{const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||r.statusText);lastListFetchAt=Date.now();const next=j.items||[];const unchanged=JSON.stringify(state.items.slice(0,next.length))===JSON.stringify(next)&&(state.items.length>next.length||state.hasMore===!!j.hasMore);if(!unchanged){state.items=next;state.offset=j.nextOffset||state.items.length;state.hasMore=!!j.hasMore;render();state.selected=new Set(selected.filter(rel=>state.items.some(it=>it.rel===rel)));if(prevPreview&&!state.items.some(it=>it.rel===prevPreview))clearSidePreview();updateSelectionUI();window.scrollTo(0,oldY);saveListCache()}}catch(e){toast('Refresh lỗi: '+e.message)}finally{state.loading=false;updateSelectionUI()}}
 function refreshFolder(){clearFolderCache();softRefresh()}
 const MEDIA_KINDS = new Set(['image','video','audio']);
 const mediaState = {kind:null,current:null,items:[],index:-1,busy:false,touchX:0,touchY:0};
@@ -1573,10 +1580,10 @@ function renderListPreview(card){
   const body=sidePreview.querySelector('.side-content');
   const mode=m=>{body.className='side-content '+m};
   if(kind==='image'){mode('media');body.innerHTML=`<div class="side-fit-bg" style="background-image:url('${url.replace(/'/g,"%27")}')"></div>`}
-  else if(kind==='video'){mode('media video');body.innerHTML=`<div class="side-video-fit"><video class="side-video" src="${url}" controls autoplay preload="auto" playsinline></video></div>`;const v=body.querySelector('video');if(v){v.play().catch(()=>{})}}
+  else if(kind==='video'){mode('media video');body.innerHTML=`<div class="side-video-fit"><video class="side-video" src="${url}" controls preload="metadata" playsinline></video></div>`}
   else if(kind==='audio'){mode('media audio');body.innerHTML=`<audio class="side-audio" src="${url}" controls preload="metadata"></audio>`}
   else if(card.dataset.preview==='1'){mode('doc');body.innerHTML=`<iframe class="side-frame" src="${previewUrl(rel)}"></iframe>`}
-  else if(kind==='text'){mode('text');body.innerHTML='<pre class="side-text">Đang đọc...</pre>';fetch(url).then(r=>r.text()).then(t=>{const pre=body.querySelector('pre');if(pre)pre.textContent=t.slice(0,200000)}).catch(e=>body.textContent='Không đọc được preview: '+e.message)}
+  else if(kind==='text'){mode('text');body.innerHTML='<pre class="side-text">Đang đọc...</pre>';fetch(url,{headers:{Range:'bytes=0-199999'}}).then(async r=>{if(!r.ok)throw new Error('HTTP '+r.status);if(r.status!==206&&Number(r.headers.get('content-length')||0)>200000)throw new Error('Range unsupported for large preview');const total=Number((r.headers.get('content-range')||'').split('/').pop());return {text:await r.text(),truncated:total>200000}}).then(x=>{if(state.listPreview!==rel)return;const pre=body.querySelector('pre');if(pre)pre.textContent=x.text+(x.truncated?'\n\n[Preview limited to 200 KB]':'')}).catch(e=>body.textContent='Không đọc được preview: '+e.message)}
   else{mode('empty');body.innerHTML='<div class="side-empty">Không hỗ trợ preview nhanh</div>'}
 }
 function openItem(card,ev){const rel=card.dataset.rel;if(state.suppressClick){if(ev){ev.preventDefault();ev.stopPropagation()}return}if(ev&&(ev.ctrlKey||ev.metaKey)){toggleSelect(rel,ev);return}closeContextMenu();const kind=card.dataset.kind,item=findLoadedItem(rel),name=item?.name||card.dataset.rawname,url=fileUrl(rel);saveListCache();if(state.previewPane&&listCanPreview(card)){renderListPreview(card);return}if(kind==='folder')location.href=url+'/';else if(isMediaKind(kind))openPreview(kind,url,name,rel);else if(card.dataset.preview==='1')location.href=previewUrl(rel);else if(kind==='text')location.href=url+'?edit=1';else toast('File này chưa hỗ trợ preview. Dùng nút Download để tải.')}
@@ -1632,10 +1639,22 @@ function setupFolderPreviews(){
   els.forEach(el=>folderPreviewIO.observe(el));
 }
 
-async function uploadFile(item,relDir,progressCb,conflictMode){
-  const file=item.file||item; const relName=(item.relPath||file.webkitRelativePath||file.name).replace(/^\/+/, '');
+function uploadQuery(item,relDir){
+  const file=item.file||item;
+  const relName=(item.relPath||file.webkitRelativePath||file.name).replace(/^\/+/, '');
   const target=relDir.replace(/^\/+|\/+$/g,'');
-  const url=`/api/upload?path=${encodeURIComponent(target)}&name=${encodeURIComponent(relName)}&conflict=${encodeURIComponent(conflictMode||state.uploadConflict||'ask')}`;
+  return `path=${encodeURIComponent(target)}&name=${encodeURIComponent(relName)}`;
+}
+async function preflightUpload(item,relDir){
+  const r=await fetch('/api/upload/check?'+uploadQuery(item,relDir),{cache:'no-store'});
+  const data=await r.json();
+  if(!r.ok)throw new Error(data.error||'Upload preflight failed');
+  return !!data.exists;
+}
+async function uploadFile(item,relDir,progressCb,conflictMode){
+  const file=item.file||item;
+  const relName=(item.relPath||file.webkitRelativePath||file.name).replace(/^\/+/, '');
+  const url=`/api/upload?${uploadQuery(item,relDir)}&conflict=${encodeURIComponent(conflictMode||state.uploadConflict||'ask')}`;
   return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.upload.onprogress=e=>{if(e.lengthComputable&&progressCb)progressCb(e.loaded,e.total,relName)};xhr.onload=()=>{let data={};try{data=JSON.parse(xhr.responseText||'{}')}catch(e){};if(xhr.status>=200&&xhr.status<300)resolve(data);else{const err=new Error(data.error||xhr.responseText||xhr.statusText);err.status=xhr.status;reject(err)}};xhr.onerror=()=>reject(new Error('network error'));xhr.send(file)})
 }
 const uploadState={queue:[],running:false,done:0,failed:0,totalBytes:0,loadedBytes:0,active:new Map()};
@@ -1681,8 +1700,27 @@ function renderUploadQueue(){
 }
 async function uploadOneQueued(it){
   it.state='uploading';it.loaded=0;renderUploadQueue();
-  try{let mode=state.uploadConflict;let res;const targetPath=it.targetPath==null?currentPath():it.targetPath;try{res=await uploadFile(it,targetPath,(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},mode)}catch(e){if(e.status===409&&mode==='ask'){if(confirm(`File đã tồn tại:\n${it.relPath}\n\nGhi đè file này?`)){res=await uploadFile(it,targetPath,(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},'overwrite')}else{it.state='skipped';it.loaded=it.size;return}}else throw e} it.state=res?.skipped?'skipped':'done';it.loaded=it.size;uploadState.done++}
-  catch(e){it.state='error';it.error=e.message;uploadState.failed++} finally{renderUploadQueue()}
+  try{
+    let mode=state.uploadConflict,res;
+    const targetPath=it.targetPath==null?currentPath():it.targetPath;
+    // Decide before sending the body. The server still checks conflicts to guard races.
+    if((mode==='ask'||mode==='skip')&&await preflightUpload(it,targetPath)){
+      if(mode==='skip'||!confirm(`File đã tồn tại:\n${it.relPath}\n\nGhi đè file này?`)){
+        it.state='skipped';it.loaded=it.size;return;
+      }
+      mode='overwrite';
+    }
+    try{res=await uploadFile(it,targetPath,(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},mode)}
+    catch(e){
+      if(e.status===409&&mode==='ask'){
+        if(confirm(`File vừa được tạo:\n${it.relPath}\n\nGhi đè file này?`)){
+          res=await uploadFile(it,targetPath,(loaded,total)=>{it.loaded=loaded;renderUploadQueue()},'overwrite');
+        }else{it.state='skipped';it.loaded=it.size;return}
+      }else throw e;
+    }
+    it.state=res?.skipped?'skipped':'done';it.loaded=it.size;uploadState.done++;
+  }catch(e){it.state='error';it.error=e.message;uploadState.failed++}
+  finally{renderUploadQueue()}
 }
 async function startUploadQueue(){
   if(uploadState.running)return; if(!uploadState.queue.length){toast('Queue trống');return} uploadState.running=true;uploadState.done=0;uploadState.failed=0;
@@ -2036,6 +2074,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_config_get()
             if parsed.path == "/api/list":
                 return self.api_list(parsed.query)
+            if parsed.path == "/api/upload/check":
+                return self.api_upload_check(parsed.query)
             if parsed.path == "/api/thumb":
                 return self.api_thumb(parsed.query)
             if parsed.path == "/api/folder_preview":
@@ -2060,6 +2100,8 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.serve_static_file(target, download=True)
                 return self.serve_file(target)
             self.send_error(404, "Not found")
+        except BadRequest as e:
+            self.send_json(400, {"error": str(e)})
         except PermissionError as e:
             self.send_error(403, str(e))
         except BrokenPipeError:
@@ -2304,34 +2346,37 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(404, "thumbnail unavailable"); return
         self.serve_static_file(dst, download=False, ctype="image/jpeg")
 
+    def resolve_upload_target(self, base_rel: str, name: str) -> Path:
+        """Use identical path validation for lightweight preflight and upload."""
+        if not name:
+            raise BadRequest("missing name")
+        base = safe_join("/" + base_rel)
+        if base.exists() and not base.is_dir():
+            raise BadRequest("upload path is not a folder")
+        parts: List[str] = []
+        for part in name.replace("\\", "/").split("/"):
+            if part and part not in {".", ".."}:
+                parts.append(clean_component(part))
+        if not parts:
+            raise BadRequest("bad filename")
+        return ensure_under_root(base.joinpath(*parts))
+
+    def api_upload_check(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        dest = self.resolve_upload_target(qs.get("path", [""])[0], qs.get("name", [""])[0])
+        self.send_json(200, {"exists": dest.exists()})
+
     def api_upload(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
         base_rel = qs.get("path", [""])[0]
         name = qs.get("name", [""])[0]
         conflict = normalize_conflict(qs.get("conflict", [CONFIG.upload_conflict])[0])
-        if not name:
-            raise BadRequest("missing name")
         total = self.content_length()
-        base = safe_join("/" + base_rel)
-        if base.exists() and not base.is_dir():
-            drain_stream(self.rfile, total)
-            raise BadRequest("upload path is not a folder")
-        base.mkdir(parents=True, exist_ok=True)
-
-        parts: List[str] = []
-        for p in name.replace("\\", "/").split("/"):
-            if not p or p in {".", ".."}:
-                continue
-            parts.append(clean_component(p))
-        if not parts:
-            drain_stream(self.rfile, total)
-            raise BadRequest("bad filename")
-        dest = base.joinpath(*parts).resolve()
         try:
-            dest.relative_to(CONFIG.root.resolve())
-        except ValueError:
+            dest = self.resolve_upload_target(base_rel, name)
+        except (BadRequest, PermissionError):
             drain_stream(self.rfile, total)
-            self.send_json(403, {"error": "outside root"}); return
+            raise
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             if conflict == "skip":

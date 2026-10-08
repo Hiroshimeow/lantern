@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -86,6 +87,47 @@ class HttpMutationSecurityTests(unittest.TestCase):
                 with urllib.request.urlopen(cli, timeout=2) as response:
                     self.assertEqual(response.status, 200)
                 self.assertTrue((shared / "cli.txt").exists())
+
+                # Preflight shares upload path handling but never creates folders or files.
+                def upload_check(path: str, name: str) -> dict:
+                    query = urllib.parse.urlencode({"path": path, "name": name})
+                    with urllib.request.urlopen(base + "/api/upload/check?" + query, timeout=2) as response:
+                        self.assertEqual(response.status, 200)
+                        return json.load(response)
+
+                self.assertEqual(upload_check("", "nested/report.md"), {"exists": False})
+                self.assertFalse((shared / "nested").exists())
+                self.assertEqual(upload_check("", "cli.txt"), {"exists": True})
+                self.assertEqual(upload_check("nested", "report.md"), {"exists": False})
+
+                nested = shared / "nested"
+                nested.mkdir()
+                nested_file = nested / "report.md"
+                nested_file.write_text("before", encoding="utf-8")
+                self.assertEqual(upload_check("", "nested/report.md"), {"exists": True})
+                self.assertEqual(upload_check("nested", "report.md"), {"exists": True})
+
+                # The legacy POST remains authoritative even if the file is
+                # created between the preflight and the upload.
+                conflict = urllib.request.Request(
+                    base + "/api/upload?path=nested&name=report.md&conflict=ask",
+                    data=b"should not replace",
+                    method="POST",
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as conflict_error:
+                    urllib.request.urlopen(conflict, timeout=2)
+                self.assertEqual(conflict_error.exception.code, 409)
+                conflict_error.exception.close()
+                self.assertEqual(nested_file.read_text(encoding="utf-8"), "before")
+
+                oversized = shared / "large.log"
+                oversized.write_bytes(b"x" * 500000)
+                bounded = urllib.request.Request(base + "/large.log", headers={"Range": "bytes=0-199999"})
+                with urllib.request.urlopen(bounded, timeout=2) as response:
+                    self.assertEqual(response.status, 206)
+                    self.assertEqual(response.headers.get("Content-Range"), "bytes 0-199999/500000")
+                    self.assertEqual(len(response.read()), 200000)
             finally:
                 proc.terminate()
                 try:
