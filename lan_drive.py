@@ -72,6 +72,9 @@ from http.server import SimpleHTTPRequestHandler
 from lantern_terminal import TerminalManager
 from lantern_scm import ScmService
 from lantern_ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
+from lantern_md_editor import (MarkdownEditorError, read_document as read_markdown_document,
+                               save_document as save_markdown_document,
+                               MAX_MARKDOWN_EDITOR_BYTES)
 
 try:
     from PIL import Image, ImageOps  # type: ignore
@@ -2187,6 +2190,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_video_info(parsed.query)
             if parsed.path == "/api/subtitle":
                 return self.api_subtitle(parsed.query)
+            if parsed.path == "/api/md/document":
+                return self.api_md_document(parsed.query)
             if parsed.path == "/api/plugin/info":
                 return self.api_plugin_info()
             if parsed.path in ("/api/plugin/preview", "/api/preview"):
@@ -2223,6 +2228,7 @@ class Handler(SimpleHTTPRequestHandler):
             route = parsed.path
             if route == "/api/upload": return self.api_upload(parsed.query)
             if route == "/api/save": return self.api_save()
+            if route == "/api/md/save": return self.api_md_save()
             if route == "/api/mkdir": return self.api_mkdir()
             if route == "/api/newfile": return self.api_newfile()
             if route == "/api/rename": return self.api_rename()
@@ -2531,6 +2537,28 @@ class Handler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass
         self.send_json(200, {"ok": True, "file": rel_url_for_path(dest), "bytes": written})
+
+    def api_md_document(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        rel = qs.get("p", [""])[0]
+        target = safe_join("/" + rel)
+        try:
+            result = read_markdown_document(target)
+            self.send_json(200, {"ok": True, "path": rel_url_for_path(target), **result})
+        except MarkdownEditorError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
+
+    def api_md_save(self) -> None:
+        data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 5)
+        rel = data.get("path")
+        if not isinstance(rel, str) or not rel:
+            self.send_json(400, {"error": "Markdown path required"}); return
+        target = safe_join("/" + rel)
+        try:
+            result = save_markdown_document(target, data.get("content"), data.get("version"))
+            self.send_json(200, {"ok": True, **result})
+        except MarkdownEditorError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
 
     def api_save(self) -> None:
         data = self.read_json()
