@@ -1,0 +1,128 @@
+{
+  "base_head": "a45971b42dcda5bb87f03cc911bf94bdf53507c6",
+  "source_before": {
+    "lan_drive.py": "9324d6a5a2858a9e1708008414676ac164fb41b6364cf9102fd3e04ffd238062",
+    "lantern_terminal.py": "98a83567548d06f7371011f4aff6d06ac063cecd4436b468964db56ab7187e2b",
+    "lantern_ws.py": "0ca1e0aea532228dbfa5ab2b4e84a5a3241dc9ce5ca6930c3efba3f5b6e7569f",
+    "static/terminal_scm.js": "657f02bfff96c0dc5b6f4d0114f4df2116c022ae9e0e272d59fd9bc3bc16e0fb",
+    "plugin.py": "dd83f25ba09594d4b88a682b8a979f386ee08e31dfd87d52d08bf9f55e7a0444",
+    "test_lan_multi_perf.py": "85decef74419c560840ff1dff7659df5ffa18e4ad8330b52e874a91552ecbff1",
+    "test_lan_multi_e2e.py": "a9a45430a7ad04b10e0944800c6e50ef75bcaa229b8cac139d57eace83e9be56",
+    "test_list_refresh_e2e.py": "abf0461f98871b412cb5a31f579d0181672dbb1bbc0d44a36bb42dc91a033d08"
+  },
+  "source_after": {
+    "lan_drive.py": "9324d6a5a2858a9e1708008414676ac164fb41b6364cf9102fd3e04ffd238062",
+    "lantern_terminal.py": "98a83567548d06f7371011f4aff6d06ac063cecd4436b468964db56ab7187e2b",
+    "lantern_ws.py": "0ca1e0aea532228dbfa5ab2b4e84a5a3241dc9ce5ca6930c3efba3f5b6e7569f",
+    "static/terminal_scm.js": "657f02bfff96c0dc5b6f4d0114f4df2116c022ae9e0e272d59fd9bc3bc16e0fb",
+    "plugin.py": "dd83f25ba09594d4b88a682b8a979f386ee08e31dfd87d52d08bf9f55e7a0444",
+    "test_lan_multi_perf.py": "85decef74419c560840ff1dff7659df5ffa18e4ad8330b52e874a91552ecbff1",
+    "test_lan_multi_e2e.py": "a9a45430a7ad04b10e0944800c6e50ef75bcaa229b8cac139d57eace83e9be56",
+    "test_list_refresh_e2e.py": "abf0461f98871b412cb5a31f579d0181672dbb1bbc0d44a36bb42dc91a033d08"
+  },
+  "unchanged_so_far": true,
+  "checks": {
+    "python-compile": {
+      "exit": 0,
+      "elapsed_seconds": 0.19,
+      "command": [
+        "C:\\Users\\DuongNH66\\Desktop\\git\\M365-Copilot2DOM\\.venv\\Scripts\\python.exe",
+        "-m",
+        "py_compile",
+        "lan_drive.py",
+        "lantern_terminal.py",
+        "lantern_ws.py",
+        "plugin.py",
+        "test_lan_multi_perf.py",
+        "test_lan_multi_e2e.py",
+        "test_list_refresh_e2e.py"
+      ],
+      "last_lines": []
+    },
+    "javascript-syntax": {
+      "exit": 0,
+      "elapsed_seconds": 0.07,
+      "command": [
+        "node",
+        "--check",
+        "static/terminal_scm.js"
+      ],
+      "last_lines": []
+    },
+    "git-diff-check": {
+      "exit": 0,
+      "elapsed_seconds": 0.16,
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "last_lines": [
+        "warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it",
+        "warning: in the working copy of 'lantern_terminal.py', LF will be replaced by CRLF the next time Git touches it",
+        "warning: in the working copy of 'lantern_ws.py', LF will be replaced by CRLF the next time Git touches it",
+        "warning: in the working copy of 'plugin.py', LF will be replaced by CRLF the next time Git touches it",
+        "warning: in the working copy of 'static/terminal_scm.js', LF will be replaced by CRLF the next time Git touches it"
+      ]
+    },
+    "ordinary-regression": {
+      "exit": 0,
+      "elapsed_seconds": 13.74,
+      "command": [
+        "C:\\Users\\DuongNH66\\Desktop\\git\\M365-Copilot2DOM\\.venv\\Scripts\\python.exe",
+        "-m",
+        "unittest",
+        "-v"
+      ],
+      "last_lines": [
+        "test_second_snapshot_cannot_be_unlocked_by_old_replay_callback (test_terminal_ui.TerminalUiParityTests.test_second_snapshot_cannot_be_unlocked_by_old_replay_callback) ... ok",
+        "test_websocket_open_does_not_request_redundant_terminal_snapshot (test_terminal_ui.TerminalUiParityTests.test_websocket_open_does_not_request_redundant_terminal_snapshot) ... ok",
+        "",
+        "----------------------------------------------------------------------",
+        "Ran 80 tests in 13.291s",
+        "",
+        "OK (skipped=22)"
+      ]
+    },
+    "lan-multi-e2e": {
+      "exit": 0,
+      "elapsed_seconds": 5.76,
+      "command": [
+        "C:\\Users\\DuongNH66\\Desktop\\git\\M365-Copilot2DOM\\.venv\\Scripts\\python.exe",
+        "-m",
+        "unittest",
+        "-v",
+        "test_lan_multi_e2e"
+      ],
+      "last_lines": [
+        "test_stale_browser_ws_receives_one_legacy_snapshot (test_lan_multi_e2e.LanMultipleBrowserE2E.test_stale_browser_ws_receives_one_legacy_snapshot) ... ok",
+        "test_two_contexts_metadata_only_and_lazy_xterm (test_lan_multi_e2e.LanMultipleBrowserE2E.test_two_contexts_metadata_only_and_lazy_xterm) ... ok",
+        "",
+        "----------------------------------------------------------------------",
+        "Ran 2 tests in 5.457s",
+        "",
+        "OK"
+      ]
+    },
+    "r1-20-e2e": {
+      "exit": 0,
+      "elapsed_seconds": 101.85,
+      "command": [
+        "C:\\Users\\DuongNH66\\Desktop\\git\\M365-Copilot2DOM\\.venv\\Scripts\\python.exe",
+        "-m",
+        "unittest",
+        "-v",
+        "test_list_refresh_e2e"
+      ],
+      "last_lines": [
+        "test_unchanged_refresh_keeps_nodes_selection_and_scroll (test_list_refresh_e2e.ListRefreshE2E.test_unchanged_refresh_keeps_nodes_selection_and_scroll) ... ok",
+        "test_upload_completion_preserves_loaded_depth (test_list_refresh_e2e.ListRefreshE2E.test_upload_completion_preserves_loaded_depth) ... ok",
+        "",
+        "----------------------------------------------------------------------",
+        "Ran 20 tests in 101.417s",
+        "",
+        "OK"
+      ]
+    }
+  }
+}

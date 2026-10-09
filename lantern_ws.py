@@ -14,6 +14,7 @@ from typing import Any, Dict
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_FRAME = 2 * 1024 * 1024
 _MAX_QUEUED_BYTES = 8 * 1024 * 1024
+_MAX_ACTIVE_REPLAY_CHARS = 800_000  # worst-case JSON escapes stay below peer queue budget
 
 
 def _frame(opcode: int, payload: bytes = b"") -> bytes:
@@ -43,6 +44,8 @@ class WebSocketPeer:
             except Exception:
                 pass
         self.closed = False
+        self.subscriptions: set[str] = set()
+        self.protocol = "pending"  # v2 opt-in; stale browser tabs get legacy fallback
         self._send_q: "queue.Queue[bytes | None]" = queue.Queue()
         self._queue_lock = threading.Lock()
         self._queued_bytes = 0
@@ -170,11 +173,27 @@ class WebSocketHub:
     def remove(self, peer):
         with self.lock:
             self.peers.discard(peer)
+            peer.subscriptions.clear()
+
+    def subscribe(self, peer, term_id: str):
+        with self.lock:
+            if peer in self.peers:
+                # One active terminal subscription per LAN browser connection.
+                # Prevent idle/background terminals accumulating on the same peer.
+                peer.subscriptions.clear()
+                peer.subscriptions.add(term_id)
+
+    def unsubscribe(self, peer, term_id: str):
+        with self.lock:
+            peer.subscriptions.discard(term_id)
 
     def broadcast(self, message):
         with self.lock:
             peers = list(self.peers)
         for peer in peers:
+            if (message.get("type") == "terminal_output" and getattr(peer, "protocol", "v2") != "legacy"
+                    and message.get("terminalId") not in peer.subscriptions):
+                continue
             try:
                 peer.send(message)
             except Exception:
@@ -192,6 +211,17 @@ def same_origin(handler):
     except Exception:
         return False
     return parsed.scheme in {"http", "https"} and parsed.netloc.lower() == host
+
+
+def _legacy_snapshot_payload(terminal):
+    """Cap legacy UI tails so an older LAN tab cannot overflow one WebSocket frame.
+
+    This never shortens the retained PTY history on the server.
+    """
+    output = dict(terminal.replay())
+    truncated = any(len(s) > 20000 for s in output.values())
+    return {"type": "terminal_snapshot", "terminals": terminal.list(),
+            "output": {k: s[-20000:] for k, s in output.items()}}, truncated
 
 
 def upgrade(handler, hub, terminal, scm):
@@ -225,18 +255,39 @@ def upgrade(handler, hub, terminal, scm):
     handler.end_headers()
 
     peer = WebSocketPeer(handler)
-    try:
-        # Hold the terminal state lock across snapshot creation + registration so
-        # output cannot land in the gap and be lost or duplicated on reconnect.
+    # Explicit URL version avoids timer races when a LAN client is slow to send.
+    if urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query).get("v") == ["2"]:
+        peer.protocol = "v2"
+    def legacy_fallback() -> None:
+        # Older LAN browser tabs reconnect without the v2 handshake. Preserve their
+        # terminal view until those tabs reload the new JS. This path is temporary.
         with terminal.lock:
-            peer.send({"type": "terminal_snapshot", "terminals": terminal.list(), "output": dict(terminal.replay())})
+            if peer.closed or peer.protocol != "pending":
+                return
+            peer.protocol = "legacy"
+            try:
+                payload, truncated = _legacy_snapshot_payload(terminal)
+                peer.send(payload)
+                if truncated:
+                    peer.send({"type": "terminal_error", "error":
+                               "Older Lantern browser tab: history tail limited during reconnect; reload page for full replay."})
+            except ConnectionError:
+                peer.close()
+
+    legacy_timer = threading.Timer(0.7, legacy_fallback)
+    legacy_timer.daemon = True
+    try:
+        with terminal.lock:
+            # Metadata first. New browsers request output only for their active tab.
+            peer.send({"type": "terminal_list", "terminals": terminal.list()})
             hub.add(peer)
+        legacy_timer.start()
         while True:
             raw = peer.recv()
             if raw is None:
                 break
             try:
-                dispatch(peer, json.loads(raw), terminal, scm)
+                dispatch(peer, json.loads(raw), terminal, scm, hub)
             except Exception as exc:
                 try:
                     peer.send({"type": "terminal_error", "error": str(exc)})
@@ -245,16 +296,41 @@ def upgrade(handler, hub, terminal, scm):
     except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
         pass
     finally:
+        legacy_timer.cancel()
         hub.remove(peer)
         peer.close()
 
 
-def dispatch(peer, msg, terminal, scm):
+def dispatch(peer, msg, terminal, scm, hub=None):
     if not isinstance(msg, dict):
         raise ValueError("message must be an object")
     typ = str(msg.get("type") or "")
+    if typ == "terminal_client_v2":
+        peer.protocol = "v2"
+        return
     if typ == "terminal_sync":
-        peer.send({"type": "terminal_snapshot", "terminals": terminal.list(), "output": dict(terminal.replay())})
+        peer.send({"type": "terminal_list", "terminals": terminal.list()})
+        return
+    if typ == "terminal_unsubscribe":
+        if hub is not None:
+            hub.unsubscribe(peer, str(msg.get("terminalId") or ""))
+        return
+    if typ == "terminal_subscribe":
+        if hub is None:
+            raise ValueError("Subscription hub unavailable")
+        term_id = str(msg.get("terminalId") or "")
+        # Lock only metadata/tail capture and subscription registration. JSON encoding
+        # and socket I/O run outside terminal.lock. Sequence numbers allow the
+        # browser to merge any live output that races ahead of the snapshot.
+        with terminal.lock:
+            meta, output, seq = terminal.replay_one(term_id)
+            hub.subscribe(peer, term_id)
+        # Retained PTY history is untouched. A configured 5M-character tail can
+        # exceed an 8 MiB WebSocket queue after ANSI escaping; bound display replay.
+        truncated = len(output) > _MAX_ACTIVE_REPLAY_CHARS
+        peer.send({"type": "terminal_replay", "terminalId": term_id,
+                   "meta": meta, "output": output[-_MAX_ACTIVE_REPLAY_CHARS:],
+                   "seq": seq, "truncated": truncated})
         return
     if typ == "terminal_create":
         terminal.create(str(msg.get("terminalId") or ""), str(msg.get("cwd") or ""), int(msg.get("cols") or 80), int(msg.get("rows") or 24), str(msg.get("title") or "Terminal"))

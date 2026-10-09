@@ -25,18 +25,27 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import zipfile
 import zlib
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
+from xml.parsers import expat
 
 VERSION = "0.1.0"
 MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 600_000
 MAX_TABLE_ROWS = 160
 MAX_TABLE_COLS = 32
+MAX_OFFICE_XML_BYTES = 16 * 1024 * 1024
+MAX_OFFICE_META_BYTES = 512 * 1024
+MAX_CELL_CHARS = 2048
+MAX_PDF_OUTPUT_BYTES = 1 * 1024 * 1024
+MAX_PDF_INFLATE_BYTES = 4 * 1024 * 1024
+MAX_PDF_PAGES = 25
+MAX_PDF_SECONDS = 12
 MARKDOWN_EXTS = {".md", ".markdown"}
 
 BUILTIN_PATTERNS = [
@@ -549,74 +558,214 @@ def _xml_text(elem: ET.Element) -> str:
     return "".join(elem.itertext())
 
 
+class _PreviewBudgetExceeded(ValueError):
+    """A document is too large to preview inside the configured work budget."""
+
+
+class _BudgetReader:
+    """Limit actual decompressed ZIP bytes across all selected members, not file size."""
+
+    def __init__(self, stream: Any, remaining: List[int]):
+        self.stream = stream
+        self.remaining = remaining
+
+    def read(self, n: int = -1) -> bytes:
+        if self.remaining[0] <= 0:
+            # Detect whether more decompressed bytes exist without reading them.
+            if self.stream.read(1):
+                raise _PreviewBudgetExceeded("Preview exceeds decompressed XML budget")
+            return b""
+        want = min(n if n >= 0 else 16384, self.remaining[0] + 1)
+        data = self.stream.read(want)
+        if len(data) > self.remaining[0]:
+            raise _PreviewBudgetExceeded("Preview exceeds decompressed XML budget")
+        self.remaining[0] -= len(data)
+        return data
+
+
+def _zip_small_xml(z: zipfile.ZipFile, name: str) -> ET.Element:
+    info = z.getinfo(name)
+    if info.file_size > MAX_OFFICE_META_BYTES:
+        raise _PreviewBudgetExceeded("Office metadata exceeds preview budget")
+    with z.open(name) as stream:
+        raw = stream.read(MAX_OFFICE_META_BYTES + 1)
+    if len(raw) > MAX_OFFICE_META_BYTES:
+        raise _PreviewBudgetExceeded("Office metadata exceeds preview budget")
+    return ET.fromstring(raw)
+
+
 def _render_docx(path: Path) -> Tuple[str, str]:
+    """Stream Word text with incremental Expat callbacks; never construct the XML tree."""
+    parts: List[str] = []
+    remaining_xml = [MAX_OFFICE_XML_BYTES]
+    visible_chars = 0
+    truncated = False
     try:
         with zipfile.ZipFile(path) as z:
-            names = ["word/document.xml"] + [n for n in z.namelist() if n.startswith("word/") and n.endswith(".xml") and any(k in n for k in ("header", "footer", "footnotes", "endnotes"))]
-            parts: List[str] = []
-            for name in names:
+            names = (["word/document.xml"] +
+                     [n for n in z.namelist() if n.startswith("word/") and n.endswith(".xml")
+                      and any(k in n for k in ("header", "footer", "footnotes", "endnotes"))])
+            # Only a bounded number of author-content parts are sampled.
+            if len(names) > 9:
+                truncated = True
+            for name in names[:9]:
+                if visible_chars >= MAX_TEXT_CHARS:
+                    truncated = True
+                    break
+                pieces: List[str] = []
+                state = {"text_depth": 0, "depth": 0, "remaining": MAX_TEXT_CHARS - visible_chars}
+                parser = expat.ParserCreate(namespace_separator="}")
+
+                def put(value: str) -> None:
+                    if not value:
+                        return
+                    allowed = min(len(value), state["remaining"])
+                    if allowed:
+                        pieces.append(value[:allowed])
+                        state["remaining"] -= allowed
+                    if allowed < len(value) or state["remaining"] == 0:
+                        raise _PreviewBudgetExceeded("DOCX text preview limit reached")
+
+                def start(tag: str, attrs: Dict[str, str]) -> None:
+                    local = tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+                    state["depth"] += 1
+                    if local == "t":
+                        state["text_depth"] += 1
+                    elif local == "tab":
+                        put("\t")
+                    elif local in {"br", "cr"}:
+                        put("\n")
+
+                def stop(tag: str) -> None:
+                    local = tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+                    if local == "t":
+                        state["text_depth"] = max(0, state["text_depth"] - 1)
+                    elif local == "p":
+                        put("\n")
+                    state["depth"] -= 1
+
+                def characters(value: str) -> None:
+                    if state["text_depth"]:
+                        put(value)
+
+                parser.StartElementHandler = start
+                parser.EndElementHandler = stop
+                parser.CharacterDataHandler = characters
+                # Disable DTD, entity and external-resource processing in preview XML.
+                parser.StartDoctypeDeclHandler = lambda *_args: (_ for _ in ()).throw(
+                    _PreviewBudgetExceeded("DOCTYPE is not supported in preview"))
+                parser.ExternalEntityRefHandler = lambda *_args: 0
                 try:
-                    root = ET.fromstring(z.read(name))
-                except Exception:
+                    with z.open(name) as stream:
+                        reader = _BudgetReader(stream, remaining_xml)
+                        while True:
+                            chunk = reader.read(16384)
+                            if not chunk:
+                                parser.Parse(b"", True)
+                                break
+                            parser.Parse(chunk, False)
+                except KeyError:
                     continue
-                # WordprocessingML paragraphs/tables. itertext is crude but robust enough for fast preview.
-                text = _xml_text(root)
-                text = re.sub(r"[ \t\r\f\v]+", " ", text)
-                text = re.sub(r"\n{3,}", "\n\n", text)
-                if text.strip():
-                    label = name.replace("word/", "")
-                    parts.append(f"--- {label} ---\n{text.strip()}")
-            body = "\n\n".join(parts).strip()
-            if not body:
-                body = "Không trích được text từ DOCX này."
-            if len(body) > MAX_TEXT_CHARS:
-                body = body[:MAX_TEXT_CHARS] + "\n\n[truncated]"
-            return "DOCX preview", f"<pre class='text-preview'>{h(body)}</pre>"
-    except zipfile.BadZipFile:
-        return "DOCX preview", "<p>File DOCX không phải zip hợp lệ hoặc đã hỏng.</p>"
-
-
-def _xlsx_shared_strings(z: zipfile.ZipFile) -> List[str]:
-    try:
-        root = ET.fromstring(z.read("xl/sharedStrings.xml"))
-    except Exception:
-        return []
-    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-    strings = []
-    for si in root.findall(f".//{ns}si"):
-        strings.append("".join(si.itertext()))
-    return strings
+                except (_PreviewBudgetExceeded, expat.ExpatError):
+                    truncated = True
+                text_part = "".join(pieces).strip()
+                if text_part:
+                    visible_chars += len(text_part)
+                    parts.append(f"--- {name.replace('word/', '')} ---\n{text_part}")
+                if truncated:
+                    break
+        body = "\n\n".join(parts).strip() or "Không trích được text từ DOCX này."
+        if len(body) > MAX_TEXT_CHARS:
+            body = body[:MAX_TEXT_CHARS]
+            truncated = True
+        if truncated:
+            body += "\n\n[truncated: preview resource limit; open raw file for full document]"
+        return "DOCX preview", f"<pre class='text-preview'>{h(body)}</pre>"
+    except (zipfile.BadZipFile, OSError):
+        return "DOCX preview", "<p>DOCX không đọc được hoặc tệp bị hỏng.</p>"
 
 
 def _xlsx_sheet_names(z: zipfile.ZipFile) -> List[Tuple[str, str]]:
     try:
-        root = ET.fromstring(z.read("xl/workbook.xml"))
-    except Exception:
+        root = _zip_small_xml(z, "xl/workbook.xml")
+    except (KeyError, ET.ParseError):
         return []
     ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     rel_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
-    out = []
-    for sheet in root.findall(f".//{ns}sheet"):
-        out.append((sheet.attrib.get("name", "Sheet"), sheet.attrib.get(rel_ns + "id", "")))
-    return out
+    return [(s.attrib.get("name", "Sheet"), s.attrib.get(rel_ns + "id", ""))
+            for s in root.findall(f".//{ns}sheet")[:5]]
 
 
 def _xlsx_rels(z: zipfile.ZipFile) -> Dict[str, str]:
     try:
-        root = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
-    except Exception:
+        root = _zip_small_xml(z, "xl/_rels/workbook.xml.rels")
+    except (KeyError, ET.ParseError):
         return {}
     rels: Dict[str, str] = {}
     for rel in root:
-        rid = rel.attrib.get("Id", "")
-        target = rel.attrib.get("Target", "")
+        rid, target = rel.attrib.get("Id", ""), rel.attrib.get("Target", "")
         if rid and target:
-            if not target.startswith("/"):
-                target = "xl/" + target
-            else:
-                target = target.lstrip("/")
-            rels[rid] = target
+            rels[rid] = ("xl/" + target) if not target.startswith("/") else target.lstrip("/")
     return rels
+
+
+def _xlsx_shared_strings(z: zipfile.ZipFile, needed: set[int], budget: List[int]) -> Dict[int, str]:
+    """SAX-stream shared strings without retaining an XML tree of omitted indices."""
+    if not needed:
+        return {}
+    result: Dict[int, str] = {}
+    state: Dict[str, Any] = {"index": -1, "chosen": False, "text": False, "pieces": [], "chars": 0, "cut": False}
+    class _Complete(Exception):
+        pass
+
+    def start(tag: str, _attrs: Dict[str, str]) -> None:
+        local = tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+        if local == "si":
+            state["index"] += 1
+            state["chosen"] = state["index"] in needed
+            state["pieces"] = []
+            state["chars"] = 0
+            state["cut"] = False
+        elif local == "t":
+            state["text"] = True
+
+    def chars(value: str) -> None:
+        if state["chosen"] and state["text"]:
+            available = max(0, MAX_CELL_CHARS - state["chars"])
+            state["pieces"].append(value[:available])
+            state["chars"] += min(len(value), available)
+            if len(value) > available:
+                state["cut"] = True
+
+    def end(tag: str) -> None:
+        local = tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+        if local == "t":
+            state["text"] = False
+        elif local == "si":
+            if state["chosen"]:
+                result[state["index"]] = "".join(state["pieces"]) + (" [truncated]" if state["cut"] else "")
+            if len(result) >= len(needed) or state["index"] >= max(needed):
+                raise _Complete()
+
+    parser = expat.ParserCreate(namespace_separator="}")
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = chars
+    parser.StartDoctypeDeclHandler = lambda *_args: (_ for _ in ()).throw(
+        _PreviewBudgetExceeded("DOCTYPE is not supported in preview"))
+    parser.ExternalEntityRefHandler = lambda *_args: 0
+    try:
+        with z.open("xl/sharedStrings.xml") as stream:
+            reader = _BudgetReader(stream, budget)
+            while True:
+                chunk = reader.read(16384)
+                if not chunk:
+                    parser.Parse(b"", True)
+                    break
+                parser.Parse(chunk, False)
+    except (KeyError, _PreviewBudgetExceeded, _Complete, expat.ExpatError):
+        pass
+    return result
 
 
 def _cell_value(cell: ET.Element, shared: List[str]) -> str:
@@ -631,38 +780,168 @@ def _cell_value(cell: ET.Element, shared: List[str]) -> str:
     if typ == "s":
         try:
             return shared[int(raw)]
-        except Exception:
+        except (IndexError, TypeError, ValueError):
             return raw
     return raw
 
 
+def _xlsx_stream_rows(
+    z: zipfile.ZipFile, target: str, budget: List[int]
+) -> Tuple[List[List[Tuple[str, Any]]], set[int], bool]:
+    """Process worksheet cells using SAX events, without retaining an XML element tree."""
+    rows: List[List[Tuple[str, Any]]] = []
+    references: set[int] = set()
+    limited = False
+    state: Dict[str, Any] = {
+        "depth": 0, "in_sheet": False, "row": None, "cells": 0,
+        "capture": False, "kind": "", "value": [], "chars": 0, "reading": False,
+    }
+
+    class _DoneSheet(Exception):
+        pass
+
+    def start(tag: str, attrs: Dict[str, str]) -> None:
+        nonlocal limited
+        local = tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+        state["depth"] += 1
+        if state["depth"] > 128:
+            raise _PreviewBudgetExceeded("Worksheet XML nesting limit exceeded")
+        if local == "sheetData":
+            state["in_sheet"] = True
+        elif local == "row" and state["in_sheet"]:
+            if len(rows) >= MAX_TABLE_ROWS:
+                limited = True
+                raise _DoneSheet()
+            state["row"] = []
+            state["cells"] = 0
+        elif local == "c" and state["row"] is not None:
+            state["cells"] += 1
+            state["capture"] = state["cells"] <= MAX_TABLE_COLS
+            if not state["capture"]:
+                limited = True
+            else:
+                state["kind"] = attrs.get("t", "")
+                state["value"] = []
+                state["chars"] = 0
+        elif state["capture"] and (
+            (local == "v" and state["kind"] != "inlineStr")
+            or (local == "t" and state["kind"] == "inlineStr")
+        ):
+            state["reading"] = True
+
+    def characters(value: str) -> None:
+        nonlocal limited
+        if not state["reading"]:
+            return
+        allowed = max(0, MAX_CELL_CHARS - state["chars"])
+        if allowed:
+            state["value"].append(value[:allowed])
+            state["chars"] += min(allowed, len(value))
+        if len(value) > allowed:
+            limited = True
+
+    def end(tag: str) -> None:
+        local = tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+        if local in {"v", "t"}:
+            state["reading"] = False
+        elif local == "c":
+            if state["capture"] and state["row"] is not None:
+                value = "".join(state["value"])
+                if state["kind"] == "s":
+                    try:
+                        idx = int(value)
+                        if idx < 0:
+                            raise ValueError("negative index")
+                        references.add(idx)
+                        state["row"].append(("ref", idx))
+                    except ValueError:
+                        state["row"].append(("text", "[invalid shared string]"))
+                else:
+                    state["row"].append(("text", value))
+            state["capture"] = False
+            state["reading"] = False
+        elif local == "row" and state["row"] is not None:
+            rows.append(state["row"])
+            state["row"] = None
+        elif local == "sheetData":
+            state["in_sheet"] = False
+        state["depth"] -= 1
+
+    parser = expat.ParserCreate(namespace_separator="}")
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = characters
+    parser.StartDoctypeDeclHandler = lambda *_args: (_ for _ in ()).throw(
+        _PreviewBudgetExceeded("DOCTYPE is not supported in preview"))
+    parser.ExternalEntityRefHandler = lambda *_args: 0
+    try:
+        with z.open(target) as stream:
+            reader = _BudgetReader(stream, budget)
+            while True:
+                chunk = reader.read(16384)
+                if not chunk:
+                    parser.Parse(b"", True)
+                    break
+                parser.Parse(chunk, False)
+    except (_PreviewBudgetExceeded, expat.ExpatError, _DoneSheet):
+        limited = True
+    return rows, references, limited
+
+
 def _render_xlsx(path: Path) -> Tuple[str, str]:
+    budget = [MAX_OFFICE_XML_BYTES]
+    sheets_data: List[Tuple[str, List[List[Tuple[str, Any]]]]] = []
+    references: set[int] = set()
+    limited = False
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     try:
         with zipfile.ZipFile(path) as z:
-            shared = _xlsx_shared_strings(z)
-            sheets = _xlsx_sheet_names(z)
-            rels = _xlsx_rels(z)
-            blocks: List[str] = []
-            for sheet_name, rid in sheets[:5]:
+            try:
+                names = _xlsx_sheet_names(z)
+                rels = _xlsx_rels(z)
+            except _PreviewBudgetExceeded:
+                return "Excel preview", "<p>Office metadata vượt giới hạn preview; mở file gốc.</p>"
+            for sheet_name, rid in names[:5]:
                 target = rels.get(rid)
                 if not target or target not in z.namelist():
                     continue
-                root = ET.fromstring(z.read(target))
-                ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-                rows_html = []
-                for r_i, row in enumerate(root.findall(f".//{ns}sheetData/{ns}row")):
-                    if r_i >= MAX_TABLE_ROWS:
-                        break
-                    vals = [_cell_value(c, shared) for c in list(row)[:MAX_TABLE_COLS]]
-                    cells = "".join(f"<td>{h(v)}</td>" for v in vals)
-                    rows_html.append(f"<tr>{cells}</tr>")
-                if rows_html:
-                    blocks.append(f"<h2>{h(sheet_name)}</h2><div class='table-wrap'><table>{''.join(rows_html)}</table></div>")
-            if not blocks:
-                return "Excel preview", "<p>Không thấy sheet/cell để preview.</p>"
-            return "Excel preview", "<div class='note'>Preview tối đa vài sheet đầu, không tính công thức/style.</div>" + "".join(blocks)
-    except zipfile.BadZipFile:
-        return "Excel preview", "<p>File Excel không phải OOXML zip hợp lệ. .xls đời cũ chưa hỗ trợ bằng stdlib.</p>"
+                rows, needed, partial = _xlsx_stream_rows(z, target, budget)
+                references.update(needed)
+                limited = limited or partial
+                if rows:
+                    sheets_data.append((sheet_name, rows))
+                if not budget[0]:
+                    limited = True
+                    break
+            shared = _xlsx_shared_strings(z, references, budget)
+            if len(shared) != len(references):
+                limited = True
+    except (zipfile.BadZipFile, OSError):
+        return "Excel preview", "<p>Excel không đọc được hoặc tệp bị hỏng.</p>"
+
+    blocks: List[str] = []
+    used_html = 0
+    for sheet_name, rows in sheets_data:
+        table_rows: List[str] = []
+        for cells in rows:
+            vals = [shared.get(value, "[shared string not available within preview limit]")
+                    if kind == "ref" else str(value) for kind, value in cells]
+            row_html = "<tr>" + "".join(f"<td>{h(val)}</td>" for val in vals) + "</tr>"
+            if used_html + len(row_html) > MAX_TEXT_CHARS:
+                limited = True
+                break
+            table_rows.append(row_html)
+            used_html += len(row_html)
+        if table_rows:
+            blocks.append(f"<h2>{h(sheet_name)}</h2><div class='table-wrap'><table>{''.join(table_rows)}</table></div>")
+        if limited and used_html >= MAX_TEXT_CHARS - MAX_CELL_CHARS:
+            break
+    if not blocks:
+        return "Excel preview", "<p>Không thấy sheet/cell để preview.</p>"
+    note = "<div class='note'>Preview tối đa 5 sheet, 160 hàng, 32 cột mỗi sheet; không tính công thức/style.</div>"
+    if limited:
+        note += "<div class='note'>[truncated] Preview bị giới hạn tài nguyên; mở file gốc để xem đầy đủ.</div>"
+    return "Excel preview", note + "".join(blocks)
 
 
 def _decode_pdf_string(s: str) -> str:
@@ -680,53 +959,111 @@ def _decode_pdf_string(s: str) -> str:
 
 
 def _extract_pdf_text_naive(data: bytes) -> str:
-    chunks: List[bytes] = []
-    for m in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", data, flags=re.S):
-        raw = m.group(1)
-        header = data[max(0, m.start() - 300):m.start()]
+    """Best-effort fallback; cap expanded Flate streams before scanning text."""
+    parts: List[str] = []
+    expanded_budget = MAX_PDF_INFLATE_BYTES
+    text_budget = MAX_TEXT_CHARS
+    streams = re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", data, flags=re.S)
+    any_stream = False
+    for index, match in enumerate(streams):
+        if index >= 400 or text_budget <= 0 or expanded_budget <= 0:
+            break
+        any_stream = True
+        raw = match.group(1)
+        header = data[max(0, match.start() - 300):match.start()]
         if b"FlateDecode" in header:
             try:
-                raw = zlib.decompress(raw)
-            except Exception:
-                pass
-        chunks.append(raw)
-    if not chunks:
-        chunks = [data]
-    text_parts: List[str] = []
-    for raw in chunks[:400]:
-        s = raw.decode("latin-1", "ignore")
-        for item in re.findall(r"\((?:\\.|[^\\)]){1,1000}\)\s*Tj", s):
-            literal = item.rsplit(")", 1)[0][1:]
-            text_parts.append(_decode_pdf_string(literal))
-        for arr in re.findall(r"\[(.*?)\]\s*TJ", s, flags=re.S):
+                inflater = zlib.decompressobj()
+                raw = inflater.decompress(raw, expanded_budget)
+            except zlib.error:
+                continue
+        if len(raw) > expanded_budget:
+            raw = raw[:expanded_budget]
+        expanded_budget -= len(raw)
+        decoded = raw.decode("latin-1", "replace")
+        for item in re.findall(r"\((?:\\.|[^\\)]){1,1000}\)\s*Tj", decoded):
+            if text_budget <= 0:
+                break
+            value = _decode_pdf_string(item.rsplit(")", 1)[0][1:])
+            parts.append(value[:text_budget])
+            text_budget -= min(text_budget, len(value))
+        if text_budget <= 0:
+            break
+        for arr in re.findall(r"\[(.*?)\]\s*TJ", decoded, flags=re.S):
+            if text_budget <= 0:
+                break
             vals = re.findall(r"\((?:\\.|[^\\)])*\)", arr)
             if vals:
-                text_parts.append("".join(_decode_pdf_string(v[1:-1]) for v in vals))
-    out = "\n".join(t.strip() for t in text_parts if t.strip())
-    out = re.sub(r"\n{3,}", "\n\n", out)
-    return out.strip()
+                value = "".join(_decode_pdf_string(v[1:-1]) for v in vals)
+                parts.append(value[:text_budget])
+                text_budget -= min(text_budget, len(value))
+    if not any_stream and data:
+        plain = data[:MAX_PDF_INFLATE_BYTES].decode("latin-1", "replace")
+        parts = [_decode_pdf_string(m.rsplit(")", 1)[0][1:])[:MAX_TEXT_CHARS]
+                 for m in re.findall(r"\((?:\\.|[^\\)]){1,1000}\)\s*Tj", plain)[:400]]
+    out = "\n".join(t.strip() for t in parts if t.strip())
+    return re.sub(r"\n{3,}", "\n\n", out).strip()[:MAX_TEXT_CHARS]
+
+
+def _pdftotext_bounded(path: Path) -> tuple[str, bool] | None:
+    """Bound subprocess output without capture_output/communicate buffering whole PDFs."""
+    command = ["pdftotext", "-f", "1", "-l", str(MAX_PDF_PAGES),
+               "-layout", "-enc", "UTF-8", str(path), "-"]
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, OSError):
+        return None
+    chunks: List[bytes] = []
+    def read_stdout() -> None:
+        if proc.stdout:
+            chunks.append(proc.stdout.read(MAX_PDF_OUTPUT_BYTES + 1))
+    reader = threading.Thread(target=read_stdout, daemon=True)
+    try:
+        reader.start()
+        reader.join(MAX_PDF_SECONDS)
+        if reader.is_alive():
+            return ("", True)
+        if proc.poll() is None and len(chunks[0]) > MAX_PDF_OUTPUT_BYTES:
+            return (chunks[0][:MAX_PDF_OUTPUT_BYTES].decode("utf-8", "replace")[:MAX_TEXT_CHARS], True)
+        try:
+            exit_code = proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return ("", True)
+        if exit_code != 0:
+            return None
+        raw = chunks[0] if chunks else b""
+        return raw[:MAX_PDF_OUTPUT_BYTES].decode("utf-8", "replace")[:MAX_TEXT_CHARS], (
+            len(raw) > MAX_PDF_OUTPUT_BYTES)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        reader.join(timeout=1)
+        if proc.stdout:
+            proc.stdout.close()
 
 
 def _render_pdf(path: Path) -> Tuple[str, str]:
-    # Prefer system pdftotext when present. It is common on Linux boxes and much better than naive parsing.
-    try:
-        r = subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", str(path), "-"], capture_output=True, text=True, timeout=15, errors="replace")
-        if r.returncode == 0 and r.stdout.strip():
-            body = r.stdout[:MAX_TEXT_CHARS]
-            note = "<div class='note'>Text lấy bằng pdftotext.</div>"
-            return "PDF preview", note + f"<pre class='text-preview'>{h(body)}</pre>"
-    except Exception:
-        pass
+    extracted = _pdftotext_bounded(path)
+    if extracted is not None:
+        text, limited = extracted
+        if text.strip():
+            note = "<div class='note'>Văn bản từ pdftotext, tối đa 25 trang đầu.</div>"
+            if limited:
+                note += "<div class='note'>[truncated] Đã dừng ở giới hạn preview.</div>"
+            return "PDF preview", note + f"<pre class='text-preview'>{h(text)}</pre>"
+        if limited:
+            return "PDF preview", "<p>PDF preview vượt giới hạn thời gian/tài nguyên; mở file gốc.</p>"
     data, truncated = _read_limited_bytes(path, MAX_PREVIEW_BYTES)
     text = _extract_pdf_text_naive(data)
     if not text:
-        msg = "Không trích được text PDF bằng parser nhẹ. Browser vẫn có thể mở PDF gốc bằng nút Open raw."
-        return "PDF preview", f"<p>{h(msg)}</p>"
-    if len(text) > MAX_TEXT_CHARS:
-        text = text[:MAX_TEXT_CHARS] + "\n\n[truncated]"
-    note = "<div class='note'>PDF parser nhẹ, kết quả có thể thiếu font/Unicode phức tạp.</div>"
+        return "PDF preview", "<p>Không trích được text bằng parser nhẹ; có thể mở PDF gốc.</p>"
+    note = "<div class='note'>PDF parser dự phòng; Unicode/font phức tạp có thể thiếu.</div>"
     if truncated:
-        note += "<div class='note'>Chỉ đọc một phần đầu file.</div>"
+        note += "<div class='note'>[truncated] Chỉ đọc phần đầu file.</div>"
     return "PDF preview", note + f"<pre class='text-preview'>{h(text)}</pre>"
 
 

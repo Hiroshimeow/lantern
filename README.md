@@ -129,6 +129,14 @@ python lan_drive.py --root "D:\Share" --host 0.0.0.0 --port 9999
 
 Then browse to the machine's **actual LAN or Tailscale IP**, not `0.0.0.0`.
 
+### Several computers using Lantern at once
+
+- **One server, many browsers or PCs:** terminal sessions belong to the server, not an individual tab. Each updated client subscribes to output only for its visible terminal; closing a drawer does not terminate the shared PTY. A tab running older JavaScript can still reconnect, but may see a shortened display tail until it reloads. For unusually large configured histories, updated clients also show only the last 800,000 characters in a single replay with an explicit notice. The server-retained output is unchanged in both cases.
+- **Heavy document previews:** at most two DOCX/XLSX/PDF previews run at a time **per Lantern server**. Further simultaneous preview requests receive HTTP 503 (retry shortly). A preview may show a clearly labelled partial result when the document exceeds its parsing budget.
+- **Several independent Lantern servers over the same network share/NAS:** each server has **its own** terminals, preview limits, and caches. Accessing the same directory does not synchronize terminal sessions or enforce global preview quotas. Concurrent file writes and Git activity still require separate coordination; don't treat the shared filesystem as a distributed transaction manager.
+
+These are concurrency limits within one Lantern process, not an overall per-LAN bandwidth limit.
+
 ---
 
 ## One-command Windows install

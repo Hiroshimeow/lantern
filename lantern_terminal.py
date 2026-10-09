@@ -8,7 +8,8 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional
 
@@ -321,6 +322,8 @@ class TerminalEntry:
     output: str = ""
     output_offset: int = 0
     command: Optional[str] = None
+    generation: str = field(default_factory=lambda: uuid4().hex)
+    seq: int = 0
 
 
 class TerminalManager:
@@ -441,7 +444,9 @@ class TerminalManager:
             if self.live.get(entry.id) is not entry:
                 return
             self._append_retained(entry, data)
-        self.emit({"type": "terminal_output", "terminalId": entry.id, "data": data})
+            entry.seq += 1
+            seq = entry.seq
+        self.emit({"type": "terminal_output", "terminalId": entry.id, "generation": entry.generation, "seq": seq, "data": data})
 
     def _handle_exit(self, entry: TerminalEntry, code: int) -> None:
         evicted = []
@@ -542,11 +547,20 @@ class TerminalManager:
             "running": entry.running,
             "exitCode": entry.exit_code,
             "command": entry.command,
+            "generation": entry.generation,
         }
 
     def list(self) -> list[Dict[str, Any]]:
         with self.lock:
             return [self._info(x) for x in [*self.live.values(), *self.history.values()]]
+
+    def replay_one(self, term_id: str) -> tuple[Dict[str, Any], str, int]:
+        """Capture one bounded PTY tail and its output sequence atomically."""
+        with self.lock:
+            entry = self.live.get(term_id) or self.history.get(term_id)
+            if entry is None:
+                raise ValueError("Unknown terminal id")
+            return self._info(entry), entry.output, entry.seq
 
     def replay(self) -> Iterable[tuple[str, str]]:
         with self.lock:

@@ -103,6 +103,8 @@ except Exception:
 APP_NAME = "LAN Drive OneFile"
 DEFAULT_PORT = int(os.environ.get("LAN_DRIVE_PORT", "9999"))
 DEFAULT_HOST = os.environ.get("LAN_DRIVE_HOST", "0.0.0.0")
+# Per-server budget shared by all LAN clients; other Lantern processes have separate limits.
+HEAVY_PREVIEW_SLOTS = threading.BoundedSemaphore(value=2)
 
 if os.name == "nt":
     DEFAULT_ROOT = os.environ.get("LAN_DRIVE_ROOT") or Path.cwd().anchor or "C:/"
@@ -1213,7 +1215,7 @@ function enc(s){return encodeURIComponent(s).replace(/%2F/g,'/')}
 function currentPath(){return window.APP?.currentPath||''}
 function selectedArray(){return Array.from(state.selected)}
 function cachePrefix(){return 'lanDrive:list:'+location.pathname+':'}
-function cacheKey(){return cachePrefix()+state.sort+':'+state.limit+':'+state.recursiveDepth+':'+(q?.value||'')}
+function cacheKey(){return cachePrefix()+state.sort+':'+state.limit+':'+state.recursiveDepth+':'+String(state.foldersFirst)+':'+(q?.value||'')}
 function scrollKey(){return 'lanDrive:scroll:'+location.pathname}
 function clearFolderCache(){try{const p=cachePrefix(); Object.keys(sessionStorage).forEach(k=>{if(k.startsWith(p))sessionStorage.removeItem(k)})}catch(e){}}
 let prefSaveTimer=null;
@@ -1297,8 +1299,8 @@ function ensureListHeader(){if(grid&&!grid.querySelector('.list-head'))grid.inse
 function ensureLoader(){ const old=$('#loader'); if(old)old.remove(); if(state.hasMore)grid.insertAdjacentHTML('beforeend','<div id="loader" class="loader">Cuộn xuống để tải thêm...</div>'); observeLoader(); }
 function render(){ if(!grid)return; const old=$('#loader'); if(old)old.remove(); if(!state.items.length&&!state.loading){grid.innerHTML=emptyHTML;return} if(grid.querySelector('.empty')||grid.querySelector('.skeleton'))grid.innerHTML=''; grid.innerHTML=listHeaderHTML()+state.items.map(cardHTML).join(''); ensureLoader(); applyView(); updateSelectionUI(); setupFolderPreviews() }
 function appendRender(newItems){ if(!grid)return; const old=$('#loader'); if(old)old.remove(); if(grid.querySelector('.empty')||grid.querySelector('.skeleton'))grid.innerHTML=listHeaderHTML(); ensureListHeader(); if(newItems&&newItems.length)grid.insertAdjacentHTML('beforeend',newItems.map(cardHTML).join('')); ensureLoader(); applyView(); updateSelectionUI(); setupFolderPreviews() }
-function saveListCache(){try{sessionStorage.setItem(cacheKey(),JSON.stringify({items:state.items,offset:state.offset,hasMore:state.hasMore,scrollY:window.scrollY,ts:Date.now()}))}catch(e){}}
-function hydrateCache(){try{const raw=sessionStorage.getItem(cacheKey()); if(!raw)return false; const c=JSON.parse(raw); if(!Array.isArray(c.items))return false; state.items=c.items; state.offset=c.offset||c.items.length; state.hasMore=!!c.hasMore; render(); requestAnimationFrame(()=>window.scrollTo(0,c.scrollY||Number(sessionStorage.getItem(scrollKey())||0))); return true}catch(e){return false}}
+function saveListCache(){try{if(listDataKey!==listContextKey())return;sessionStorage.setItem(cacheKey(),JSON.stringify({items:state.items,offset:state.offset,hasMore:state.hasMore,scrollY:window.scrollY,ts:Date.now()}))}catch(e){}}
+function hydrateCache(){try{const raw=sessionStorage.getItem(cacheKey()); if(!raw)return false; const c=JSON.parse(raw); if(!Array.isArray(c.items))return false; state.items=c.items; state.offset=c.offset??c.items.filter(it=>!it.special).length; state.hasMore=!!c.hasMore; listDataKey=listContextKey(); render(); requestAnimationFrame(()=>window.scrollTo(0,c.scrollY??Number(sessionStorage.getItem(scrollKey())||0))); return true}catch(e){return false}}
 window.addEventListener('pagehide',()=>{if(grid){sessionStorage.setItem(scrollKey(),String(window.scrollY));saveListCache()}});
 window.addEventListener('pageshow',e=>{if(grid&&e.persisted)setTimeout(()=>softRefresh().catch(()=>{}),0)});
 // Existing scroll pagination is lazy. Refresh directory data on return/focus and
@@ -1309,7 +1311,108 @@ function refreshWhenActive(minAgeMs=5000){if(canLazyRefresh()&&Date.now()-lastLi
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshWhenActive()});
 window.addEventListener('focus',()=>refreshWhenActive());
 let autoRefreshTimer=setInterval(()=>refreshWhenActive(30000),30000);
-async function loadMore(reset=false){ if(!grid||state.loading)return; if(reset){state.items=[];state.offset=0;state.hasMore=true;state.selected.clear();grid.innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>'} if(!state.hasMore)return; state.loading=true; updateSelectionUI(); const params=new URLSearchParams({path:currentPath(),offset:String(state.offset),limit:String(state.limit),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)}); try{const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'}); const j=await r.json(); if(!r.ok||j.error)throw new Error(j.error||r.statusText); const newItems=j.items||[]; if(reset)state.items=[]; state.items.push(...newItems); state.offset=j.nextOffset; state.hasMore=!!j.hasMore; lastListFetchAt=Date.now(); if(reset)render(); else appendRender(newItems); saveListCache()}catch(e){grid.innerHTML=`<div class="empty"><div><div style="font-size:42px">⚠️</div><p>Lỗi tải thư mục</p><p>${String(e.message||e)}</p></div></div>`}finally{state.loading=false;updateSelectionUI()} }
+let listWork=null, pendingListUpdate=null, listRevision=0, listDataKey=null;
+let listRetryRequired=false, appendRepairUsed=false;
+function listQuery(){return {path:currentPath(),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)}}
+function listContextKey(){return JSON.stringify([listQuery(),state.limit])}
+function captureListViewport(){
+  const visible=[];
+  for(const card of grid.querySelectorAll('.card[data-rel]')){
+    const rect=card.getBoundingClientRect();
+    if(card.dataset.rel&&rect.bottom>0&&rect.top<innerHeight)visible.push({rel:card.dataset.rel,top:rect.top});
+  }
+  return {y:window.scrollY,visible};
+}
+function restoreListViewport(viewport){
+  // Use the next surviving visible card when the old anchor was deleted/renamed.
+  for(const anchor of viewport.visible){
+    const card=grid.querySelector(`.card[data-rel="${CSS.escape(anchor.rel)}"]`);
+    if(card){window.scrollBy(0,card.getBoundingClientRect().top-anchor.top);return}
+  }
+  window.scrollTo(0,viewport.y);
+}
+async function performListUpdate(kind,revision){
+  const query=listQuery(), key=listContextKey();
+  const isCurrent=()=>revision===listRevision&&key===listContextKey();
+  const reset=kind==='reset'||listDataKey!==key;
+  const append=kind==='append'&&!reset;
+  const target=append?0:Math.max(state.limit,reset?0:state.offset);
+  let offset=append?state.offset:0, next=append?state.items.slice():[], more=true, total=null;
+  const appended=[];
+  try{
+    do{
+      // The server caps each response at 1000 real entries. Parent is not an entry.
+      const limit=append?state.limit:Math.min(1000,Math.max(20,target-offset));
+      const params=new URLSearchParams({...query,offset:String(offset),limit:String(limit)});
+      const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'});
+      const j=await r.json();
+      if(!isCurrent())return;
+      if(!r.ok||j.error)throw new Error(j.error||r.statusText);
+      if(!Array.isArray(j.items))throw new Error('Invalid listing response');
+      const cursor=Number(j.nextOffset);
+      if(!Number.isSafeInteger(cursor)||cursor<offset||(j.hasMore&&cursor===offset))throw new Error('Invalid listing cursor');
+      if(total!==null&&j.total!==total)throw new Error('Directory changed during refresh; refresh again');
+      total=j.total;
+      next.push(...j.items); appended.push(...j.items);
+      offset=cursor; more=!!j.hasMore;
+    }while(!append&&more&&offset<target);
+    if(!isCurrent())return;
+    const real=next.filter(it=>!it.special), paths=new Set(real.map(it=>it.rel));
+    if(paths.size!==real.length){
+      // An insertion before our cursor shifted pagination. Repair once, not per frame.
+      if(append&&!appendRepairUsed){appendRepairUsed=true;pendingListUpdate='refresh';return}
+      throw new Error('Directory changed during refresh; refresh again');
+    }
+    const wasBlocked=listRetryRequired;
+    listRetryRequired=false;
+    if(append)appendRepairUsed=false;
+    const changed=JSON.stringify(state.items)!==JSON.stringify(next), paginationChanged=state.hasMore!==more;
+    // Capture at commit time: selection and scrolling may change while fetching.
+    const viewport=!reset&&!append&&changed?captureListViewport():null;
+    const selected=reset?[]:selectedArray();
+    state.items=next; state.offset=offset; state.hasMore=more; listDataKey=key;
+    state.selected=new Set(selected.filter(rel=>paths.has(rel)));
+    if(state.listPreview&&!paths.has(state.listPreview))clearSidePreview();
+    if(changed||reset){
+      if(append)appendRender(appended);
+      else if(next.length)render();
+      else{grid.innerHTML=emptyHTML;ensureLoader()}
+    }else if(paginationChanged||wasBlocked)ensureLoader();
+    if(viewport)restoreListViewport(viewport);
+    if(reset)window.scrollTo(0,0);
+    lastListFetchAt=Date.now();
+    // Manual refresh clears the cache before fetching, including unchanged data.
+    saveListCache();
+  }catch(e){
+    if(isCurrent()){
+      listRetryRequired=true;
+      if(io)io.disconnect();
+      const loader=$('#loader');
+      if(loader)loader.innerHTML='<button type="button" class="btn small" onclick="refreshFolder()">Thử lại tải danh sách</button>';
+      toast('Refresh lỗi: '+e.message);
+    }
+  }
+}
+function requestListUpdate(kind){
+  if(!grid)return Promise.resolve();
+  if(kind==='append'){
+    if(listWork||!state.hasMore||listRetryRequired)return listWork||Promise.resolve();
+  }else{listRevision++;appendRepairUsed=false}
+  // Coalesce refreshes; a sort/search reset supersedes refresh and append.
+  if(kind==='reset'||pendingListUpdate!=='reset')pendingListUpdate=kind;
+  if(listWork)return listWork;
+  state.loading=true;updateSelectionUI();
+  listWork=(async()=>{
+    try{
+      while(pendingListUpdate){
+        const action=pendingListUpdate;pendingListUpdate=null;
+        await performListUpdate(action,listRevision);
+      }
+    }finally{state.loading=false;listWork=null;updateSelectionUI();if(!listRetryRequired)observeLoader()}
+  })();
+  return listWork;
+}
+function loadMore(reset=false){return requestListUpdate(reset?'reset':'append')}
 let io=null; function observeLoader(){ if(!grid)return; if(io)io.disconnect(); const loader=$('#loader'); if(!loader)return; io=new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))loadMore(false)},{rootMargin:'900px'}); io.observe(loader)}
 function filterCards(){clearTimeout(state.searchTimer);state.searchTimer=setTimeout(()=>{clearFolderCache();loadMore(true)}, Number(defaults.search_debounce_ms||240))} q?.addEventListener('input',filterCards);
 function sortCards(mode){if(mode)state.sort=mode; syncControls(); savePrefs({default_sort:state.sort}); clearFolderCache(); loadMore(true)}
@@ -1317,7 +1420,7 @@ function changeSort(sel){sortCards(sel.value)}
 function changeLimit(sel){state.limit=Number(sel.value||220); savePrefs({page_limit:state.limit}); clearFolderCache(); loadMore(true)}
 function changeFoldersFirst(el){state.foldersFirst=!!el.checked; savePrefs({folders_first:state.foldersFirst}); clearFolderCache(); loadMore(true)}
 function changeRecursiveDepth(sel){state.recursiveDepth=String(sel.value||'0');localStorage.setItem(prefKey('recursive_depth'),state.recursiveDepth);clearFolderCache();loadMore(true)}
-async function softRefresh(){if(!grid||state.loading)return;const oldY=window.scrollY, selected=selectedArray(), prevPreview=state.listPreview;state.loading=true;updateSelectionUI();const params=new URLSearchParams({path:currentPath(),offset:'0',limit:String(state.limit),sort:state.sort,q:q?.value||'',recursive_depth:(q?.value||'').trim()?state.recursiveDepth:'0',folders_first:String(state.foldersFirst)});try{const r=await fetch('/api/list?'+params.toString(),{cache:'no-store'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||r.statusText);lastListFetchAt=Date.now();const next=j.items||[];const unchanged=JSON.stringify(state.items.slice(0,next.length))===JSON.stringify(next)&&(state.items.length>next.length||state.hasMore===!!j.hasMore);if(!unchanged){state.items=next;state.offset=j.nextOffset||state.items.length;state.hasMore=!!j.hasMore;render();state.selected=new Set(selected.filter(rel=>state.items.some(it=>it.rel===rel)));if(prevPreview&&!state.items.some(it=>it.rel===prevPreview))clearSidePreview();updateSelectionUI();window.scrollTo(0,oldY);saveListCache()}}catch(e){toast('Refresh lỗi: '+e.message)}finally{state.loading=false;updateSelectionUI()}}
+function softRefresh(){return requestListUpdate('refresh')}
 function refreshFolder(){clearFolderCache();softRefresh()}
 const MEDIA_KINDS = new Set(['image','video','audio']);
 const mediaState = {kind:null,current:null,items:[],index:-1,busy:false,touchX:0,touchY:0};
@@ -1471,7 +1574,7 @@ document.addEventListener('mousemove',maybeStartDragSelect);
 document.addEventListener('mouseup',()=>{const wasDrag=state.dragSelecting;state.dragCandidate=null;state.dragSelecting=false;state.dragMode=null;if(wasDrag){state.suppressClick=true;setTimeout(()=>{state.suppressClick=false},0)}});
 window.addEventListener('scroll',closeContextMenu,true);
 async function api(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{})});const j=await r.json().catch(()=>({}));if(!r.ok||j.error)throw new Error(j.error||`HTTP ${r.status}`);return j}
-async function mkdir(){const name=prompt('Tên thư mục mới:');if(!name)return;try{await api('/api/mkdir',{path:currentPath(),name});clearFolderCache();loadMore(true)}catch(e){toast('Lỗi tạo thư mục: '+e.message)}}
+async function mkdir(){const name=prompt('Tên thư mục mới:');if(!name)return;try{await api('/api/mkdir',{path:currentPath(),name});clearFolderCache();await softRefresh()}catch(e){toast('Lỗi tạo thư mục: '+e.message)}}
 async function newFile(){const name=prompt('Tên file mới, ví dụ notes.txt:');if(!name)return;try{const r=await api('/api/newfile',{path:currentPath(),name});location.href=r.edit_url}catch(e){toast('Lỗi tạo file: '+e.message)}}
 async function renameOne(){const rel=selectedArray()[0];if(!rel)return;const old=rel.split('/').pop();const name=prompt('Đổi tên thành:',old);if(!name||name===old)return;try{await api('/api/rename',{path:rel,name});clearFolderCache();await softRefresh()}catch(e){toast('Lỗi rename: '+e.message)}}
 async function copySel(){const arr=selectedArray();if(!arr.length)return;const dest=prompt(`Copy ${arr.length} mục đến thư mục:`,currentPath());if(dest===null)return;try{const r=await api('/api/copy',{paths:arr,dest,conflict:'rename'});toast(`Đã copy ${r.copied?.length||0} mục`);clearFolderCache();await softRefresh()}catch(e){toast('Lỗi copy: '+e.message)}}
@@ -1725,7 +1828,7 @@ async function uploadOneQueued(it){
 async function startUploadQueue(){
   if(uploadState.running)return; if(!uploadState.queue.length){toast('Queue trống');return} uploadState.running=true;uploadState.done=0;uploadState.failed=0;
   const workers=Array.from({length:Math.max(1,Math.min(Number(state.uploadParallel||3),8))},async()=>{while(true){const it=uploadState.queue.find(x=>x.state==='ready'); if(!it)break; await uploadOneQueued(it)}});
-  await Promise.all(workers); uploadState.running=false; toast(uploadState.failed?`Upload xong, lỗi ${uploadState.failed}`:'Upload xong'); clearFolderCache(); loadMore(true);
+  await Promise.all(workers); uploadState.running=false; toast(uploadState.failed?`Upload xong, lỗi ${uploadState.failed}`:'Upload xong'); clearFolderCache(); await softRefresh();
 }
 function clearUploadQueue(){if(uploadState.running){toast('Đang upload, chưa xoá queue được');return} uploadState.queue=[];uploadState.done=0;uploadState.failed=0;renderUploadQueue()}
 $('#fileInput')?.addEventListener('change',e=>{addUploadFiles(e.target.files);e.target.value=''});$('#folderInput')?.addEventListener('change',e=>{addUploadFiles(e.target.files);e.target.value=''});
@@ -2200,11 +2303,20 @@ class Handler(SimpleHTTPRequestHandler):
         if not target.is_file():
             self.send_error(404, "preview target not found")
             return
+        is_heavy = target.suffix.lower() in {".docx", ".xlsx", ".xlsm", ".pdf"}
+        acquired = not is_heavy or HEAVY_PREVIEW_SLOTS.acquire(blocking=False)
+        if not acquired:
+            self.send_error(503, "Preview is busy (max 2 concurrent heavy documents); retry shortly")
+            return
         try:
             body = LAN_PLUGIN.render_preview_page(target, CONFIG.root, plugin_config_path(), CONFIG.title)
-            self.send_bytes(200, body, "text/html; charset=utf-8")
         except Exception as e:
             self.send_error(500, f"preview error: {e}")
+            return
+        finally:
+            if is_heavy:
+                HEAVY_PREVIEW_SLOTS.release()
+        self.send_bytes(200, body, "text/html; charset=utf-8")
 
     def api_plugin_extensions(self) -> None:
         if LAN_PLUGIN is None:
