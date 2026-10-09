@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 lan_drive_config.local.yaml
 /.plan/
+node_modules/

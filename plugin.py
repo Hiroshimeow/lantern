@@ -1091,6 +1091,7 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
     except Exception:
         rel = p.name
     title, body = render_content(p, config_path, rootp)
+    visual_markdown = p.suffix.lower() in {".md", ".markdown"} and _kind(p, config_path) == "markdown"
     raw_url = "/" + "/".join([quote_component(x) for x in rel.split("/")])
     nonce = secrets.token_urlsafe(24)
     csp = (
@@ -1098,10 +1099,10 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         f"script-src 'nonce-{nonce}'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
-        "connect-src 'none'; "
-        "base-uri 'none'; "
-        "object-src 'none'; "
-        "form-action 'none'"
+        + ("connect-src 'self'; " if visual_markdown else "connect-src 'none'; ")
+        + "base-uri 'none'; "
+        + "object-src 'none'; "
+        + "form-action 'none'"
     )
     css = """
 :root{color-scheme:dark;--bg:#080a0f;--panel:#10151e;--line:#283343;--text:#f8fafc;--muted:#b9c4d0;--accent:#68e37a}
@@ -1113,11 +1114,19 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         if 'class="mermaid-diagram"' in body else ""
     )
     helper_script = f'<script nonce="{h(nonce)}" src="/static/markdown_preview.js" defer></script>'
+    visual_script = (
+        f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'
+        if visual_markdown else ""
+    )
+    visual_button = (
+        f'<button class="btn primary" type="button" data-action="visual-edit" data-path="{h(rel)}">Edit visually</button>'
+        if visual_markdown else ""
+    )
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
-{mermaid_script}{helper_script}</head>
+{mermaid_script}{helper_script}{visual_script}</head>
 <body>
-<div class="bar"><button class="btn" type="button" data-action="back">↩ Back</button><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><button class="btn" type="button" data-action="print">Print / Save as PDF</button><a class="btn" href="/api/plugin/preview?p={h(rel)}">Preview</a><a class="btn" href="{h(raw_url)}?edit=1">Edit</a><a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
+<div class="bar"><button class="btn" type="button" data-action="back">↩ Back</button><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><button class="btn" type="button" data-action="print">Print / Save as PDF</button><a class="btn" href="/api/plugin/preview?p={h(rel)}">Preview</a>{visual_button}<a class="btn" href="{h(raw_url)}?edit=1">{"Source" if visual_markdown else "Edit"}</a><a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
 <div class="content" data-doc-name="{h(p.stem)}"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
 </body></html>"""
     return page.encode("utf-8", "surrogateescape")

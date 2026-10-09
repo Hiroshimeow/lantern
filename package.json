@@ -1,0 +1,13 @@
+{
+  "name": "lantern-visual-markdown",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Build-only dependencies for Lantern's offline Markdown visual editor",
+  "scripts": {
+    "build:markdown": "node tools/build_markdown.mjs"
+  },
+  "devDependencies": {
+    "@milkdown/crepe": "7.22.2",
+    "esbuild": "0.28.2"
+  }
+}

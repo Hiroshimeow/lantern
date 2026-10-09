@@ -1,0 +1,32 @@
+/* Offline Lantern visual markdown editing; only loaded after user enters edit mode. */
+.md-visual-shell{max-width:1080px;margin:0 auto 24px;border:1px solid #283343;border-radius:16px;background:#0b1018;overflow:visible}
+.md-visual-tools{position:sticky;top:56px;z-index:9;display:flex;gap:9px;align-items:center;flex-wrap:wrap;background:#101722;border-bottom:1px solid #283343;padding:10px 14px;border-radius:16px 16px 0 0}
+.md-visual-label{font-weight:750;color:#e3f5e7}
+.md-visual-status{flex:1;min-width:180px;color:#9fb6ca;font-size:12px}
+.md-visual-status[data-kind=warn]{color:#e9cb85}
+.md-visual-status[data-kind=error]{color:#ff9b9b}
+.md-visual-host{min-height:340px;padding:10px 18px 32px}
+.md-visual-host .milkdown{min-height:310px;color:#ebf1fa;background:#0b1018!important;border:0;box-shadow:none}
+.md-visual-host .milkdown .editor{min-height:280px;max-width:none!important;outline:none}
+.md-visual-host .milkdown .ProseMirror{padding:14px 10px 28px!important;min-height:280px;outline:none}
+.md-visual-host .milkdown .ProseMirror:focus{outline:none}
+.md-visual-host .milkdown h1,.md-visual-host .milkdown h2,.md-visual-host .milkdown h3{line-height:1.3}
+.md-visual-host .milkdown img{max-width:100%;height:auto}
+.md-visual-host .milkdown table{max-width:100%;display:block;overflow:auto}
+.md-format-review{background:#111c2c;color:#eaf3fa;border:1px solid #465976;border-radius:14px;max-width:min(95vw,1160px);width:95vw;max-height:85vh;padding:20px}
+.md-format-review::backdrop{background:rgba(0,0,0,.8)}
+.md-format-review h2{margin:0 0 8px}.md-format-review p{color:#c7d4df}
+.md-format-diff{display:grid;grid-template-columns:1fr 1fr;gap:12px;max-height:54vh;overflow:auto}
+.md-format-diff>div{min-width:0}
+.md-format-diff h3{margin:8px 0}
+.md-format-diff pre{margin:0;max-height:46vh;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid #364b60;padding:12px;background:#07111e;color:#e4ecf3}
+.md-format-actions{display:flex;justify-content:flex-end;gap:12px;margin-top:16px;flex-wrap:wrap}
+@media(max-width:720px){
+.md-visual-tools{top:56px;padding:9px;gap:6px}
+.md-visual-label{width:100%}
+.md-visual-host{padding:5px}
+.md-visual-host .milkdown .ProseMirror{padding:10px!important}
+.md-format-diff{grid-template-columns:1fr}
+.md-format-diff pre{max-height:24vh}
+}
+@media print{.md-visual-tools{display:none!important}.md-visual-shell{border:0}.md-visual-host{padding:0}}
