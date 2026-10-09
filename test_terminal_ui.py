@@ -108,6 +108,41 @@ class TerminalUiParityTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_legacy_protocol_streams_output_without_v2_subscription(self) -> None:
+        client = json.dumps(str(CLIENT))
+        script = textwrap.dedent(f"""
+            const assert = require('assert');
+            global.location = {{protocol:'http:', host:'lantern.test'}};
+            global.document = {{querySelector:()=>null, addEventListener:()=>{{}}, hidden:false}};
+            global.addEventListener = ()=>{{}};
+            global.setInterval = ()=>0;
+            class FakeWebSocket {{ static OPEN=1; constructor(){{this.readyState=1}} send(){{}} close(){{}} }}
+            global.WebSocket = FakeWebSocket;
+            require({client});
+            const api = global.__lanternTerminalScm;
+            const writes = [];
+            const t = {{
+              meta:{{id:'legacy',running:true}},
+              term:{{reset(){{}},write(s,done){{writes.push(s);done?.()}}}},
+              pending:false, pendingChunks:new Map(), replayTok:0,
+            }};
+            api.state.terms.set('legacy', t);
+            api.state.active='legacy';
+            api.handleMessage({{type:'terminal_snapshot', terminals:[{{id:'legacy',running:true}}], output:{{legacy:'START'}}}});
+            assert.equal(api.state.serverProtocol,'legacy');
+            api.handleMessage({{type:'terminal_output',terminalId:'legacy',data:' LIVE'}});
+            assert.deepEqual(writes,['START',' LIVE']);
+            api.state.serverProtocol='v2';
+            api.state.subscribed=null;
+            api.handleMessage({{type:'terminal_output',terminalId:'legacy',generation:'g',seq:1,data:'UNSUBSCRIBED'}});
+            assert.deepEqual(writes,['START',' LIVE'],'v2 output without subscription must be ignored');
+        """)
+        result = subprocess.run(
+            ["node", "-e", script], cwd=ROOT, text=True, capture_output=True,
+            check=False, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_browser_client_parses_as_javascript(self) -> None:
         result = subprocess.run(
             ["node", "--check", str(CLIENT)],
