@@ -13,7 +13,7 @@
     active: false, loading: false, instance: null, version: null,
     dirty: false, revision: 0, savedRevision: 0, saving: false, conflict: false,
     baseline: '', lastSaved: '', roundtripSafe: false, approvedReformat: false,
-    saveTimer: 0, draftTimer: 0, host: null, status: null,
+    saveTimer: 0, draftTimer: 0, checkTimer: 0, host: null, status: null,
     saveButton: null, closeButton: null, details: null, requestAgain: false,
   };
   const key = location.origin + ':' + path;
@@ -72,7 +72,9 @@
   const getEditorText = () => view.instance?.getMarkdown() || '';
   const saveDraft = async () => {
     if (!view.active || !view.dirty || !view.instance) return;
-    try { await drafts.write(getEditorText()); }
+    const text = getEditorText();
+    if (text === view.lastSaved) return;
+    try { await drafts.write(text); }
     catch { status('Local draft storage unavailable. Do not close this tab until saved.', 'warn'); }
   };
   const queueDraft = () => {
@@ -92,8 +94,25 @@
       !view.roundtripSafe && !view.approvedReformat
       ? 'Formatting differs from source. Review before saving.' : 'Unsaved changes…',
       view.conflict ? 'error' : 'info');
-    queueDraft();
-    queueSave();
+    // Milkdown features may issue internal document transactions after mount.
+    // Compare the actual Markdown after a brief idle gap; only semantic source
+    // changes should cause autosave or durable draft writes.
+    clearTimeout(view.checkTimer);
+    const observedRevision = view.revision;
+    view.checkTimer = setTimeout(() => {
+      if (!view.active || !view.instance || observedRevision !== view.revision) return;
+      if (getEditorText() === view.lastSaved) {
+        view.dirty = false;
+        clearTimeout(view.draftTimer);
+        clearTimeout(view.saveTimer);
+        if (!view.conflict && !view.saving) status(view.roundtripSafe ?
+          'Ready. Type directly in the document. Autosave enabled.' :
+          'Visual editing ready. Formatting differs; review required before Save.');
+        return;
+      }
+      queueDraft();
+      queueSave();
+    }, 260);
   };
   const restoreButtons = () => {
     trigger.disabled = false;
@@ -278,6 +297,7 @@
     if (view.dirty && !confirm('Unsaved changes remain in this browser. Return to preview?')) return;
     clearTimeout(view.saveTimer);
     clearTimeout(view.draftTimer);
+    clearTimeout(view.checkTimer);
     if (view.dirty) await saveDraft();
     view.active = false;
     view.instance?.destroy();
@@ -311,15 +331,21 @@
       view.host.scrollIntoView({ block: 'nearest' });
       view.instance = await engine.createVisualMarkdown(editorHost, contents, changed);
       view.active = true;
-      view.lastSaved = view.instance.getMarkdown();
-      view.roundtripSafe = cleanLineEndings(view.lastSaved) === cleanLineEndings(view.baseline);
-      if (contents !== doc.content) {
+      const restoredDraft = contents !== doc.content;
+      const serialized = view.instance.getMarkdown();
+      // A restored draft is not the remote baseline. Never accidentally treat it
+      // as "already saved" and delete the only copy of unsaved edits.
+      view.lastSaved = restoredDraft ? doc.content : serialized;
+      view.roundtripSafe = !restoredDraft &&
+        cleanLineEndings(serialized) === cleanLineEndings(view.baseline);
+      if (restoredDraft) {
         view.dirty = true;
         view.revision += 1;
-        queueDraft();
-        queueSave();
+        // Keep the exact original draft in IndexedDB until the user changes or
+        // explicitly saves it. Initial parsing may normalize Markdown syntax.
       }
       status(view.conflict ? 'Draft restored but disk version differs. Do not overwrite; download draft first.' :
+        restoredDraft ? 'Unsaved draft restored. Review changes before the first Save.' :
         view.roundtripSafe ? 'Ready. Type directly in the document. Autosave enabled.' :
         'Visual editing ready. Formatting differs; review required before Save.',
         view.conflict ? 'error' : view.roundtripSafe ? 'info' : 'warn');

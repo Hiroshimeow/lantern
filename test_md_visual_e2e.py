@@ -107,5 +107,105 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             context.close()
 
 
+    def test_two_visual_clients_conflict_without_overwriting(self):
+        (self.root / "shared.md").write_bytes(b"# Shared\n\nOriginal.\n")
+        context_a = self.browser.new_context()
+        context_b = self.browser.new_context()
+        try:
+            pages = [context_a.new_page(), context_b.new_page()]
+            for page in pages:
+                page.goto(self.base + "/api/plugin/preview?p=shared.md", timeout=15000)
+                page.get_by_role("button", name="Edit visually").click()
+                page.locator(".md-visual-host .ProseMirror[contenteditable='true']").wait_for(timeout=25000)
+                self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.roundtripSafe"))
+            a, b = pages
+            for page, suffix in [(a, " A"), (b, " B")]:
+                paragraph = page.locator(".md-visual-host .ProseMirror p").first
+                paragraph.click()
+                page.keyboard.press("End")
+                page.keyboard.type(suffix)
+                if page is a:
+                    page.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=15000)
+                else:
+                    page.locator(".md-visual-status").filter(has_text=re.compile(r"^Conflict")).wait_for(timeout=15000)
+            saved = (self.root / "shared.md").read_text(encoding="utf-8")
+            self.assertIn("Original. A", saved)
+            self.assertNotIn("Original. B", saved)
+            self.assertIn("Original. B", b.locator(".md-visual-host .ProseMirror").inner_text())
+            self.assertTrue(b.evaluate("() => window.__lanternMdVisual.state.conflict"))
+        finally:
+            context_a.close()
+            context_b.close()
+
+    def test_opening_mermaid_and_tables_never_saves_a_normalized_file(self):
+        content = (
+            "# Complex\n\n"
+            "- [x] done\n\n"
+            "| Alpha | Beta |\n| --- | --- |\n| A | B |\n\n"
+            "```mermaid\nflowchart LR\n A --> B\n```\n"
+        )
+        (self.root / "complex.md").write_bytes(content.encode("utf-8"))
+        context = self.browser.new_context()
+        page = context.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=complex.md", timeout=18000)
+            self.assertTrue(page.locator(".mermaid-diagram").count() >= 1)
+            page.get_by_role("button", name="Edit visually").click()
+            page.locator(".md-visual-host .ProseMirror[contenteditable='true']").wait_for(timeout=25000)
+            current = page.evaluate("() => window.__lanternMdVisual.state.instance.getMarkdown()")
+            self.assertIn("mermaid", current)
+            self.assertIn("flowchart LR", current)
+            self.assertIn("Alpha", page.locator(".md-visual-host .ProseMirror").inner_text())
+            page.wait_for_timeout(2800)
+            # Internal Milkdown table transactions must not flag a user edit.
+            self.assertEqual((self.root / "complex.md").read_bytes(), content.encode("utf-8"),
+                             "opening WYSIWYG must never rewrite original Markdown")
+            self.assertFalse(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
+        finally:
+            context.close()
+
+
+    def test_browser_recovers_unsaved_draft_without_false_saved_state(self):
+        original = b"# Draft\n\nHello.\n"
+        (self.root / "draft.md").write_bytes(original)
+        context = self.browser.new_context()
+        try:
+            first = context.new_page()
+            first.route("**/api/md/save", lambda route: route.abort("failed"))
+            first.goto(self.base + "/api/plugin/preview?p=draft.md", timeout=15000)
+            first.get_by_role("button", name="Edit visually").click()
+            first.locator(".md-visual-host .ProseMirror[contenteditable='true']").wait_for(timeout=25000)
+            p = first.locator(".md-visual-host .ProseMirror p").first
+            p.click()
+            first.keyboard.press("End")
+            first.keyboard.type(" pending")
+            first.wait_for_timeout(1700)
+            self.assertTrue(first.evaluate("() => window.__lanternMdVisual.state.dirty"))
+            self.assertEqual((self.root / "draft.md").read_bytes(), original)
+            first.close()
+            second = context.new_page()
+            second.on("dialog", lambda dialog: dialog.accept())
+            second.goto(self.base + "/api/plugin/preview?p=draft.md", timeout=15000)
+            second.get_by_role("button", name="Edit visually").click()
+            second.locator(".md-visual-host .ProseMirror[contenteditable='true']").wait_for(timeout=25000)
+            state = second.evaluate("""() => ({
+              dirty:window.__lanternMdVisual.state.dirty,
+              savedBaseline:window.__lanternMdVisual.state.lastSaved,
+              recovered:window.__lanternMdVisual.state.instance.getMarkdown(),
+              approved:window.__lanternMdVisual.state.approvedReformat,
+            })""")
+            self.assertTrue(state["dirty"])
+            self.assertIn("pending", state["recovered"])
+            self.assertNotIn("pending", state["savedBaseline"])
+            self.assertFalse(state["approved"])
+            self.assertEqual((self.root / "draft.md").read_bytes(), original)
+            second.get_by_role("button", name="Save", exact=True).click()
+            second.get_by_role("button", name="Accept conversion & Save").click()
+            second.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=15000)
+            self.assertIn("pending", (self.root / "draft.md").read_text(encoding="utf-8"))
+        finally:
+            context.close()
+
+
 if __name__ == "__main__":
     unittest.main()
