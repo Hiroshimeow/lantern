@@ -1,3 +1,4 @@
 static/vendor/lantern-crepe.min.js -diff whitespace=-trailing-space
 static/vendor/lantern-crepe.min.css -diff whitespace=-trailing-space
 static/vendor/lantern-md-segment-worker.min.js -diff whitespace=-trailing-space
+static/vendor/lantern-large-block.min.js -diff whitespace=-trailing-space

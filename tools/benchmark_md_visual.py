@@ -24,7 +24,7 @@ def sample(size: int) -> bytes:
 
 def main() -> None:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-    with tempfile.TemporaryDirectory(prefix='lantern-visual-perf-') as name:
+    with tempfile.TemporaryDirectory(prefix='lantern-visual-perf-', ignore_cleanup_errors=True) as name:
         dest = Path(name)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
@@ -59,13 +59,15 @@ def main() -> None:
                             measurements['preview_wall_ms'] = round((time.perf_counter()-start)*1000)
                             start = time.perf_counter()
                             page.get_by_role('button', name='Edit visually').click(timeout=12000)
-                            page.locator('.md-visual-host .ProseMirror[contenteditable="true"]').wait_for(timeout=60000)
+                            page.locator('.md-visual-host .ProseMirror[contenteditable="true"]').wait_for(timeout=25000)
                             measurements['edit_wall_ms'] = round((time.perf_counter()-start)*1000)
                             metrics = page.evaluate("""() => ({
                               loadMs: window.__lanternMdMetrics?.loadMs,
                               nodes: document.querySelectorAll('.md-visual-host .ProseMirror p').length,
                               heap: performance.memory?.usedJSHeapSize ?? null,
-                              roundtripSafe: window.__lanternMdVisual?.state.roundtripSafe,
+                              roundtripSafe: window.__lanternMdPaged?.roundtripSafe ?? window.__lanternMdVisual?.state.roundtripSafe,
+                              pageCount: window.__lanternMdPaged?.index.pages.length ?? 1,
+                              indexedMs: window.__lanternMdMetrics?.indexMs ?? null,
                             })""")
                             measurements.update(metrics)
                             paragraph = page.locator('.md-visual-host .ProseMirror p').first

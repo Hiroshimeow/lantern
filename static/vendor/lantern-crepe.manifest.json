@@ -2,7 +2,7 @@
   "dependencies": {
     "@milkdown/crepe": "7.22.2",
     "esbuild": "0.28.2",
-    "markdown-it": "14.1.0"
+    "markdown-it": "14.3.1"
   },
   "artifacts": {
     "lantern-crepe.min.js": {
@@ -18,8 +18,12 @@
       "sha256": "4b183b8b263a3204d495216972cfb7d092d8a4c6ce6dd077e72f78793003e9de"
     },
     "lantern-md-segment-worker.min.js": {
-      "bytes": 148934,
-      "sha256": "5017f3a0541a4c6f7ed5567df2f3a04aae1e0131618393b3766b394c37982979"
+      "bytes": 150228,
+      "sha256": "636d1539996e69d150c0dd3a25939955cbd5d03c512fcb5b5e2d3d6380d66d3b"
+    },
+    "lantern-large-block.min.js": {
+      "bytes": 388898,
+      "sha256": "5c0226bcf50a54ab95040bc12dbcb9550b270aaeb617db1dbb972e606e1ff7dd"
     }
   }
 }

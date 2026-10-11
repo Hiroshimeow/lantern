@@ -272,11 +272,12 @@ class MarkdownPreviewTests(unittest.TestCase):
             self.assertEqual(len(metas), 1)
             csp = metas[0].get("content") or ""
             match = re.fullmatch(
-                r"default-src 'none'; script-src 'nonce-([^']+)'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src '(none|self)'; base-uri 'none'; object-src 'none'; form-action 'none'",
+                r"default-src 'none'; script-src 'nonce-([^']+)'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src '(none|self)'; (worker-src 'self'; )?base-uri 'none'; object-src 'none'; form-action 'none'",
                 csp,
             )
             self.assertIsNotNone(match, csp)
             self.assertEqual(match.group(2), "self" if "Edit visually" in page else "none")
+            self.assertEqual(bool(match.group(3)), "Edit visually" in page)
             nonce = match.group(1)
             scripts = [attrs for tag, attrs in audit.tags if tag == "script"]
             self.assertGreaterEqual(len(scripts), 1)

@@ -235,6 +235,33 @@ Lantern detects Mermaid blocks server-side and conditionally adds the local Merm
 
 The browser then renders diagrams sequentially and exposes a PNG export button for each rendered diagram.
 
+### Visual Markdown editor (in-preview, offline)
+
+Click **Edit visually** while previewing an `.md` or `.markdown` file. Edit
+headings, paragraphs, lists, tables and fenced code directly in the rendered
+page; the underlying file remains Markdown.
+
+- For small files (up to 32 KiB), Milkdown/ProseMirror edits the whole document.
+- For larger files (up to 5 MiB of UTF-8), a Markdown-it block indexer runs in a
+  Web Worker and divides the document into lossless sections. Only the current
+  section is mounted in Milkdown. Use **Previous / Next**, **Find heading**,
+  **Go to page** or **Find anywhere in document** to navigate without raw source.
+- Exceptionally large individual fenced code blocks are edited in a localized,
+  viewport-rendered CodeMirror 6 code pane; the surrounding fence delimiters and
+  the rest of the Markdown remain intact.
+- Edits autosave after idle, and use a file-wide content hash to refuse stale
+  writes from another LAN client (HTTP 409). Drafts survive in browser IndexedDB,
+  with a downloadable backup. If Markdown syntax would be rewritten, saving
+  requires a before/after review; untouched sections are never reformatted.
+- The reader and writer refuse unsupported/binary files. The existing read-only
+  preview stays fast and available if the visual editor cannot open a document.
+
+Browser dependencies are vendored under `static/vendor/`; no CDN is required.
+When changing the editor dependencies, use `npm ci && npm run build:markdown`
+to regenerate the pinned offline assets and SHA-256 manifest. No Node process is
+needed at runtime. The 5 MiB editing limit is deliberate until larger-file
+memory/concurrency benchmarks establish a safe limit.
+
 ### Architecture docs included in this repository
 
 If you want a realistic stress test instead of a three-box demo:

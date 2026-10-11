@@ -115,6 +115,7 @@
     }, 260);
   };
   const restoreButtons = () => {
+    if(window.__lanternMdPaged?.active){trigger.disabled=true;trigger.textContent='Editing by section';return;}
     trigger.disabled = false;
     trigger.textContent = view.active ? 'Editing visually' : 'Edit visually';
     if (view.saveButton) view.saveButton.disabled = view.saving;
@@ -309,13 +310,27 @@
   }
 
   async function start() {
-    if (view.active || view.loading) return;
+    if (view.active || view.loading || window.__lanternMdPaged?.active) return;
     view.loading = true;
     trigger.disabled = true;
     trigger.textContent = 'Loading editor…';
     try {
       const start = performance.now();
       const doc = await api('/api/md/document?p=' + encodeURIComponent(path));
+      if(doc.bytes > 32 * 1024){
+        const loadPaged = () => new Promise((resolve,reject)=>{
+          if(window.LanternPagedEditor)return resolve(window.LanternPagedEditor);
+          const script=document.createElement('script');
+          script.src='/static/markdown_paged_editor.js';script.nonce=nonce;
+          script.onload=()=>window.LanternPagedEditor ?
+            resolve(window.LanternPagedEditor):reject(Error('Paged editor module not initialized'));
+          script.onerror=()=>reject(Error('Paged editor module unavailable'));
+          document.head.appendChild(script);
+        });
+        const paged=await loadPaged();
+        await paged.open({doc,path,preview,trigger,nonce,loadBundle});
+        return;
+      }
       const engine = await loadBundle();
       let contents = doc.content;
       const recovered = await drafts.read().catch(() => null);

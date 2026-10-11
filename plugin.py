@@ -1099,7 +1099,7 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         f"script-src 'nonce-{nonce}'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
-        + ("connect-src 'self'; " if visual_markdown else "connect-src 'none'; ")
+        + ("connect-src 'self'; worker-src 'self'; " if visual_markdown else "connect-src 'none'; ")
         + "base-uri 'none'; "
         + "object-src 'none'; "
         + "form-action 'none'"

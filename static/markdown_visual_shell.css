@@ -30,3 +30,25 @@
 .md-format-diff pre{max-height:24vh}
 }
 @media print{.md-visual-tools{display:none!important}.md-visual-shell{border:0}.md-visual-host{padding:0}}
+
+/* Large-document visual editor: a single active ProseMirror instance. */
+.md-paged-shell{max-width:1160px}
+.md-paged-tools{top:0;z-index:12;gap:10px}
+.md-paged-tools>strong{font-weight:750;white-space:nowrap}
+.md-paged-navigation{display:flex;align-items:center;gap:8px;flex:1 1 100%;flex-wrap:wrap}
+.md-page-number{width:68px;min-width:56px;padding:7px;border-radius:7px;border:1px solid #3e4b61;background:#091321;color:#e9f2fa;text-align:center;font:inherit}
+.md-page-count{white-space:nowrap;color:#a4c0d0}
+.md-page-heading,.md-page-heading-search{flex:1 1 150px;max-width:250px;min-width:120px;padding:7px;border-radius:7px;border:1px solid #3e4b61;background:#091321;color:#e9f2fa;font:inherit}
+.md-page-search{flex:2 1 180px;min-width:125px;padding:7px;border-radius:7px;border:1px solid #3e4b61;background:#091321;color:#e9f2fa;font:inherit}
+.md-oversized-note{padding:16px;color:#e9ce91;border:1px solid #987641;border-radius:10px;background:#251f16}
+.md-oversized-code{border:1px solid #34506b;border-radius:8px;overflow:hidden;max-height:65vh}
+.md-oversized-code .cm-editor{height:min(65vh,640px);font-size:13px}
+.md-oversized-code .cm-scroller{font-family:ui-monospace,Consolas,monospace;overflow:auto}
+.md-oversized-code .cm-content{min-height:160px}
+@media(max-width:720px){
+.md-paged-tools{top:0}
+.md-paged-tools>strong{white-space:normal}
+.md-paged-navigation{gap:6px}
+.md-page-heading,.md-page-heading-search,.md-page-search{max-width:none;flex:1 1 100%}
+.md-page-number{width:64px}
+}

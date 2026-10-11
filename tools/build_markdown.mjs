@@ -36,8 +36,21 @@ await build({
   sourcemap: false,
   logLevel: 'info',
 });
+const codeBlockOut=path.join(vendor,'lantern-large-block.min.js');
+await build({
+  entryPoints:[path.join(root,'tools','oversized_code_editor_entry.js')],
+  outfile:codeBlockOut,
+  bundle:true,
+  platform:'browser',
+  format:'iife',
+  target:['chrome114','firefox115','safari16'],
+  minify:true,
+  legalComments:'external',
+  sourcemap:false,
+  logLevel:'info',
+});
 const artifactPaths = [out, out.replace(/\.js$/, '.css'), out + '.LEGAL.txt',
-  worker, worker + '.LEGAL.txt'];
+  worker, worker + '.LEGAL.txt', codeBlockOut, codeBlockOut+'.LEGAL.txt'];
 const artifacts = {};
 for (const file of artifactPaths) {
   if (fs.existsSync(file)) {
@@ -46,7 +59,7 @@ for (const file of artifactPaths) {
   }
 }
 fs.writeFileSync(path.join(vendor, 'lantern-crepe.manifest.json'), JSON.stringify({
-  dependencies: {'@milkdown/crepe':'7.22.2', esbuild:'0.28.2', 'markdown-it':'14.1.0'},
+  dependencies: {'@milkdown/crepe':'7.22.2', esbuild:'0.28.2', 'markdown-it':'14.3.1'},
   artifacts,
 }, null, 2) + '\n');
 console.log('Lantern Crepe offline bundle:', artifacts);
