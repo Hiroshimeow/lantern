@@ -2305,17 +2305,26 @@ class Handler(SimpleHTTPRequestHandler):
             return
         qs = urllib.parse.parse_qs(query)
         rel = qs.get("p", qs.get("path", [""]))[0]
-        target = safe_join("/" + rel)
+        # parse_qs has already URL-decoded the query. safe_join expects a
+        # URL path and splits literal ?/# before decoding; re-encode to keep
+        # file names containing those characters intact (or percent signs).
+        target = safe_join("/" + quote_path(rel))
         if not target.is_file():
             self.send_error(404, "preview target not found")
             return
-        is_heavy = target.suffix.lower() in {".docx", ".xlsx", ".xlsm", ".pdf"}
+        pdf_text = target.suffix.lower() == ".pdf" and qs.get("view", [""])[0] == "text"
+        # Native PDF preview only emits a small iframe page. Only explicit text
+        # extraction needs a heavy parser slot.
+        is_heavy = target.suffix.lower() in {".docx", ".xlsx", ".xlsm"} or pdf_text
         acquired = not is_heavy or HEAVY_PREVIEW_SLOTS.acquire(blocking=False)
         if not acquired:
             self.send_error(503, "Preview is busy (max 2 concurrent heavy documents); retry shortly")
             return
         try:
-            body = LAN_PLUGIN.render_preview_page(target, CONFIG.root, plugin_config_path(), CONFIG.title)
+            if pdf_text:
+                body = LAN_PLUGIN.render_preview_page(target, CONFIG.root, plugin_config_path(), CONFIG.title, pdf_text=True)
+            else:
+                body = LAN_PLUGIN.render_preview_page(target, CONFIG.root, plugin_config_path(), CONFIG.title)
         except Exception as e:
             self.send_error(500, f"preview error: {e}")
             return

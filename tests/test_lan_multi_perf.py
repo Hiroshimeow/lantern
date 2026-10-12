@@ -440,6 +440,45 @@ assert.deepEqual(writes,['<reset>','A','B','C']);
 
 
 class LanPreviewConcurrencyTests(unittest.TestCase):
+    def test_pdf_native_viewer_does_not_consume_heavy_parser_slots(self):
+        """Even when DOCX/XLSX parsers are busy, PDF pages open immediately."""
+        import lan_drive
+        import time
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        class BusySlots:
+            def acquire(self, blocking=False):
+                raise AssertionError("Native PDF must not acquire heavy parser slots")
+            def release(self):
+                raise AssertionError("Native PDF must not release a slot")
+
+        class Stub:
+            def __init__(self):
+                self.response = None
+            def send_bytes(self, status, body, mime):
+                self.response = (status, body, mime)
+            def send_error(self, status, error):
+                self.response = (status, error, None)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "PDF 100% #print.pdf"
+            path.write_bytes(b"%PDF-1.4" + b"x" * (2 * 1024 * 1024))
+            stub = Stub()
+            config = SimpleNamespace(root=root, cache_dir=root, title="Lantern Test")
+            with (
+                patch.object(lan_drive, "CONFIG", config, create=True),
+                patch.object(lan_drive, "HEAVY_PREVIEW_SLOTS", BusySlots()),
+                patch.object(plugin, "_pdftotext_bounded", side_effect=AssertionError("eager parse")),
+            ):
+                begin = time.monotonic()
+                lan_drive.Handler.api_plugin_preview(stub, "p=PDF%20100%25%20%23print.pdf")
+                elapsed = time.monotonic() - begin
+            self.assertEqual(stub.response[0], 200, stub.response)
+            self.assertIn(b'class="pdf-native"', stub.response[1])
+            self.assertLess(elapsed, 1.0, "Native PDF preview should only build a small HTML shell")
+
     def test_per_server_heavy_preview_slots_cover_separate_clients(self):
         """Four concurrent clients: two parsers run, two reject without waiting."""
         import time
@@ -472,7 +511,7 @@ class LanPreviewConcurrencyTests(unittest.TestCase):
             config = SimpleNamespace(root=root, cache_dir=root, title="Test Lantern")
             def handle(stub):
                 begin.wait(3)
-                lan_drive.Handler.api_plugin_preview(stub, "p=file.pdf")
+                lan_drive.Handler.api_plugin_preview(stub, "p=file.pdf&view=text")
 
             from unittest.mock import patch
             with patch.object(lan_drive, "CONFIG", config, create=True), patch.object(lan_drive.LAN_PLUGIN, "render_preview_page", side_effect=render):

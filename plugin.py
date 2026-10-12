@@ -1083,16 +1083,32 @@ def render_content(path: Path | str, config_path: Optional[Path | str] = None, r
     return _render_text(p)
 
 
-def render_preview_page(path: Path | str, root: Path | str, config_path: Optional[Path | str] = None, app_title: str = "LAN Drive") -> bytes:
+def render_preview_page(path: Path | str, root: Path | str, config_path: Optional[Path | str] = None, app_title: str = "LAN Drive", *, pdf_text: bool = False) -> bytes:
     p = Path(path)
     rootp = Path(root)
     try:
         rel = p.resolve().relative_to(rootp.resolve()).as_posix()
     except Exception:
         rel = p.name
-    title, body = render_content(p, config_path, rootp)
     visual_markdown = p.suffix.lower() in {".md", ".markdown"} and _kind(p, config_path) == "markdown"
+    is_pdf = p.suffix.lower() == ".pdf" and _kind(p, config_path) == "pdf"
     raw_url = "/" + "/".join([quote_component(x) for x in rel.split("/")])
+    preview_url = "/api/plugin/preview?p=" + quote_component(rel)
+    if is_pdf and not pdf_text:
+        # Native PDF viewers preserve pages, fonts, images and scrolling.
+        # Embedding the existing range-capable file endpoint is O(1) in the
+        # document size and never runs pdftotext on the initial click.
+        title = "PDF preview"
+        body = (
+            '<div class="pdf-viewer">'
+            f'<iframe class="pdf-native" title="PDF document" src="{h(raw_url)}">'
+            '</iframe></div>'
+            '<div class="note pdf-fallback">If your browser cannot display PDFs inline, '
+            f'<a href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open PDF in a new tab</a>'
+            ' or download the original.</div>'
+        )
+    else:
+        title, body = render_content(p, config_path, rootp)
     nonce = secrets.token_urlsafe(24)
     csp = (
         "default-src 'none'; "
@@ -1100,13 +1116,14 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
         + ("connect-src 'self'; worker-src 'self'; " if visual_markdown else "connect-src 'none'; ")
+        + ("frame-src 'self'; " if is_pdf and not pdf_text else "")
         + "base-uri 'none'; "
         + "object-src 'none'; "
         + "form-action 'none'"
     )
     css = """
 :root{color-scheme:dark;--bg:#080a0f;--panel:#10151e;--line:#283343;--text:#f8fafc;--muted:#b9c4d0;--accent:#68e37a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750;cursor:pointer}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.md-preview{max-width:980px;margin:0 auto;padding:18px 22px;border:1px solid var(--line);border-radius:16px;background:#0b1018;color:#edf5ff;font-size:15px;line-height:1.72}.md-preview h1,.md-preview h2,.md-preview h3{line-height:1.25;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:.28em}.md-preview a{color:#8db4ff}.md-preview img{max-width:min(100%,760px);max-height:70vh;width:auto;height:auto;object-fit:contain;vertical-align:middle}.md-preview code{background:#18202c;border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:.1em .35em}.md-code{padding:12px 14px;border:1px solid #263142;border-radius:13px;background:#05070b;overflow:auto}.md-preview blockquote{margin:10px 0;padding:4px 12px;border-left:4px solid var(--accent);background:rgba(104,227,122,.06);color:var(--muted)}.md-preview hr{border:0;border-top:1px solid var(--line);margin:18px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}.table-wrap table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.table-wrap td,.table-wrap th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}.table-wrap th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}.task-item{list-style:none}.task-item input{margin-right:.5em}.mermaid-diagram{margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:14px;background:#fff;color:#111}.mermaid-output svg{max-width:100%;height:auto}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750;cursor:pointer}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.md-preview{max-width:980px;margin:0 auto;padding:18px 22px;border:1px solid var(--line);border-radius:16px;background:#0b1018;color:#edf5ff;font-size:15px;line-height:1.72}.md-preview h1,.md-preview h2,.md-preview h3{line-height:1.25;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:.28em}.md-preview a{color:#8db4ff}.md-preview img{max-width:min(100%,760px);max-height:70vh;width:auto;height:auto;object-fit:contain;vertical-align:middle}.md-preview code{background:#18202c;border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:.1em .35em}.md-code{padding:12px 14px;border:1px solid #263142;border-radius:13px;background:#05070b;overflow:auto}.md-preview blockquote{margin:10px 0;padding:4px 12px;border-left:4px solid var(--accent);background:rgba(104,227,122,.06);color:var(--muted)}.md-preview hr{border:0;border-top:1px solid var(--line);margin:18px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}.table-wrap table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.table-wrap td,.table-wrap th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}.table-wrap th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}.task-item{list-style:none}.task-item input{margin-right:.5em}.mermaid-diagram{margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:14px;background:#fff;color:#111}.mermaid-output svg{max-width:100%;height:auto}.pdf-viewer{height:calc(100dvh - 126px);min-height:330px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#20242d}.pdf-native{display:block;width:100%;height:100%;border:0}.pdf-fallback{font-size:12px;margin-top:8px;padding:7px 9px}.pdf-fallback a{color:#8db4ff}
 @media print{:root{color-scheme:light}body,.md-preview{background:#fff!important;color:#111!important}.bar,.muted,.note,.mermaid-diagram>.btn{display:none!important}.content{padding:0}.md-preview{max-width:none;border:0;padding:0}.table-wrap,.md-code{overflow:visible!important}th{position:static!important}pre{white-space:pre-wrap!important;overflow:visible!important}.mermaid-output svg{max-width:100%!important;height:auto!important}.mermaid-diagram{border:0;padding:0}}
 """
     mermaid_script = (
@@ -1122,11 +1139,20 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         f'<button class="btn primary" type="button" data-action="visual-edit" data-path="{h(rel)}">Edit visually</button>'
         if visual_markdown else ""
     )
+    pdf_action = (
+        f'<a class="btn" href="{h(preview_url)}&amp;view=text">Extract text (slower)</a>'
+        if is_pdf and not pdf_text else
+        f'<a class="btn" href="{h(preview_url)}">View PDF pages</a>'
+        if is_pdf else ""
+    )
+    print_button = '' if is_pdf and not pdf_text else (
+        '<button class="btn" type="button" data-action="print">Print / Save as PDF</button>'
+    )
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
 {mermaid_script}{helper_script}{visual_script}</head>
 <body>
-<div class="bar"><button class="btn" type="button" data-action="back">↩ Back</button><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div><button class="btn" type="button" data-action="print">Print / Save as PDF</button><a class="btn" href="/api/plugin/preview?p={h(rel)}">Preview</a>{visual_button}<a class="btn" href="{h(raw_url)}?edit=1">{"Source" if visual_markdown else "Edit"}</a><a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
+<div class="bar"><button class="btn" type="button" data-action="back">↩ Back</button><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div>{print_button}<a class="btn" href="{h(preview_url)}">Preview</a>{visual_button}{pdf_action}<a class="btn" href="{h(raw_url)}?edit=1">{"Source" if visual_markdown else "Edit"}</a><a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
 <div class="content" data-doc-name="{h(p.stem)}"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
 </body></html>"""
     return page.encode("utf-8", "surrogateescape")
@@ -1146,7 +1172,7 @@ def info(config_path: Optional[Path | str] = None) -> Dict[str, Any]:
         "formats": ["markdown", "text/env/code/log", "csv/tsv", "pdf", "docx", "xlsx/xlsm"],
         "notes": [
             "DOCX/XLSX preview uses stdlib OOXML parsing, no formatting/macros.",
-            "PDF preview prefers pdftotext when installed, otherwise best-effort parser.",
+            "PDF opens immediately in the browser's native viewer; optional text extraction uses pdftotext when installed.",
             "Legacy .doc/.xls binary Office is not parsed by stdlib; use raw download or convert.",
         ],
     }

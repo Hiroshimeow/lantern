@@ -3,6 +3,7 @@
 import re
 import tempfile
 import unittest
+from unittest.mock import patch
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -46,6 +47,42 @@ class MarkdownPreviewTests(unittest.TestCase):
         parser = HtmlAudit()
         parser.feed(page)
         return parser
+
+    def test_pdf_viewer_is_immediate_escaped_and_uses_native_browser(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            path = root / "demo & #2026.pdf"
+            path.write_bytes(b"%PDF-1.4" + b"X" * (16 * 1024 * 1024))
+            with patch.object(plugin, "_pdftotext_bounded", side_effect=AssertionError("No eager text extraction")), \
+                 patch.object(plugin, "_read_limited_bytes", side_effect=AssertionError("No eager file reads")):
+                page = plugin.render_preview_page(path, root).decode("utf-8")
+            audit = self.audit(page)
+            frames = [attrs for tag, attrs in audit.tags if tag == "iframe"]
+            self.assertEqual(len(frames), 1)
+            self.assertEqual(frames[0].get("src"), "/demo%20%26%20%232026.pdf")
+            self.assertEqual(frames[0].get("title"), "PDF document")
+            metas = [attrs for tag, attrs in audit.tags if tag == "meta" and attrs.get("http-equiv") == "Content-Security-Policy"]
+            self.assertEqual(len(metas), 1)
+            self.assertIn("frame-src 'self'; ", metas[0]["content"])
+            self.assertIn("object-src 'none';", metas[0]["content"])
+            self.assertNotIn("http://", frames[0]["src"])
+            self.assertNotIn("https://", frames[0]["src"])
+            self.assertIn("Extract text (slower)", page)
+            self.assertIn("view=text", page)
+            self.assertIn('Open PDF in a new tab', page)
+
+    def test_pdf_text_extraction_requires_explicit_view(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            path = root / "manual.pdf"
+            path.write_bytes(b"%PDF-1.4")
+            with patch.object(plugin, "_render_pdf", return_value=("PDF preview", "<pre class='text-preview'>hello</pre>")) as extract:
+                page = plugin.render_preview_page(path, root, pdf_text=True).decode("utf-8")
+            extract.assert_called_once_with(path)
+            self.assertNotIn('<iframe', page)
+            self.assertNotIn("frame-src 'self'", page)
+            self.assertIn('View PDF pages', page)
+            self.assertIn("hello", page)
 
     def test_limited_reader_never_reads_entire_large_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
