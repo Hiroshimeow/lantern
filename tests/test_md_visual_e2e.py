@@ -1,6 +1,6 @@
 """Opt-in real Edge acceptance for the offline in-preview Milkdown visual editor.
 
-Run: set LANTERN_E2E=1 && uv run --with-requirements requirements.txt --with playwright python -m unittest -v test_md_visual_e2e
+Run: set LANTERN_E2E=1 && uv run --with-requirements requirements.txt --with playwright python -m unittest -v tests.test_md_visual_e2e
 Uses only an isolated loopback server and temporary Markdown files, never FJP's live instance.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @unittest.skipUnless(os.environ.get("LANTERN_E2E") == "1", "set LANTERN_E2E=1 for real-browser tests")

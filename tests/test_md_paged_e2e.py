@@ -1,6 +1,6 @@
 """Isolated Edge E2E for section-virtualized Markdown editing.
 
-LANTERN_E2E=1 uv run --with-requirements requirements.txt --with playwright python -m unittest -v test_md_paged_e2e
+LANTERN_E2E=1 uv run --with-requirements requirements.txt --with playwright python -m unittest -v tests.test_md_paged_e2e
 """
 from __future__ import annotations
 import json
@@ -15,7 +15,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-ROOT=Path(__file__).resolve().parent
+ROOT=Path(__file__).resolve().parent.parent
 
 def sample(count: int) -> bytes:
     return (''.join(f'## Section {i:05d}\n\nParagraph {i:05d} lorem **bold** words.\n\n'

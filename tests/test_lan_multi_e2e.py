@@ -10,7 +10,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-ROOT=Path(__file__).resolve().parent
+ROOT=Path(__file__).resolve().parent.parent
 
 @unittest.skipUnless(os.environ.get("LANTERN_E2E")=="1", "set LANTERN_E2E=1")
 class LanMultipleBrowserE2E(unittest.TestCase):

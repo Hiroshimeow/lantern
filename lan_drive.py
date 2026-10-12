@@ -105,7 +105,7 @@ except Exception:
 
 APP_NAME = "LAN Drive OneFile"
 DEFAULT_PORT = int(os.environ.get("LAN_DRIVE_PORT", "9999"))
-DEFAULT_HOST = os.environ.get("LAN_DRIVE_HOST", "0.0.0.0")
+DEFAULT_HOST = os.environ.get("LAN_DRIVE_HOST", "127.0.0.1")
 # Per-server budget shared by all LAN clients; other Lantern processes have separate limits.
 HEAVY_PREVIEW_SLOTS = threading.BoundedSemaphore(value=2)
 
@@ -3090,7 +3090,15 @@ def main() -> None:
         print(f"Root does not exist: {CONFIG.root}", file=sys.stderr)
         sys.exit(2)
     ensure_cache_dir(CONFIG.cache_dir)
-    if args.save_config or not config_existed:
+    # CLI overrides are runtime-only unless --save-config is explicitly set.
+    # In particular, isolated tests using --root/--port must never create a
+    # machine config in the source checkout after the tracked YAML is removed.
+    cli_overrides = any(
+        getattr(args, name) is not None
+        for name in ("root", "port", "host", "title", "cache_dir",
+                     "show_hidden", "show_system", "sort", "view", "page_limit")
+    )
+    if args.save_config or (not config_existed and not cli_overrides):
         try:
             write_config_file(CONFIG)
         except Exception as e:

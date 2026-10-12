@@ -364,11 +364,40 @@ Mobile gets dedicated Ctrl / Alt / Esc / Tab / arrows / Backspace helpers.
 
 ## Configuration
 
-Use a YAML config:
+**Only the template `lan_drive_config.yaml_copy` is committed.** The active
+`lan_drive_config.yaml` and installer-created `lan_drive_config.local.yaml`
+are ignored by Git. They contain machine-specific paths, addresses and settings.
 
-```bash
-python lan_drive.py --config lan_drive_config.yaml
+Fresh clone:
+
+```powershell
+Copy-Item lan_drive_config.yaml_copy lan_drive_config.yaml
+uv run --with-requirements requirements.txt python lan_drive.py --config lan_drive_config.yaml
 ```
+
+On Linux/macOS use `cp lan_drive_config.yaml_copy lan_drive_config.yaml`.
+Copying is optional: when launched without CLI overrides, Lantern creates
+a local file from built-in defaults. With CLI overrides, the configuration
+remains runtime-only unless `--save-config` is passed. New instances bind to `127.0.0.1`; LAN
+access requires explicitly configuring `host: "0.0.0.0"` or passing `--host`
+on a trusted network. **Lantern has no authentication.**
+
+**Upgrading an older Git clone with a modified, tracked YAML:** an ordinary
+`git pull` may conflict when Git replaces that tracked file with the template.
+Use the one-time safe updater *before* pulling. It backs up the exact bytes
+under `~/.lantern/config-backups/`, fast-forwards `main`, and restores the
+original configuration as an ignored file. It never discards other changes:
+
+```powershell
+$helper = Join-Path $env:TEMP 'lantern-safe-pull.py'
+Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Hiroshimeow/lantern/main/tools/safe_pull.py' -OutFile $helper
+uv run --no-project python $helper --repo (Get-Location).Path
+```
+
+Run these commands **from the Lantern clone root**. On Linux/macOS, download the
+same `tools/safe_pull.py` to a temporary path and run `python3 /path/to/safe_pull.py --repo .`.
+If the YAML has staged changes, the updater safely stops; unstage those changes
+before retrying. Subsequent updates can use normal `git pull --ff-only`.
 
 Example:
 
@@ -397,7 +426,7 @@ upload_parallel: 3
 upload_conflict: "ask"
 ```
 
-Machine-specific configuration should live in `lan_drive_config.local.yaml`, which is ignored by Git.
+For installer deployments, continue using the generated `lan_drive_config.local.yaml`; it is also ignored by Git. Never copy a user-specific YAML into the tracked `lan_drive_config.yaml_copy`.
 
 ---
 
@@ -454,7 +483,22 @@ Run the suite:
 
 ```bash
 python -m unittest -q
+node --test tests/test_md_segmentation.mjs
 ```
+
+All Python tests are under `tests/` and are found by normal `unittest`
+discovery. Browser E2E is opt-in; for example, from PowerShell:
+
+```powershell
+$env:LANTERN_E2E='1'
+uv run --with-requirements requirements.txt --with playwright python -m unittest -v tests.test_md_visual_e2e tests.test_md_paged_e2e tests.test_terminal_e2e
+```
+
+By default, logs, test artifacts and agent handoff reports are local-only
+and not committed. Archive private review/evidence material **outside the
+folder served by Lantern**, not merely outside the Git checkout. Git history
+may still contain previously committed reports; this cleanup does not rewrite
+published commit history.
 
 Current coverage includes:
 
@@ -495,10 +539,15 @@ docs/images/                    README screenshots
 LANTERN_SYSTEM_ARCHITECTURE.md  System architecture diagrams
 LANTERN_FUNCTION_FLOWS.md       Detailed function-flow diagrams
 
-test_security.py
-test_plugin.py
-test_terminal_ui.py
-test_terminal_scm.py
+tests/                         Python unit/integration/E2E tests, Node Markdown tests
+  test_security.py
+  test_plugin.py
+  test_terminal_ui.py
+  test_terminal_scm.py
+
+lan_drive_config.yaml_copy       Tracked configuration template
+lan_drive_config.yaml            Local configuration (ignored)
+tools/safe_pull.py               One-time legacy YAML migration/update
 ```
 
 ---

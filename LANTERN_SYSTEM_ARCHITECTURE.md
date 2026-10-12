@@ -85,10 +85,10 @@ Lantern has no built-in authentication. The intended trust boundary is the priva
 | `lantern_terminal.py` | PTY/ConPTY session ownership and retained output | `NativePty`, `WinConPty`, `PosixPty`, `TerminalManager` |
 | `static/terminal_scm.js` | xterm UI, reconnect, terminal tabs, Git panel | `connect`, `makeX`, `newTerminal`, `refreshScm`, `runGit` |
 | `lantern_scm.py` | read-side Git queries and metadata watching | `ScmService` |
-| `test_plugin.py` | preview/CSP/Markdown security contracts | `MarkdownPreviewTests`, `HtmlAudit` |
-| `test_terminal_ui.py` | browser terminal behavior contracts | `TerminalUiParityTests` |
-| `test_terminal_scm.py` | terminal manager, SCM, WebSocket protocol | parity test classes |
-| `test_security.py` | HTTP mutation security | `HttpMutationSecurityTests` |
+| `tests/test_plugin.py` | preview/CSP/Markdown security contracts | `MarkdownPreviewTests`, `HtmlAudit` |
+| `tests/test_terminal_ui.py` | browser terminal behavior contracts | `TerminalUiParityTests` |
+| `tests/test_terminal_scm.py` | terminal manager, SCM, WebSocket protocol | parity test classes |
+| `tests/test_security.py` | HTTP mutation security | `HttpMutationSecurityTests` |
 
 ---
 

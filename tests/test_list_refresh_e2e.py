@@ -17,7 +17,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @unittest.skipUnless(os.environ.get("LANTERN_E2E") == "1", "set LANTERN_E2E=1 for browser E2E")
@@ -67,7 +67,7 @@ class ListRefreshE2E(unittest.TestCase):
             options["channel"] = os.environ["LANTERN_E2E_CHANNEL"]
         cls.browser = cls.pw.chromium.launch(**options)
         cls.addClassCleanup(cls.browser.close)
-        cls.artifacts = Path(os.environ.get("LANTERN_E2E_ARTIFACTS", ROOT / ".plan" / "lantern-r1-20261009" / "e2e"))
+        cls.artifacts = Path(os.environ.get("LANTERN_E2E_ARTIFACTS", ROOT / ".test-artifacts" / "list-refresh"))
         cls.artifacts.mkdir(parents=True, exist_ok=True)
         cls.case_number = 0
 

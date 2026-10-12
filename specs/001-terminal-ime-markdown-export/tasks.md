@@ -2,6 +2,11 @@
 
 # Terminal IME + Markdown Preview/Export Tasks
 
+> Historical research and acceptance logs mentioned under `.plan/` were
+> archived privately and are intentionally absent from the production repo.
+> Current reproducible checks live in `tests/`; the paths below are historical
+> references, not files shipped to end users.
+
 Status: aligned to the latest Opus UniKey re-review and lane-split review. T0-A PASS; T0-B PASS only as falsification; the Win32 SendInput automation probe cannot exercise UniKey and is non-evidence for T0-C. T0-C remains NOT_MEASURED; the original UniKey registry settings were restored.
 Rule: **terminal and Markdown/Mermaid are independent tracks**. T1 is guard-tests-only and may proceed without changing `static/terminal_scm.js`. T2 is blocked unless T0-C physically reproduces a wrong net result, classifies it as (ii), and a new focused review approves a changed contract. T3-T7 may proceed now on a separate Markdown branch/worktree. At every Markdown commit, verify the diff contains no changes to `static/terminal_scm.js`, `static/vendor/xterm.js`, `lantern_terminal.py`, `lantern_ws.py`, `lan_drive.py`, or `requirements.txt`.
 

@@ -1,6 +1,6 @@
 """Isolated real-Edge terminal lifecycle checks (never connects to the live Lantern service).
 
-LANTERN_E2E=1 uv run --with-requirements requirements.txt --with playwright python -m unittest -v test_terminal_e2e
+LANTERN_E2E=1 uv run --with-requirements requirements.txt --with playwright python -m unittest -v tests.test_terminal_e2e
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @unittest.skipUnless(os.environ.get("LANTERN_E2E") == "1", "requires LANTERN_E2E=1")

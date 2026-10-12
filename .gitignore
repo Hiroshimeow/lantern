@@ -1,7 +1,40 @@
+# Runtime state and per-machine settings (never commit)
+lan_drive_config.yaml
+lan_drive_config.local.yaml
+lan_drive_config.*.local.yaml
+.env
+.env.*
+!.env.example
+
+# Python / JavaScript environments and caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 .venv/
-lan_drive_config.local.yaml
-/.plan/
+venv/
 node_modules/
+
+# Tests, generated output, logs and temporary files
+/.test-artifacts/
+/.tmp/
+/tmp/
+/logs/
+*.log
+*.log.*
+*.tmp
+*.bak
+*.swp
+*.swo
+*.orig
+
+# Agent and review evidence (kept privately, not published)
+/.plan/
+/docs/reviews/
+
+# Host OS generated files
+.DS_Store
+Thumbs.db

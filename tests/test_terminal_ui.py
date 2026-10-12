@@ -10,7 +10,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "lan_drive.py"
 CLIENT = ROOT / "static" / "terminal_scm.js"
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from lantern_md_editor import MarkdownEditorError, read_document, save_document, MAX_MARKDOWN_EDITOR_BYTES
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class DocumentStoreTests(unittest.TestCase):

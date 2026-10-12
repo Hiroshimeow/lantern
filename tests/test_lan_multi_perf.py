@@ -362,7 +362,7 @@ class BrowserSequenceTests(unittest.TestCase):
     def test_pending_local_terminal_survives_other_lan_client_list_event(self):
         import json
         import subprocess
-        script=Path(__file__).parent/"static"/"terminal_scm.js"
+        script=Path(__file__).resolve().parent.parent/"static"/"terminal_scm.js"
         code=r"""
 const assert=require('assert');
 global.location={protocol:'http:',host:'127.0.0.1'};
@@ -410,7 +410,7 @@ assert(api.state.terms.has(id),'other LAN client metadata must not dispose a pen
         import json
         import subprocess
         from pathlib import Path
-        js = Path(__file__).parent / "static" / "terminal_scm.js"
+        js = Path(__file__).resolve().parent.parent / "static" / "terminal_scm.js"
         code = r"""
 const assert=require('assert');
 global.location={protocol:'http:',host:'local.test'};
