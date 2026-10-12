@@ -167,6 +167,22 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             before_rows, before_cols = rows(), cols()
             self.assertGreaterEqual(before_rows, 2)
             self.assertEqual(before_cols, 2)
+            table_metrics = page.evaluate("""() => {
+              const table = document.querySelector('.md-visual-host .milkdown-table-block table.children');
+              const wrapper = table.closest('.table-wrapper');
+              const cell = table.querySelector('th,td');
+              return {
+                tableWidth:table.getBoundingClientRect().width,
+                wrapperWidth:wrapper.getBoundingClientRect().width,
+                font:parseFloat(getComputedStyle(table).fontSize),
+                padding:parseFloat(getComputedStyle(cell).paddingLeft),
+                overflow:getComputedStyle(wrapper).overflowX
+              };
+            }""")
+            self.assertLessEqual(table_metrics["font"], 13.5, table_metrics)
+            self.assertLessEqual(table_metrics["padding"], 9, table_metrics)
+            self.assertGreaterEqual(table_metrics["tableWidth"], table_metrics["wrapperWidth"] * 0.95, table_metrics)
+            self.assertEqual(table_metrics["overflow"], "visible", table_metrics)
             def hover_cell(row_index, side):
                 row = page.locator(".md-visual-host .milkdown-table-block table.children tr").nth(row_index)
                 cell = row.locator("th,td").first

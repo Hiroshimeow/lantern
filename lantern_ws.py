@@ -286,11 +286,17 @@ def upgrade(handler, hub, terminal, scm):
             raw = peer.recv()
             if raw is None:
                 break
+            received = None
             try:
-                dispatch(peer, json.loads(raw), terminal, scm, hub)
+                received = json.loads(raw)
+                dispatch(peer, received, terminal, scm, hub)
             except Exception as exc:
                 try:
-                    peer.send({"type": "terminal_error", "error": str(exc)})
+                    peer.send(_terminal_error_reply(received, exc))
+                    if isinstance(exc, KeyError) and isinstance(received, dict) and received.get("type") in {"terminal_input", "terminal_key"}:
+                        # A browser can race an exited/restarted PTY. Reconcile
+                        # this one client from authoritative server metadata.
+                        peer.send({"type": "terminal_list", "terminals": terminal.list()})
                 except Exception:
                     break
     except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
@@ -299,6 +305,21 @@ def upgrade(handler, hub, terminal, scm):
         legacy_timer.cancel()
         hub.remove(peer)
         peer.close()
+
+
+def _terminal_error_reply(message, error):
+    reply = {"type": "terminal_error", "error": str(error)}
+    if not isinstance(message, dict):
+        return reply
+    operation = message.get("type")
+    if operation in {"terminal_create", "terminal_run", "terminal_input", "terminal_key", "terminal_resize", "terminal_subscribe"}:
+        reply["operation"] = operation
+        reply["terminalId"] = str(message.get("terminalId") or "")
+        if operation in {"terminal_create", "terminal_run"}:
+            reply["code"] = "terminal_start_failed"
+        elif operation in {"terminal_input", "terminal_key"} and isinstance(error, KeyError):
+            reply["code"] = "terminal_not_running"
+    return reply
 
 
 def dispatch(peer, msg, terminal, scm, hub=None):
@@ -333,10 +354,12 @@ def dispatch(peer, msg, terminal, scm, hub=None):
                    "seq": seq, "truncated": truncated})
         return
     if typ == "terminal_create":
-        terminal.create(str(msg.get("terminalId") or ""), str(msg.get("cwd") or ""), int(msg.get("cols") or 80), int(msg.get("rows") or 24), str(msg.get("title") or "Terminal"))
+        meta = terminal.create(str(msg.get("terminalId") or ""), str(msg.get("cwd") or ""), int(msg.get("cols") or 80), int(msg.get("rows") or 24), str(msg.get("title") or "Terminal"))
+        peer.send({"type": "terminal_created", "terminalId": meta["id"], "meta": meta})
         return
     if typ == "terminal_run":
-        terminal.run_command(str(msg.get("terminalId") or ""), str(msg.get("cwd") or ""), str(msg.get("command") or ""), str(msg.get("title") or "Command"), int(msg.get("cols") or 80), int(msg.get("rows") or 24))
+        meta = terminal.run_command(str(msg.get("terminalId") or ""), str(msg.get("cwd") or ""), str(msg.get("command") or ""), str(msg.get("title") or "Command"), int(msg.get("cols") or 80), int(msg.get("rows") or 24))
+        peer.send({"type": "terminal_created", "terminalId": meta["id"], "meta": meta})
         return
     if typ == "terminal_input":
         terminal.input(str(msg.get("terminalId") or ""), str(msg.get("data") or ""))

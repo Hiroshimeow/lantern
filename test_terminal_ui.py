@@ -45,7 +45,7 @@ class TerminalUiParityTests(unittest.TestCase):
     def test_replay_guard_is_per_terminal_and_callback_driven(self) -> None:
         js = CLIENT.read_text(encoding="utf-8")
         self.assertIn("replaying:false,replayTok:0", js)
-        self.assertIn("if(state.replaying)return", js)
+        self.assertIn("current.replaying||current.pending||current.meta.running===false", js)
         self.assertIn("const tok=t.replayTok=(t.replayTok||0)+1", js)
         self.assertIn("if(t.replayTok===tok)t.replaying=false", js)
         self.assertNotIn("S.replaying", js)
@@ -355,6 +355,37 @@ class TerminalUiParityTests(unittest.TestCase):
             timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_failed_or_interrupted_start_reconciles_client_without_ghost_tab(self) -> None:
+        client = json.dumps(str(CLIENT))
+        script = textwrap.dedent(f"""
+            const assert=require('assert');
+            global.location={{protocol:'http:',host:'lantern.test'}};
+            global.document={{querySelector:()=>null,addEventListener:()=>{{}},hidden:false}};
+            global.addEventListener=()=>{{}};global.setInterval=()=>0;global.toast=()=>{{}};
+            global.WebSocket=class {{static OPEN=1;constructor(){{this.readyState=1}}send(){{}}close(){{}}}};
+            require({client});
+            const api=global.__lanternTerminalScm,s=api.state;
+            s.terms.set('failed',{{meta:{{id:'failed',running:true}},pending:true}});
+            s.active='failed';
+            api.handleMessage({{type:'terminal_error',code:'terminal_start_failed',operation:'terminal_create',
+                terminalId:'failed',error:'Terminal limit reached'}});
+            assert(!s.terms.has('failed'),'failed spawn must remove optimistic client tab');
+            assert.equal(s.active,null);
+            s.terms.set('interrupted',{{meta:{{id:'interrupted',running:true}},pending:true,pendingChunks:new Map()}});
+            s.active='interrupted';
+            s.ws.onclose();
+            clearTimeout(s.retry);
+            assert.equal(s.terms.get('interrupted').pending,false);
+            api.handleMessage({{type:'terminal_list',terminals:[]}});
+            assert(!s.terms.has('interrupted'),'reconnected server list must remove abandoned pending IDs');
+            s.terms.set('exited',{{meta:{{id:'exited',running:true}},pending:false}});
+            s.active='exited';
+            api.handleMessage({{type:'terminal_error',code:'terminal_not_running',terminalId:'exited'}});
+            assert.equal(s.terms.get('exited').meta.running,false);
+        """)
+        result=subprocess.run(["node","-e",script],cwd=ROOT,text=True,capture_output=True,check=False,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 
     def test_reopening_existing_terminal_refocuses_xterm(self) -> None:
         client = json.dumps(str(CLIENT))

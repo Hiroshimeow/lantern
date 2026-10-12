@@ -9,7 +9,7 @@ from pathlib import Path
 
 from lantern_terminal import TerminalManager, WinConPty, encode_terminal_key
 from lantern_scm import ScmService, build_git_command
-from lantern_ws import WebSocketPeer, dispatch
+from lantern_ws import WebSocketPeer, dispatch, _terminal_error_reply
 
 
 class FakePty:
@@ -177,6 +177,45 @@ class TerminalParityTests(unittest.TestCase):
             manager.create("t", td, 80, 24, "Restarted")
             self.assertEqual(len(spawned["t"]), 2)
             self.assertTrue(next(x for x in manager.list() if x["id"] == "t")["running"])
+
+
+    def test_websocket_terminal_create_ack_and_correlated_failure(self) -> None:
+        class Peer:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, message):
+                self.messages.append(message)
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(
+                Path(td), lambda _event: None,
+                pty_factory=lambda _id, _cwd, _cols, _rows, on_data, on_exit, _command=None: FakePty(on_data, on_exit),
+            )
+            peer = Peer()
+            dispatch(peer, {"type": "terminal_create", "terminalId": "alpha",
+                            "cwd": td, "cols": 80, "rows": 24}, manager, None)
+            self.assertEqual(len(peer.messages), 1)
+            self.assertEqual(peer.messages[0]["type"], "terminal_created")
+            self.assertEqual(peer.messages[0]["terminalId"], "alpha")
+            self.assertTrue(peer.messages[0]["meta"]["generation"])
+
+            with self.assertRaises(ValueError) as failure:
+                dispatch(peer, {"type": "terminal_create", "terminalId": "invalid",
+                                "cwd": str(Path(td).parent)}, manager, None)
+            error = _terminal_error_reply({"type": "terminal_create", "terminalId": "invalid"},
+                                          failure.exception)
+            self.assertEqual(error["code"], "terminal_start_failed")
+            self.assertEqual(error["terminalId"], "invalid")
+            self.assertEqual([x["id"] for x in manager.list()], ["alpha"])
+
+            manager.kill("alpha")
+            with self.assertRaises(KeyError) as stopped:
+                dispatch(peer, {"type": "terminal_input", "terminalId": "alpha", "data": "x"}, manager, None)
+            unavailable = _terminal_error_reply({"type": "terminal_input", "terminalId": "alpha"},
+                                                stopped.exception)
+            self.assertEqual(unavailable["code"], "terminal_not_running")
+            self.assertEqual(unavailable["terminalId"], "alpha")
 
 
 class ScmParityTests(unittest.TestCase):

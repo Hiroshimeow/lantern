@@ -101,7 +101,17 @@ class DocumentHttpTests(unittest.TestCase):
                 cls.proc.kill()
                 cls.proc.wait(timeout=4)
         if hasattr(cls, "tmp"):
-            cls.tmp.cleanup()
+            # On Windows an exited child can release the temporary directory
+            # handle shortly after wait() returns. Do not fail test teardown
+            # while the OS is still finalizing that handle.
+            for attempt in range(8):
+                try:
+                    cls.tmp.cleanup()
+                    break
+                except PermissionError:
+                    if attempt == 7:
+                        raise
+                    time.sleep(0.25)
 
     def get(self, name):
         with urllib.request.urlopen(self.base + "/api/md/document?p=" + urllib.parse.quote(name), timeout=4) as res:
