@@ -95,6 +95,19 @@ Terminal processes survive browser reconnects while the Lantern process remains 
 
 They do **not** survive Lantern itself being killed. Lantern is useful; it is not necromancy.
 
+### Windows terminal shell and dependencies
+
+- Windows uses **PowerShell** by default through ConPTY (falls back to `cmd.exe` if PowerShell is unavailable). Git Bash is opt-in via `LANTERN_SHELL` or `PI_WEB_SHELL`; merely having Git installed must not select MSYS2 Bash automatically. Git Bash can produce `fork: Resource temporarily unavailable` even outside Lantern when its MSYS2 subprocess runtime fails.
+- With **one Lantern server and remote browser clients**, only the server needs Python, `uv`, and `pywinpty`. Other PCs viewing that server through the browser install nothing.
+- With **a separate Lantern server on each PC**, each server must have its own dependencies installed in the **same Python environment that runs Lantern**. For `uv run`, use:
+
+```powershell
+uv run --with-requirements requirements.txt python -c "import winpty; print('ConPTY ready')"
+uv run --with-requirements requirements.txt python lan_drive.py --config lan_drive_config.local.yaml
+```
+
+Running `uv pip install -r requirements.txt` into a different virtual environment does not install `pywinpty` into an unrelated `uv run` environment. On machines with an old Lantern checkout, update the repository first so `requirements.txt` exists. The Windows installer manages a dedicated environment automatically.
+
 ---
 
 ## 30-second start

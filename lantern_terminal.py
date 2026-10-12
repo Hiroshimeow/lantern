@@ -81,25 +81,32 @@ def _inside(root: Path, candidate: Path) -> bool:
 
 
 def resolve_shell() -> tuple[str, list[str], str]:
-    """Resolve an interactive shell using the same Windows preference as pi-web-ui."""
+    """Prefer a native Windows shell under ConPTY; keep Git Bash opt-in.
+
+    Git for Windows' MSYS2 bash can start but fail every external command with
+    'fork: Resource temporarily unavailable' even outside Lantern. Selecting it
+    simply because Git is installed makes an otherwise healthy PTY unusable.
+    """
     if os.name == "nt":
         explicit = os.environ.get("LANTERN_SHELL") or os.environ.get("PI_WEB_SHELL")
         if explicit:
-            return explicit, ["-i"] if explicit.lower().endswith(("bash", "bash.exe")) else [], "bash" if "bash" in Path(explicit).name.lower() else "native"
-        env_shell = os.environ.get("SHELL")
-        if env_shell and Path(env_shell).exists():
-            return env_shell, ["-i"] if "bash" in Path(env_shell).name.lower() else [], "bash" if "bash" in Path(env_shell).name.lower() else "native"
-        for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
-            if not base:
-                continue
-            candidate = Path(base) / "Git" / "bin" / "bash.exe"
-            if candidate.exists():
-                return str(candidate), ["-i"], "bash"
-        comspec = os.environ.get("COMSPEC")
-        if comspec:
-            return comspec, [], "cmd"
-        pwsh = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
-        return pwsh, [], "powershell"
+            name = Path(explicit).name.lower()
+            if name in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}:
+                return explicit, ["-NoLogo", "-NoProfile"], "powershell"
+            if name in {"cmd", "cmd.exe"}:
+                return explicit, [], "cmd"
+            if "bash" in name:
+                return explicit, ["-i"], "bash"
+            return explicit, [], "native"
+
+        # SHELL and Git Bash installed on PATH are not reliable Windows defaults.
+        # PowerShell is a native ConPTY program; cmd.exe is the fallback on
+        # locked-down hosts without PowerShell in PATH.
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if powershell:
+            return powershell, ["-NoLogo", "-NoProfile"], "powershell"
+        return os.environ.get("COMSPEC") or shutil.which("cmd") or "cmd.exe", [], "cmd"
+
     shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/sh"
     args = ["-i"] if Path(shell).name in {"bash", "zsh", "fish"} else []
     return shell, args, "posix"
@@ -129,7 +136,7 @@ class WinConPty(NativePty):
         try:
             from winpty import Backend, PtyProcess
         except ImportError as exc:
-            raise RuntimeError("Windows terminal requires pywinpty (pip install -r requirements.txt)") from exc
+            raise RuntimeError("Windows terminal requires pywinpty in the Python environment running Lantern; with uv use: uv run --with-requirements requirements.txt python lan_drive.py ...") from exc
         env = os.environ.copy()
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("LANG", "en_US.UTF-8")

@@ -1,13 +1,15 @@
 ﻿from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from lantern_terminal import TerminalManager, WinConPty, encode_terminal_key
+from lantern_terminal import TerminalManager, WinConPty, encode_terminal_key, resolve_shell
 from lantern_scm import ScmService, build_git_command
 from lantern_ws import WebSocketPeer, dispatch, _terminal_error_reply
 
@@ -37,6 +39,38 @@ class FakePty:
 
 
 class TerminalParityTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows native shell preference")
+    def test_windows_defaults_native_shell_even_with_git_bash_or_shell_env(self) -> None:
+        with patch.dict(os.environ, {
+            "SHELL": r"C:\Program Files\Git\bin\bash.exe",
+            "LANTERN_SHELL": "",
+            "PI_WEB_SHELL": "",
+            "COMSPEC": r"C:\Windows\System32\cmd.exe",
+        }):
+            with patch("lantern_terminal.shutil.which", side_effect=lambda name:
+                       r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+                       if name == "powershell" else None):
+                shell, args, family = resolve_shell()
+                self.assertEqual(family, "powershell")
+                self.assertIn("-NoProfile", args)
+                self.assertTrue(shell.lower().endswith("powershell.exe"))
+
+            with patch("lantern_terminal.shutil.which", return_value=None):
+                shell, args, family = resolve_shell()
+                self.assertEqual(family, "cmd")
+                self.assertTrue(shell.lower().endswith("cmd.exe"))
+                self.assertEqual(args, [])
+
+            os.environ["LANTERN_SHELL"] = r"C:\Program Files\Git\bin\bash.exe"
+            shell, args, family = resolve_shell()
+            self.assertEqual((family, args), ("bash", ["-i"]))
+            self.assertTrue(shell.lower().endswith("bash.exe"))
+
+            os.environ["LANTERN_SHELL"] = "pwsh.exe"
+            shell, args, family = resolve_shell()
+            self.assertEqual((shell, family), ("pwsh.exe", "powershell"))
+            self.assertIn("-NoProfile", args)
+
     def test_reference_key_encoding(self) -> None:
         self.assertEqual(encode_terminal_key("ArrowUp", {"ctrl": True}), "\x1b[1;5A")
         self.assertEqual(encode_terminal_key("Enter", {"ctrl": True}), "\x1b[13;5u")
