@@ -890,11 +890,12 @@ def folder_preview_items(folder: Path) -> List[Dict[str, Any]]:
     if not CONFIG.folder_preview_enabled or not folder.is_dir():
         return []
     cache = folder_preview_cache_path(folder)
+    cached_items = None
     if cache.exists():
         try:
             data = json.loads(cache.read_text(encoding="utf-8", errors="replace"))
             if isinstance(data, list):
-                return data
+                cached_items = data
         except Exception:
             pass
     images: List[Dict[str, Any]] = []
@@ -903,12 +904,33 @@ def folder_preview_items(folder: Path) -> List[Dict[str, Any]]:
 
     def add_item(p: Path, name: str, kind: str) -> Dict[str, Any]:
         rel = p.resolve().relative_to(CONFIG.root.resolve()).as_posix()
+        version = file_etag(p, p.stat())
         return {
             "name": name,
             "kind": kind,
-            "url": "/" + quote_path(rel),
-            "thumb": f"/api/thumb?p={urllib.parse.quote(rel)}",
+            "url": "/" + quote_path(rel) + "?v=" + version,
+            "thumb": f"/api/thumb?p={urllib.parse.quote(rel)}&v={version}",
         }
+
+    # Parent directory mtime does not change when Paint overwrites an image.
+    # Keep the cached selection but refresh the small set of image versions.
+    if cached_items is not None:
+        fresh = []
+        for item in cached_items[:int(CONFIG.folder_preview_max_items)]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or "/" in name or "\\" in name:
+                continue
+            candidate = folder / name
+            try:
+                if candidate.is_file():
+                    kind = classify(candidate, False)
+                    if kind in {"image", "video"}:
+                        fresh.append(add_item(candidate, name, kind))
+            except (OSError, ValueError):
+                continue
+        return fresh
 
     try:
         with os.scandir(folder) as it:
@@ -1289,7 +1311,7 @@ function cardHTML(it){
   if(it.kind==='folder' && state.folderPreview){
     thumb=`<div class="folder-mosaic empty ${state.previewAnimation}" data-folder-preview="${it.relEsc}" title="Folder preview"><div class="fileicon">📁</div></div>`;
   }else if(it.thumb){
-    const thumbSrc=(state.thumbFit==='contain'&&it.kind==='image')?fileUrl(it.rel):it.thumb;
+    const thumbSrc=(state.thumbFit==='contain'&&it.kind==='image')?(it.url||fileUrl(it.rel)):it.thumb;
     thumb=`<img class="thumb" loading="lazy" decoding="async" src="${thumbSrc}" onerror="this.style.display='none';this.nextElementSibling.classList.remove('hidden')"><div class="fileicon hidden">${it.icon}</div>`;
   }else{ thumb=`<div class="fileicon">${it.icon}</div>`; }
   return `<div class="card" data-rel="${it.relEsc}" data-name="${it.nameLowerEsc}" data-size="${it.size}" data-mtime="${it.mtime}" data-isdir="${it.is_dir?'1':'0'}" data-kind="${it.kind}" data-preview="${it.preview?'1':'0'}" data-rawname="${it.nameEsc}" oncontextmenu="openContextMenu(event,this)" onmousedown="beginDragSelect(event,this)" onmouseenter="applyDragSelect(this)"><button class="check" onmousedown="event.stopPropagation()" onclick="toggleSelect(this.closest('.card').dataset.rel, event)" title="Select" aria-label="Select"></button>${badge}<div class="card-main" onclick="openItem(this.closest('.card'),event)"><div class="thumbwrap">${thumb}</div><div class="meta"><div class="name" title="${it.nameEsc}">${it.nameEsc}</div><div class="sub">${it.searchPathTextEsc?it.searchPathTextEsc+' · ':''}${it.sizeTextEsc} · ${it.mtimeTextEsc}</div></div><div class="list-size" title="${it.sizeTextEsc}">${it.sizeTextEsc}</div><div class="list-mtime" title="${it.mtimeTextEsc}">${it.mtimeTextEsc}</div><div class="list-kind">${detailKind}</div></div></div>`
@@ -1373,6 +1395,7 @@ async function performListUpdate(kind,revision){
     // Capture at commit time: selection and scrolling may change while fetching.
     const viewport=!reset&&!append&&changed?captureListViewport():null;
     const selected=reset?[]:selectedArray();
+    const previewBefore=state.listPreview && state.items.find(it=>it.rel===state.listPreview);
     state.items=next; state.offset=offset; state.hasMore=more; listDataKey=key;
     state.selected=new Set(selected.filter(rel=>paths.has(rel)));
     if(state.listPreview&&!paths.has(state.listPreview))clearSidePreview();
@@ -1381,6 +1404,14 @@ async function performListUpdate(kind,revision){
       else if(next.length)render();
       else{grid.innerHTML=emptyHTML;ensureLoader()}
     }else if(paginationChanged||wasBlocked)ensureLoader();
+    // Paint can rewrite a file while the right-hand preview is open. Update
+    // its image URL too, not just the thumbnail cards behind the pane.
+    const previewAfter=state.listPreview && next.find(it=>it.rel===state.listPreview);
+    if(previewAfter && previewBefore?.url!==previewAfter.url && state.previewPane){
+      const card=[...grid.querySelectorAll('.card[data-rel]')]
+        .find(el=>el.dataset.rel===state.listPreview);
+      if(card)renderListPreview(card);
+    }
     if(viewport)restoreListViewport(viewport);
     if(reset)window.scrollTo(0,0);
     lastListFetchAt=Date.now();
@@ -1678,7 +1709,7 @@ function sidePreviewCards(){return $$('.card').filter(c=>c.dataset.rel&&listCanP
 async function stepSidePreview(delta){let cards=sidePreviewCards();if(!cards.length)return;let i=cards.findIndex(c=>c.dataset.rel===state.listPreview);if(i>=0&&delta>0&&i>=cards.length-1&&state.hasMore&&!state.loading){await loadMore(false);cards=sidePreviewCards();i=cards.findIndex(c=>c.dataset.rel===state.listPreview)}else if(i>=0&&delta<0&&i===0&&state.hasMore&&!state.loading){await loadMore(false);cards=sidePreviewCards();i=cards.findIndex(c=>c.dataset.rel===state.listPreview)}if(i<0)i=0;else i=(i+delta+cards.length)%cards.length;renderListPreview(cards[i])}
 function renderListPreview(card){
   if(!sidePreview||!card)return;
-  const rel=card.dataset.rel,kind=card.dataset.kind,item=findLoadedItem(rel),name=item?.name||card.dataset.rawname||rel,url=fileUrl(rel);
+  const rel=card.dataset.rel,kind=card.dataset.kind,item=findLoadedItem(rel),name=item?.name||card.dataset.rawname||rel,url=item?.url||fileUrl(rel);
   state.listPreview=rel;
   setPreviewSelection(rel,true);
   sidePreview.innerHTML='<div class="side-title"><span class="side-title-text"></span><div class="side-nav top"><button onclick="togglePreviewPane()" title="Close preview">×</button></div></div><div class="side-body"><button class="side-arrow side-prev" onclick="stepSidePreview(-1)" title="Previous">‹</button><button class="side-arrow side-next" onclick="stepSidePreview(1)" title="Next">›</button><div class="side-content"></div></div>';
@@ -1736,7 +1767,7 @@ async function pumpFolderPreviewQueue(){
 }
 async function loadFolderPreview(el){
   const rel=el.dataset.folderPreview;if(!rel||el.dataset.loaded)return;el.dataset.loaded='1';
-  try{const r=await fetch('/api/folder_preview?p='+encodeURIComponent(rel),{cache:'force-cache'});const j=await r.json(); if(!r.ok||j.error||!j.items||!j.items.length)return; renderFolderMosaic(el,j.items,0); startFolderRotate(el,j.items)}catch(e){}
+  try{const r=await fetch('/api/folder_preview?p='+encodeURIComponent(rel),{cache:'no-store'});const j=await r.json(); if(!r.ok||j.error||!j.items||!j.items.length)return; renderFolderMosaic(el,j.items,0); startFolderRotate(el,j.items)}catch(e){}
 }
 function setupFolderPreviews(){
   clearFolderPreviewTimers(); if(folderPreviewIO)folderPreviewIO.disconnect(); folderPreviewQueue.length=0; folderPreviewActive=0;
@@ -1928,7 +1959,9 @@ def page_shell(title: str, body: str, current_path: str = "/") -> bytes:
 def entry_to_json(path: Path, dirent_name: str, st: os.stat_result, is_dir: bool, base_path: Optional[Path] = None) -> Dict[str, Any]:
     kind = classify(path, is_dir)
     rel_item = path.resolve().relative_to(CONFIG.root.resolve()).as_posix()
-    thumb = f"/api/thumb?p={urllib.parse.quote(rel_item)}" if kind in ("image", "video") else ""
+    version = file_etag(path, st) if not is_dir and kind in ("image", "video") else ""
+    thumb = f"/api/thumb?p={urllib.parse.quote(rel_item)}&v={version}" if version else ""
+    raw_media_url = "/" + quote_path(rel_item) + "?v=" + version if kind == "image" else ""
     search_path_text = ""
     if base_path is not None:
         try:
@@ -1956,6 +1989,7 @@ def entry_to_json(path: Path, dirent_name: str, st: os.stat_result, is_dir: bool
         "searchPathText": search_path_text,
         "searchPathTextEsc": html_escape(search_path_text),
         "thumb": thumb,
+        "url": raw_media_url,
         "preview": (not is_dir) and plugin_can_preview(path),
     }
 
@@ -2425,10 +2459,11 @@ class Handler(SimpleHTTPRequestHandler):
     def api_folder_preview(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
         rel = qs.get("p", [""])[0]
-        target = safe_join("/" + rel)
+        target = safe_join("/" + quote_path(rel))
         if not target.is_dir():
             self.send_json(404, {"error": "folder not found"}); return
-        self.send_json(200, {"ok": True, "items": folder_preview_items(target)})
+        self.send_bytes(200, json_dumps({"ok": True, "items": folder_preview_items(target)}).encode("utf-8"),
+                        "application/json; charset=utf-8", {"Cache-Control": "no-store"})
 
     def api_video_info(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
@@ -2460,7 +2495,7 @@ class Handler(SimpleHTTPRequestHandler):
     def api_thumb(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
         rel = qs.get("p", [""])[0]
-        target = safe_join("/" + rel)
+        target = safe_join("/" + quote_path(rel))
         if not target.is_file():
             self.send_error(404, "thumb target not found"); return
         kind = classify(target)
@@ -2471,13 +2506,15 @@ class Handler(SimpleHTTPRequestHandler):
             elif kind == "video": ok = make_video_thumb(target, dst)
             if not ok:
                 self.send_error(404, "thumbnail unavailable"); return
-        self.serve_static_file(dst, download=False, ctype="image/jpeg")
+        self.serve_static_file(dst, download=False, ctype="image/jpeg", cache_control="no-cache")
 
     def resolve_upload_target(self, base_rel: str, name: str) -> Path:
         """Use identical path validation for lightweight preflight and upload."""
         if not name:
             raise BadRequest("missing name")
-        base = safe_join("/" + base_rel)
+        # Query fields are already decoded by parse_qs. Encode as URL path
+        # before safe_join so folders containing #, ? or % survive intact.
+        base = safe_join("/" + quote_path(base_rel))
         if base.exists() and not base.is_dir():
             raise BadRequest("upload path is not a folder")
         parts: List[str] = []
@@ -2550,7 +2587,7 @@ class Handler(SimpleHTTPRequestHandler):
     def api_md_document(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
         rel = qs.get("p", [""])[0]
-        target = safe_join("/" + rel)
+        target = safe_join("/" + quote_path(rel))
         try:
             result = read_markdown_document(target)
             self.send_json(200, {"ok": True, "path": rel_url_for_path(target), **result})
@@ -2562,7 +2599,7 @@ class Handler(SimpleHTTPRequestHandler):
         rel = data.get("path")
         if not isinstance(rel, str) or not rel:
             self.send_json(400, {"error": "Markdown path required"}); return
-        target = safe_join("/" + rel)
+        target = safe_join("/" + quote_path(rel))
         try:
             result = save_markdown_document(target, data.get("content"), data.get("version"))
             self.send_json(200, {"ok": True, **result})
@@ -2949,7 +2986,11 @@ document.addEventListener('keydown',e=>{{if((e.ctrlKey||e.metaKey)&&e.key.toLowe
         self.send_bytes(200, page_shell(f"Edit {path.name}", body, "/" + rel), "text/html; charset=utf-8")
 
     def serve_file(self, path: Path) -> None:
-        self.serve_static_file(path, download=False)
+        # Revalidate images that external editors (Paint, Photoshop, etc.)
+        # rewrite in place. Versioned list URLs avoid stale decoded bitmaps.
+        mime = mimetypes.guess_type(str(path))[0] or ""
+        self.serve_static_file(path, download=False,
+                               cache_control="no-cache" if mime.startswith("image/") else None)
 
     def serve_static_file(self, path: Path, download: bool = False, ctype: Optional[str] = None, cache_control: Optional[str] = None) -> None:
         st = path.stat()
