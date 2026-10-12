@@ -57,7 +57,7 @@ On first launch, the bootstrap needs internet access to download missing tools. 
 A few things that matter outside a demo:
 
 - **Tables:** add or remove rows and columns in the visual editor.
-- **Images:** display local and relative Markdown images while keeping the source path and alt text. *Pasting a new image file into the editor is not a supported upload workflow yet.*
+- **Images:** display existing relative Markdown images without changing source links. **Ctrl+V** a screenshot from Paint or paste/drop a supported image: Lantern uploads it to the document's nearby `assets/` folder and inserts a real relative link. No temporary `blob:` links in your saved Markdown.
 - **Autosave:** saves edits after idle without blocking the entire page.
 - **Two people, one file:** content-hash checks reject stale writes (HTTP 409) rather than silently overwriting the other person's work.
 - **Draft recovery:** local browser drafts and a downloadable emergency copy. Because Wi-Fi has opinions.
@@ -241,7 +241,7 @@ Only rebuild the vendored visual Markdown assets when changing frontend build de
 ## Boundaries worth knowing
 
 - The visual editor has a deliberate **5 MiB** maximum; read-only previews remain available separately.
-- New image **upload/paste** from Visual Edit is not implemented; existing local image links render.
+- In Visual Edit, paste/drop PNG, JPEG, WebP, GIF or BMP images (up to 20 MiB each). Lantern saves each file in an adjacent `assets/` folder before inserting a durable relative Markdown link; unsupported clipboard formats are not uploaded.
 - DOCX/Excel previews are bounded content views, not Word/Excel clones.
 - Browser PDF rendering depends on PDF support in the browser; direct-open/download fallbacks exist.
 - Browser print-to-PDF for Markdown uses the browser's print engine.

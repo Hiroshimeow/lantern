@@ -30,7 +30,43 @@ const preserveUntitledImages = $remark('lantern-untitled-image-compat', () => ()
   visit(tree);
 });
 
-async function createVisualMarkdown(root, content, onChange, documentPath) {
+// Paste/drop or the image toolbar must write a real file before inserting a
+// Markdown image node. Reuse Lantern's existing root-confined upload
+// endpoint; never persist data: or blob: URLs into the document.
+const imageTypes = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+};
+async function uploadImage(file, documentPath, onStatus) {
+  const suffix = imageTypes[file?.type];
+  if (!suffix) throw new Error('Clipboard image must be PNG, JPEG, WebP, GIF, or BMP.');
+  if (!file.size || file.size > 20 * 1024 * 1024) throw new Error('Image must be 1 B–20 MiB.');
+  const directory = documentPath.split('/').slice(0, -1).join('/');
+  const name = 'pasted-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10) + '.' + suffix;
+  const relative = 'assets/' + name;
+  const url = '/api/upload?path=' + encodeURIComponent(directory) +
+    '&name=' + encodeURIComponent(relative) + '&conflict=rename';
+  onStatus?.('Uploading pasted image…', 'info');
+  const response = await fetch(url, {
+    method: 'POST', credentials: 'same-origin', cache: 'no-store',
+    headers: { 'Content-Type': file.type }, body: file,
+  });
+  let result;
+  try { result = await response.json(); } catch { throw new Error('Image upload: invalid server response'); }
+  if (!response.ok || result.error || !result.file) {
+    throw new Error('Image upload: ' + (result.error || ('HTTP ' + response.status)));
+  }
+  // The server can rename on collision. Trust its final path, not our guess.
+  const serverPath = decodeURIComponent(String(result.file).replace(/^\//, ''));
+  const expectedPrefix = directory ? directory + '/assets/' : 'assets/';
+  if (!serverPath.startsWith(expectedPrefix)) throw new Error('Image upload returned an unexpected file path');
+  return { src: 'assets/' + serverPath.slice(expectedPrefix.length), alt: file.name || 'Pasted image' };
+}
+
+async function createVisualMarkdown(root, content, onChange, documentPath, onUploadStatus) {
   const crepe = new Crepe({
     root,
     defaultValue: content,
@@ -45,15 +81,45 @@ async function createVisualMarkdown(root, content, onChange, documentPath) {
     ctx.update(inlineImageConfig.key, previous => ({
       ...previous,
       proxyDomURL: src => previewImageURL(src, documentPath),
-      // Object URLs are ephemeral and must never be saved as Markdown links.
-      onUpload: async () => { throw new Error('Link to an image already in the Lantern root.'); },
+      onUpload: async file => {
+        try { return (await uploadImage(file, documentPath, onUploadStatus)).src; }
+        catch (error) {
+          onUploadStatus?.('Image upload failed: ' + error.message, 'error');
+          throw error;
+        }
+      },
     }));
-    // Crepe's default paste/drop uploader creates transient blob: URLs when
-    // ImageBlock is disabled. Refuse unsaved attachments until a durable file
-    // upload flow exists, rather than corrupting Markdown with broken links.
     ctx.update(uploadConfig.key, previous => ({
       ...previous,
-      uploader: async () => [],
+      // Copied images from Paint or browsers may also have a text/html flavor.
+      // Honor the attached file rather than ignoring the whole paste.
+      enableHtmlFileUploader: true,
+      uploader: async (files, schema) => {
+        const allFiles = Array.from(files);
+        const images = allFiles.filter(file => imageTypes[file.type]);
+        if (!images.length) {
+          if (allFiles.some(file => file.type.startsWith('image/'))) {
+            onUploadStatus?.('Unsupported clipboard image. Use PNG, JPEG, WebP, GIF or BMP.', 'warn');
+          }
+          return [];
+        }
+        const image = schema.nodes.image;
+        if (!image) throw new Error('Markdown image schema is unavailable');
+        const nodes = [];
+        for (const file of images) {
+          try {
+            const { src, alt } = await uploadImage(file, documentPath, onUploadStatus);
+            const node = image.createAndFill({ src, alt, title: '' });
+            if (!node) throw new Error('Cannot insert Markdown image');
+            nodes.push(node);
+          } catch (error) {
+            onUploadStatus?.('Image paste failed: ' + error.message, 'error');
+            throw error;
+          }
+        }
+        onUploadStatus?.('Image pasted. Saving Markdown…', 'info');
+        return nodes;
+      },
     }));
   });
   crepe.editor.use(imageInlineComponent);

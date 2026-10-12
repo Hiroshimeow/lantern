@@ -151,6 +151,68 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_ctrl_v_image_clipboard_creates_real_file_and_durable_markdown(self):
+        """Real Edge clipboard write + Ctrl+V; no blob URLs or silently lost data."""
+        import re as _re
+        from tests.test_image_cache_e2e import png_bytes
+
+        folder = self.root / "paste # 1"
+        folder.mkdir(exist_ok=True)
+        document = folder / "notes 100%.md"
+        document.write_text("# Pasted Photos\n\nClipboard begins here.\n", encoding="utf-8")
+        image = png_bytes((12, 90, 220))
+        context = self.browser.new_context(permissions=["clipboard-read", "clipboard-write"])
+        page = context.new_page()
+        errors = []
+        uploads = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("request", lambda request: uploads.append(request.url)
+                if "/api/upload?" in request.url else None)
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=paste%20%23%201%2Fnotes%20100%25.md", timeout=16000)
+            page.get_by_role("button", name="Edit visually").click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable='true']")
+            editor.wait_for(timeout=33000)
+            self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.roundtripSafe"))
+            page.evaluate("""async bytes => {
+                const blob = new Blob([Uint8Array.from(bytes)], {type:'image/png'});
+                await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
+            }""", list(image))
+            editor.locator("p").first.click()
+            page.keyboard.press("Control+V")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown().includes('assets/pasted-')",
+                timeout=20000)
+            self.assertEqual(len(uploads), 1, uploads)
+            page.locator(".md-visual-host img:not(.ProseMirror-separator)").first.wait_for(timeout=10000)
+            page.locator(".md-visual-status").filter(has_text=_re.compile(r"^Saved")).wait_for(timeout=15000)
+            saved = document.read_text(encoding="utf-8")
+            path = _re.search(r"!\[([^\]]*)\]\((assets/pasted-[^)]+\.png)\)", saved)
+            self.assertIsNotNone(path, saved)
+            self.assertNotIn("blob:", saved)
+            self.assertNotIn("data:image", saved)
+            assets = list((folder / "assets").glob("*.png"))
+            self.assertEqual(len(assets), 1, assets)
+            self.assertTrue(assets[0].read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+            # Edge re-encodes clipboard images. Pixel content, not byte identity,
+            # is the correct invariant across Paint/OS clipboard implementations.
+            edit_img = page.locator(".md-visual-host img:not(.ProseMirror-separator)").first
+            rgb = edit_img.evaluate("""img => {
+                const c=document.createElement('canvas');c.width=1;c.height=1;
+                c.getContext('2d').drawImage(img,0,0,1,1);
+                return [...c.getContext('2d').getImageData(0,0,1,1).data].slice(0,3);
+            }""")
+            self.assertEqual(rgb, [12, 90, 220])
+            self.assertEqual(path.group(2), "assets/" + assets[0].name)
+            self.assertEqual(errors, [], errors)
+            # An external reader reopening the Markdown sees the same image.
+            page.reload(wait_until="domcontentloaded")
+            preview = page.locator(".md-preview img").first
+            preview.wait_for(timeout=9000)
+            self.assertTrue(preview.evaluate("(img) => img.complete && img.naturalWidth === 40"))
+        finally:
+            context.close()
+
     def test_table_add_and_delete_controls_are_clickable(self):
         markdown = (
             "# Table\n\n| First | Second |\n| --- | --- |\n"
