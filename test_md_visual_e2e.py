@@ -107,6 +107,96 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             context.close()
 
 
+    def test_markdown_images_render_in_preview_and_visual_edit_without_rewriting_paths(self):
+        folder = self.root / "docs"
+        images = folder / "assets"
+        images.mkdir(parents=True, exist_ok=True)
+        (images / "large.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1500">'
+            '<rect width="2200" height="1500" fill="#58a"/></svg>',
+            encoding="utf-8")
+        content = "# Photos\n\n![Photo](assets/large.svg)\n"
+        (folder / "images.md").write_text(content, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 390, "height": 800})
+        page = context.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=docs%2Fimages.md", timeout=15000)
+            preview_image = page.locator(".md-preview img").first
+            preview_image.wait_for()
+            self.assertTrue(preview_image.evaluate("(img) => img.complete && img.naturalWidth === 2200"))
+            width = preview_image.evaluate("(img) => img.getBoundingClientRect().width")
+            self.assertLessEqual(width, 390, "preview image must fit a narrow viewport")
+            self.assertLessEqual(preview_image.evaluate("(img) => img.getBoundingClientRect().right"), 391)
+            page.get_by_role("button", name="Edit visually").click()
+            page.locator(".md-visual-host .ProseMirror[contenteditable='true']").wait_for(timeout=30000)
+            edit_image = page.locator(".md-visual-host img:not(.ProseMirror-separator)").first
+            edit_image.wait_for(timeout=10000)
+            self.assertTrue(edit_image.evaluate("(img) => img.complete && img.naturalWidth === 2200"),
+                            "visual editor should display same-origin relative Markdown images")
+            markdown = page.evaluate("() => window.__lanternMdVisual.state.instance.getMarkdown()")
+            self.assertIn("![Photo](assets/large.svg)", markdown,
+                          "display-only URL resolution must retain the original image alt and relative path")
+            self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.roundtripSafe"),
+                            "ordinary untitled image Markdown must not trigger a lossy-format approval")
+            page.wait_for_timeout(2900)
+            self.assertEqual((folder / "images.md").read_text(encoding="utf-8"), content)
+            # A real save must preserve alt text and the relative URL, not just display it.
+            page.locator(".md-visual-host .ProseMirror h1").first.click()
+            page.keyboard.press("End")
+            page.keyboard.type(" updated")
+            page.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=15000)
+            saved = (folder / "images.md").read_text(encoding="utf-8")
+            self.assertIn("# Photos updated", saved)
+            self.assertIn("![Photo](assets/large.svg)", saved)
+        finally:
+            context.close()
+
+    def test_table_add_and_delete_controls_are_clickable(self):
+        markdown = (
+            "# Table\n\n| First | Second |\n| --- | --- |\n"
+            "| A | B |\n| C | D |\n")
+        (self.root / "table-actions.md").write_text(markdown, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 850})
+        page = context.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=table-actions.md", timeout=15000)
+            page.get_by_role("button", name="Edit visually").click()
+            page.locator(".md-visual-host .ProseMirror[contenteditable='true']").wait_for(timeout=30000)
+            rows = lambda: page.locator(".md-visual-host .milkdown-table-block table.children tr").count()
+            cols = lambda: page.locator(".md-visual-host .milkdown-table-block table.children tr").first.locator("th,td").count()
+            before_rows, before_cols = rows(), cols()
+            self.assertGreaterEqual(before_rows, 2)
+            self.assertEqual(before_cols, 2)
+            def hover_cell(row_index, side):
+                row = page.locator(".md-visual-host .milkdown-table-block table.children tr").nth(row_index)
+                cell = row.locator("th,td").first
+                box = cell.bounding_box()
+                x = box["x"] + (box["width"] - 2 if side == "right" else box["width"] / 2)
+                y = box["y"] + (box["height"] - 2 if side == "bottom" else box["height"] / 2)
+                page.mouse.move(x, y)
+                page.wait_for_timeout(100)
+
+            # '+' handles appear only while hovering a cell boundary.
+            hover_cell(before_rows - 1, "bottom")
+            self.assertEqual(page.locator("[data-role='x-line-drag-handle']").first.get_attribute("data-show"), "true")
+            page.locator(".md-visual-host [data-role='x-line-drag-handle'] .add-button").first.click(timeout=7000)
+            self.assertEqual(rows(), before_rows + 1)
+            # '-' appears after selecting the drag handle inside a data row.
+            hover_cell(1, "center")
+            page.locator(".md-visual-host [data-role='row-drag-handle']").first.click(timeout=7000)
+            page.locator(".md-visual-host [data-role='row-drag-handle'] .button-group button").first.click(timeout=7000)
+            self.assertEqual(rows(), before_rows)
+            hover_cell(1, "right")
+            self.assertEqual(page.locator("[data-role='y-line-drag-handle']").first.get_attribute("data-show"), "true")
+            page.locator(".md-visual-host [data-role='y-line-drag-handle'] .add-button").first.click(timeout=7000)
+            self.assertEqual(cols(), before_cols + 1)
+            hover_cell(1, "center")
+            page.locator(".md-visual-host [data-role='col-drag-handle']").first.click(timeout=7000)
+            page.locator(".md-visual-host [data-role='col-drag-handle'] .button-group button").last.click(timeout=7000)
+            self.assertEqual(cols(), before_cols)
+        finally:
+            context.close()
+
     def test_two_visual_clients_conflict_without_overwriting(self):
         (self.root / "shared.md").write_bytes(b"# Shared\n\nOriginal.\n")
         context_a = self.browser.new_context()

@@ -92,6 +92,30 @@ class PagedVisualE2E(unittest.TestCase):
             self.assertEqual(errors,[],str(errors))
         finally:context.close()
 
+    def test_paged_markdown_image_keeps_relative_path_and_alt(self):
+        sub = self.root / 'pages'
+        assets = sub / 'assets'
+        assets.mkdir(parents=True, exist_ok=True)
+        (assets / 'wide.svg').write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="1850" height="900">'
+            '<rect width="1850" height="900" fill="navy"/></svg>', encoding='utf-8')
+        original = b'# Pictures\n\n![Picture](assets/wide.svg)\n\n' + sample(700)
+        (sub / 'large.md').write_bytes(original)
+        context = self.browser.new_context(viewport={'width':800,'height':700})
+        try:
+            page,errors=self.open(context,'pages%2Flarge.md')
+            self.assertTrue(page.evaluate('() => window.__lanternMdPaged.active'))
+            picture=page.locator('.md-visual-host img:not(.ProseMirror-separator)').first
+            picture.wait_for(timeout=13000)
+            self.assertTrue(picture.evaluate('(img) => img.complete && img.naturalWidth === 1850'))
+            self.assertIn('![Picture](assets/wide.svg)',
+                          page.evaluate('() => window.__lanternMdPaged.currentText()'))
+            self.assertTrue(page.evaluate('() => window.__lanternMdPaged.roundtripSafe'))
+            page.wait_for_timeout(2750)
+            self.assertEqual((sub/'large.md').read_bytes(),original)
+            self.assertEqual(errors,[])
+        finally: context.close()
+
     def test_two_large_clients_reject_stale_save(self):
         path=self.root/'shared.md';path.write_bytes(sample(1700))
         a=self.browser.new_context();b=self.browser.new_context()

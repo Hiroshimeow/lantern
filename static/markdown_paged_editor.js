@@ -396,7 +396,7 @@
           this.largeEditor=lib.createBlockEditor(codeHost,match?match[2]:content,()=>this.changed(generation));
           this.status('Large block: CodeMirror viewport rendering enabled.','warn');
         } else {
-          this.rich=await this.engine.createVisualMarkdown(this.host,content,()=>this.changed(generation));
+          this.rich=await this.engine.createVisualMarkdown(this.host,content,()=>this.changed(generation),this.path);
         }
         this.lastSaved=restore?this.pageOriginal:this.currentText();
         this.roundtripSafe=!restore&&normalize(this.currentText())===normalize(this.pageOriginal);

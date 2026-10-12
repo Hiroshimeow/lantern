@@ -344,7 +344,7 @@
       // Preserve the same screen and scroll position; only replace the content surface.
       preview.hidden = true;
       view.host.scrollIntoView({ block: 'nearest' });
-      view.instance = await engine.createVisualMarkdown(editorHost, contents, changed);
+      view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path);
       view.active = true;
       const restoredDraft = contents !== doc.content;
       const serialized = view.instance.getMarkdown();

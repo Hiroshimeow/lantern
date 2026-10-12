@@ -6,8 +6,8 @@
   },
   "artifacts": {
     "lantern-crepe.min.js": {
-      "bytes": 2774917,
-      "sha256": "a10be3785cf8f9111ad7639e774cdfda8e1f1ecbf645ea8677ef473c9361bb87"
+      "bytes": 2775719,
+      "sha256": "f421223d68d90b7f60d3386d96c44005335277d86f8c0705e2e5d9595dc1eb42"
     },
     "lantern-crepe.min.css": {
       "bytes": 78366,
