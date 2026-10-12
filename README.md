@@ -112,18 +112,34 @@ Running `uv pip install -r requirements.txt` into a different virtual environmen
 
 ## 30-second start
 
-### Windows
+### Windows: three actions after cloning
 
-From a clone:
+**Double-click `run.bat`**, enter the **root folder**, and choose the run mode:
+
+- **1 - Nohup:** Lantern runs in the background without a visible server terminal window. Logs are saved in `%LOCALAPPDATA%\Lantern\logs`.
+- **2 - Terminal:** Lantern runs in a visible Windows console, where you can see the server logs.
+
+The launcher automatically creates the ignored `lan_drive_config.yaml` from
+`lan_drive_config.yaml_copy`, saves the chosen root, prepares an isolated
+`.venv` with Python 3.12 and installs `requirements.txt` via `uv`.
+If `uv` is missing, it automatically downloads the official Windows release.
+The first launch therefore requires internet access; subsequent launches reuse
+the installed environment. The browser opens automatically after Lantern is
+ready (default: `http://127.0.0.1:9999`). Nohup survives closing `run.bat`,
+but it is **not** a Windows service and does not persist across sign-out/reboot.
+
+**Existing users:** rerunning `run.bat` retains host/port and other YAML
+settings; only the selected root is updated. If an existing
+`lan_drive_config.local.yaml` is present and the standard YAML is absent, the
+launcher uses that existing file. It will not start a duplicate Lantern server.
+Nohup/Terminal controls the **Windows server console**, not the browser's
+terminal feature (`terminal_enabled` is a separate YAML setting). The default
+bind remains local-only; explicitly configure a LAN host when needed.
+
+For manual startup instead:
 
 ```powershell
-python lan_drive.py --root "$env:USERPROFILE" --host 127.0.0.1 --port 9999
-```
-
-Then open:
-
-```text
-http://127.0.0.1:9999
+uv run --with-requirements requirements.txt python lan_drive.py --root "$env:USERPROFILE" --host 127.0.0.1 --port 9999
 ```
 
 ### Linux / macOS
