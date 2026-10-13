@@ -229,6 +229,47 @@ class MarkdownPreviewTests(unittest.TestCase):
         self.assertIn("flowchart TD", page)
         self.assertNotIn('data-language="MeRmAiD"', page)
 
+    def test_gfm_tables_allow_short_delimiters_and_literal_pipes(self) -> None:
+        page = self.render_markdown(
+            "| Name | Value |\n"
+            "| - | :-: |\n"
+            "| escaped \\| pipe | `a|b` |\n"
+            "\n"
+            "Plain | text does not become a table.\n"
+        )
+        # The Markdown source uses one backslash to escape the cell pipe.
+        self.assertIn("<table>", page)
+        self.assertIn("<th>Name</th>", page)
+        self.assertIn("<td>escaped | pipe</td>", page)
+        self.assertIn("<code>a|b</code>", page)
+        self.assertEqual(page.count("<table>"), 1)
+
+    def test_preview_hides_html_comments_but_keeps_code_examples(self) -> None:
+        page = self.render_markdown(
+            "Before\n\n"
+            "<!-- private note with **bold** -->\n\n"
+            "<!--\n"
+            "| invisible | table |\n"
+            "| --- | --- |\n"
+            "| 123 | 456 |\n"
+            "-->\n\n"
+            "After `<!-- literal inline -->`\n\n"
+            "```markdown\n"
+            "<!-- literal fenced -->\n"
+            "```\n\n"
+            "<div onclick='alert(1)'>Unsafe HTML stays escaped</div>\n"
+        )
+        article = page.split("<article class='md-preview'>", 1)[1].split("</article>", 1)[0]
+        self.assertIn("Before", article)
+        self.assertIn("After", article)
+        self.assertNotIn("private note", article)
+        self.assertNotIn("invisible", article)
+        self.assertNotIn("<table>", article)
+        self.assertIn("&lt;!-- literal inline --&gt;", article)
+        self.assertIn("&lt;!-- literal fenced --&gt;", article)
+        self.assertIn("&lt;div onclick=", article)
+        self.assertNotIn("<div onclick=", article)
+
     def test_lightweight_table_task_image_and_fence_grammar(self) -> None:
         page = self.render_markdown(
             "| A | B |\n"
@@ -263,8 +304,8 @@ class MarkdownPreviewTests(unittest.TestCase):
             "title": set(),
             "style": set(),
             "body": set(),
-            "div": {"class", "data-diagram-index", "data-doc-name"},
-            "button": {"class", "type", "data-action", "data-diagram-index", "data-path", "hidden"},
+            "div": {"class", "data-diagram-index", "data-doc-name", "role", "aria-label"},
+            "button": {"class", "type", "data-action", "data-diagram-index", "data-path", "hidden", "aria-pressed"},
             "a": {"class", "href", "target", "rel"},
             "article": {"class"},
             "p": set(),
