@@ -375,5 +375,164 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             context.close()
 
 
+    def test_crop_image_preserves_original_and_updates_markdown(self):
+        from tests.test_image_cache_e2e import png_bytes
+
+        folder = self.root / "crop photos"
+        assets = folder / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        original_image = png_bytes((12, 90, 220))
+        (assets / "original.png").write_bytes(original_image)
+        document = folder / "photos.md"
+        original = "# Photos\n\n![Original alt](assets/original.png)\n\nTail.\n"
+        document.write_text(original, encoding="utf-8")
+        context = self.browser.new_context()
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=crop%20photos%2Fphotos.md")
+            self.assertFalse(page.get_by_role("button", name="Crop image").count())
+            page.get_by_role("button", name="Edit visually").click()
+            image = page.locator(".md-visual-host img:not(.ProseMirror-separator)").first
+            image.wait_for(timeout=18000)
+            image.click()
+            page.get_by_role("button", name="Crop image", exact=True).click()
+            dialog = page.get_by_role("dialog", name="Crop image")
+            dialog.wait_for()
+            self.assertEqual(document.read_text(encoding="utf-8"), original)
+            dialog.get_by_role("button", name="Cancel").click()
+            self.assertEqual(list(assets.glob("cropped-*.png")), [])
+            image.click()
+            page.get_by_role("button", name="Crop image", exact=True).click()
+            canvas = page.locator(".md-image-crop-canvas")
+            box = canvas.bounding_box()
+            page.mouse.move(box["x"] + box["width"] * .15, box["y"] + box["height"] * .15)
+            page.mouse.down()
+            page.mouse.move(box["x"] + box["width"] * .65, box["y"] + box["height"] * .65, steps=8)
+            page.mouse.up()
+            dialog.get_by_role("button", name="Apply crop").click()
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown().includes('assets/cropped-')",
+                timeout=15000)
+            page.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=18000)
+            saved = document.read_text(encoding="utf-8")
+            match = re.search(r"!\[Original alt\]\((assets/cropped-[^)]+\.png)\)", saved)
+            self.assertIsNotNone(match, saved)
+            self.assertIn("Tail.", saved)
+            output = folder / match.group(1)
+            self.assertTrue(output.is_file())
+            self.assertEqual((assets / "original.png").read_bytes(), original_image)
+            data = output.read_bytes()
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            width = int.from_bytes(data[16:20], "big")
+            height = int.from_bytes(data[20:24], "big")
+            self.assertGreater(min(width, height), 0)
+            self.assertLess(max(width, height), 40)
+            page.get_by_role("button", name="Preview", exact=True).click()
+            page.locator("article.md-preview img").first.wait_for(timeout=14000)
+            self.assertEqual(page.locator("article.md-preview img").first.get_attribute("alt"), "Original alt")
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
+    def test_crop_paged_visual_preserves_unedited_sections(self):
+        from tests.test_image_cache_e2e import png_bytes
+
+        folder = self.root / "crop-paged-apply"
+        assets = folder / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        original_image = png_bytes((12, 50, 120))
+        (assets / "source.png").write_bytes(original_image)
+        document = folder / "paged.md"
+        original = "# Large\n\n![Picture](assets/source.png)\n\n" + "".join(
+            f"## Part {i}\n\n" + "preserved words " * 55 + "\n\n" for i in range(85))
+        self.assertGreater(len(original.encode("utf-8")), 32 * 1024)
+        document.write_text(original, encoding="utf-8")
+        context = self.browser.new_context()
+        page = context.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=crop-paged-apply%2Fpaged.md")
+            page.get_by_role("button", name="Edit visually").click()
+            page.wait_for_function("() => window.__lanternMdPaged?.active", timeout=30000)
+            image = page.locator(".md-visual-host img:not(.ProseMirror-separator)").first
+            image.wait_for(timeout=17000)
+            image.click()
+            page.get_by_role("button", name="Crop image", exact=True).click()
+            page.get_by_role("dialog", name="Crop image").get_by_role("button", name="Apply crop").click()
+            page.wait_for_function(
+                "() => window.__lanternMdPaged.currentText().includes('assets/cropped-')",
+                timeout=17000)
+            page.get_by_role("button", name="Save", exact=True).click()
+            review = page.get_by_role("button", name="Accept changes & Save")
+            try:
+                review.wait_for(timeout=1400)
+                review.click()
+            except Exception:
+                pass
+            # A late Milkdown display transaction can replace the Saved label;
+            # the persisted source/version and clean state are authoritative.
+            page.wait_for_function(
+                "() => !window.__lanternMdPaged.dirty && window.__lanternMdPaged.source.includes('assets/cropped-')",
+                timeout=17000)
+            saved = document.read_text(encoding="utf-8")
+            match = re.search(r"!\[Picture\]\((assets/cropped-[^)]+\.png)\)", saved)
+            self.assertIsNotNone(match, saved)
+            self.assertEqual((assets / "source.png").read_bytes(), original_image)
+            cropped = (folder / match.group(1)).read_bytes()
+            self.assertTrue(cropped.startswith(b"\x89PNG\r\n\x1a\n"))
+            self.assertLess(int.from_bytes(cropped[16:20], "big"), 40)
+            self.assertEqual(saved.split("## Part 84", 1)[1], original.split("## Part 84", 1)[1])
+        finally:
+            context.close()
+
+    def test_crop_dialog_delete_only_removes_paged_markdown_reference(self):
+        from tests.test_image_cache_e2e import png_bytes
+
+        folder = self.root / "crop-paged"
+        assets = folder / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        original_image = png_bytes((90, 120, 140))
+        (assets / "existing.png").write_bytes(original_image)
+        document = folder / "paged.md"
+        content = "# Big\n\n![Keep asset](assets/existing.png)\n\n" + "".join(
+            f"## Section {i}\n\n" + "Text " * 110 + "\n\n" for i in range(80))
+        self.assertGreater(len(content.encode("utf-8")), 32 * 1024)
+        document.write_text(content, encoding="utf-8")
+        context = self.browser.new_context()
+        page = context.new_page()
+        deletes = []
+        page.on("request", lambda request: deletes.append(request.url)
+                if "/api/delete" in request.url else None)
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=crop-paged%2Fpaged.md")
+            page.get_by_role("button", name="Edit visually").click()
+            page.wait_for_function("() => window.__lanternMdPaged?.active", timeout=30000)
+            image = page.locator(".md-visual-host img:not(.ProseMirror-separator)").first
+            image.wait_for(timeout=15000)
+            image.click()
+            page.get_by_role("button", name="Crop image", exact=True).click()
+            page.get_by_role("dialog", name="Crop image").get_by_role("button", name="Delete image").click()
+            page.wait_for_function(
+                "() => !window.__lanternMdPaged.currentText().includes('assets/existing.png')",
+                timeout=12000)
+            # Paged editor requires explicit conversion review if the section's
+            # original Markdown and Milkdown serialization differ.
+            page.get_by_role("button", name="Save", exact=True).click()
+            review = page.get_by_role("button", name="Accept changes & Save")
+            try:
+                review.wait_for(timeout=1400)
+                review.click()
+            except Exception:
+                pass
+            page.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=18000)
+            self.assertEqual((assets / "existing.png").read_bytes(), original_image)
+            self.assertEqual(deletes, [])
+            self.assertNotIn("![Keep asset]", document.read_text(encoding="utf-8"))
+            self.assertIn("## Section 79", document.read_text(encoding="utf-8"))
+        finally:
+            context.close()
+
+
 if __name__ == "__main__":
     unittest.main()

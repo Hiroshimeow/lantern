@@ -39,6 +39,15 @@
 }
 @media print{.md-visual-tools{display:none!important}.md-visual-shell{border:0}.md-visual-host{padding:0}}
 
+.md-image-crop-toolbar{position:sticky;top:110px;z-index:16;display:flex;justify-content:flex-end;padding:5px 8px;background:#17283b;border:1px solid #46617b;border-radius:8px;margin-bottom:8px}
+.md-image-crop-toolbar[hidden]{display:none}
+.md-image-crop-dialog{width:min(94vw,900px);max-height:94vh;box-sizing:border-box;padding:16px;border:1px solid #465976;border-radius:12px;background:#101b29;color:#edf3f9;overflow:auto}
+.md-image-crop-dialog::backdrop{background:rgba(0,0,0,.8)}
+.md-image-crop-dialog h2{margin:0 0 8px}
+.md-image-crop-dialog p{margin:0 0 12px;color:#b9cad9}
+.md-image-crop-canvas{display:block;max-width:100%;height:auto;margin:0 auto;border:1px solid #61748b;cursor:crosshair;touch-action:none}
+.md-image-crop-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-top:14px}
+
 /* Large-document visual editor: a single active ProseMirror instance. */
 .md-paged-shell{max-width:1160px}
 .md-paged-tools{top:0;z-index:12;gap:10px}

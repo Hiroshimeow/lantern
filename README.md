@@ -60,6 +60,7 @@ A few things that matter outside a demo:
 
 - **Tables:** add or remove rows and columns in the visual editor.
 - **Images:** display existing relative Markdown images without changing source links. **Ctrl+V** a screenshot from Paint or paste/drop a supported image: Lantern uploads it to the document's nearby `assets/` folder and inserts a real relative link. No temporary `blob:` links in your saved Markdown.
+- **Crop:** in **Edit visually**, click a PNG/JPEG/WebP/BMP image → **Crop image** → drag to select → **Apply crop**. A new PNG is saved in `assets/`, and the original remains untouched. **Delete image** (or the Delete key) removes only the Markdown reference, never the asset. Cropping animated GIF/SVG is not supported.
 - **Autosave:** saves edits after idle without blocking the entire page.
 - **Two people, one file:** content-hash checks reject stale writes (HTTP 409) rather than silently overwriting the other person's work.
 - **Draft recovery:** local browser drafts and a downloadable emergency copy. Switching back to Preview with unsaved edits asks for confirmation and keeps the draft. Because Wi-Fi has opinions.
