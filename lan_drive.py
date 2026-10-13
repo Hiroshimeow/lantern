@@ -2953,8 +2953,17 @@ class Handler(SimpleHTTPRequestHandler):
         if st.st_size > MAX_TEXT_PREVIEW:
             self.send_error(413, "text file too large to edit safely"); return
         rel = path.resolve().relative_to(CONFIG.root.resolve()).as_posix()
+        is_markdown = path.suffix.lower() in {".md", ".markdown"}
+        version = None
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
+            if is_markdown:
+                document = read_markdown_document(path)
+                content = document["content"]
+                version = document["version"]
+            else:
+                content = path.read_text(encoding="utf-8", errors="replace")
+        except MarkdownEditorError as e:
+            self.send_error(e.status, str(e)); return
         except Exception as e:
             self.send_error(500, f"cannot read file: {e}"); return
         parent = Path(rel).parent.as_posix()
@@ -2963,6 +2972,7 @@ class Handler(SimpleHTTPRequestHandler):
 <div class="editor">
   <div class="editorbar">
     <a class="btn" href="{back}">↩ Back</a>
+    {f'<a class="btn" href="/api/plugin/preview?p={urllib.parse.quote(rel)}">Preview</a>' if is_markdown else ''}
     <div class="title">📝 {html_escape(rel)}</div>
     <div class="grow"></div>
     <span id="saveStatus" class="sub"></span>
@@ -2972,11 +2982,20 @@ class Handler(SimpleHTTPRequestHandler):
 </div>
 <div id="toast" class="toast"></div>
 <script>
+const markdownSource = {json_dumps(is_markdown)};
+let sourceVersion = {json_dumps(version)};
 async function saveEdit(){{
   const st=document.getElementById('saveStatus'); st.textContent='Saving...';
   try{{
-    const r=await fetch('/api/save',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{path:{json_dumps(rel)},content:document.getElementById('editarea').value}})}});
-    const j=await r.json(); if(!r.ok||j.error) throw new Error(j.error||r.statusText);
+    const data={{path:{json_dumps(rel)},content:document.getElementById('editarea').value}};
+    if(markdownSource)data.version=sourceVersion;
+    const r=await fetch(markdownSource?'/api/md/save':'/api/save',{{
+      method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(data)
+    }});
+    const j=await r.json();
+    if(r.status===409)throw new Error('Conflict: file changed on disk or another client. Your draft is retained; reload to reconcile.');
+    if(!r.ok||j.error) throw new Error(j.error||r.statusText);
+    if(markdownSource)sourceVersion=j.version;
     st.textContent='Saved'; setTimeout(()=>st.textContent='',2000);
   }}catch(e){{ st.textContent='Error: '+e.message; }}
 }}

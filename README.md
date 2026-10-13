@@ -52,7 +52,9 @@ On first launch, the bootstrap needs internet access to download missing tools. 
 
 ![Lantern Edit Visually working with tables and linked images](docs/images/lantern-edit-visually.png)
 
-**Preview** is the fast, read-only starting point. Click **Edit visually** to type into the rendered document itself — headings, paragraphs, lists, tables, fenced code and existing linked images. Save the resulting **Markdown file**, not a proprietary document.
+**Preview** is the fast, read-only starting point. The Markdown toolbar switches between **Preview / Edit visually / Source** without navigating away when nothing needs refreshing. **Edit visually** lets you type into the rendered document; **Source** edits the exact Markdown text and does not load the large visual editor bundle. Both editors share versioned saves and local draft recovery. Save the resulting **Markdown file**, not a proprietary document.
+
+In **Preview**, GFM pipe tables are rendered (including escaped pipes and pipes inside inline code), and HTML comments stay hidden. In **Edit visually** and **Source**, comments and Mermaid code remain available to edit. Mermaid is rendered as a diagram **only in Preview**. HTML content such as raw `<table>` tags is escaped, not executed.
 
 A few things that matter outside a demo:
 
@@ -60,9 +62,9 @@ A few things that matter outside a demo:
 - **Images:** display existing relative Markdown images without changing source links. **Ctrl+V** a screenshot from Paint or paste/drop a supported image: Lantern uploads it to the document's nearby `assets/` folder and inserts a real relative link. No temporary `blob:` links in your saved Markdown.
 - **Autosave:** saves edits after idle without blocking the entire page.
 - **Two people, one file:** content-hash checks reject stale writes (HTTP 409) rather than silently overwriting the other person's work.
-- **Draft recovery:** local browser drafts and a downloadable emergency copy. Because Wi-Fi has opinions.
+- **Draft recovery:** local browser drafts and a downloadable emergency copy. Switching back to Preview with unsaved edits asks for confirmation and keeps the draft. Because Wi-Fi has opinions.
 - **Formatting safety:** if opening a file would rewrite its Markdown syntax, Lantern requires a before/after review before saving.
-- **Large documents:** full-document visual editing up to 32 KiB; larger UTF-8 documents up to **5 MiB** use lossless, section-based navigation. Very large code fences use a localized CodeMirror pane.
+- **Large documents:** full-document visual editing up to 32 KiB; larger UTF-8 documents up to **5 MiB** use lossless, section-based navigation. Source mode can edit the whole document up to the same 5 MiB limit. Switching from Source to Visual on a large file enters the paged editor (save pending Source edits first). Very large code fences use a localized CodeMirror pane.
 
 The visual editor lazy-loads its offline Milkdown/ProseMirror bundle only when requested. A big document does not need to summon an entire editor just because you wanted to read a heading.
 

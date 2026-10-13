@@ -3,18 +3,24 @@
   // This small controller loads the 2.8 MB editor only when the user selects "Edit visually".
   // The existing read-only preview remains the fast default.
   const trigger = document.querySelector('[data-action="visual-edit"]');
+  const sourceTrigger = document.querySelector('[data-action="mode-source"]');
+  const previewTrigger = document.querySelector('[data-action="mode-preview"]');
   const preview = document.querySelector('article.md-preview');
-  if (!trigger || !preview) return;
+  if (!trigger || !sourceTrigger || !previewTrigger || !preview) return;
 
   const path = trigger.getAttribute('data-path');
   const nonce = document.currentScript?.nonce || '';
   const root = document.querySelector('.content');
+  // Exactly one authoritative mode. The legacy active getter remains for
+  // browser tests and for the common save/draft path in either editor.
   const view = {
-    active: false, loading: false, instance: null, version: null,
+    mode: 'preview', get active() { return this.mode === 'visual' || this.mode === 'source'; },
+    loading: false, instance: null, version: null,
     dirty: false, revision: 0, savedRevision: 0, saving: false, conflict: false,
     baseline: '', lastSaved: '', roundtripSafe: false, approvedReformat: false,
     saveTimer: 0, draftTimer: 0, checkTimer: 0, host: null, status: null,
     saveButton: null, closeButton: null, details: null, requestAgain: false,
+    savedSincePreview: false, switchingFromPaged: false,
   };
   const key = location.origin + ':' + path;
   const escapeCss = s => s.replace(/[^A-Za-z0-9_-]/g, '-');
@@ -71,11 +77,14 @@
   };
   const getEditorText = () => view.instance?.getMarkdown() || '';
   const saveDraft = async () => {
-    if (!view.active || !view.dirty || !view.instance) return;
+    if (!view.active || !view.instance) return true;
     const text = getEditorText();
-    if (text === view.lastSaved) return;
-    try { await drafts.write(text); }
-    catch { status('Local draft storage unavailable. Do not close this tab until saved.', 'warn'); }
+    if (text === view.lastSaved && !view.dirty) return true;
+    try { await drafts.write(text); return true; }
+    catch {
+      status('Local draft storage unavailable. Keep this editor open or download the draft.', 'error');
+      return false;
+    }
   };
   const queueDraft = () => {
     clearTimeout(view.draftTimer);
@@ -115,10 +124,25 @@
     }, 260);
   };
   const restoreButtons = () => {
-    if(window.__lanternMdPaged?.active){trigger.disabled=true;trigger.textContent='Editing by section';return;}
-    trigger.disabled = false;
-    trigger.textContent = view.active ? 'Editing visually' : 'Edit visually';
+    const paged = !!window.__lanternMdPaged?.active;
+    trigger.disabled = view.loading || view.saving || paged;
+    trigger.textContent = paged ? 'Editing by section' : 'Edit visually';
+    sourceTrigger.disabled = view.loading || view.saving;
+    previewTrigger.disabled = view.loading || view.saving;
+    for (const [control, mode] of [
+      [previewTrigger, 'preview'], [trigger, 'visual'], [sourceTrigger, 'source'],
+    ]) {
+      control.setAttribute('aria-pressed', String(view.mode === mode || (mode === 'visual' && paged)));
+    }
     if (view.saveButton) view.saveButton.disabled = view.saving;
+  };
+
+  const ensureShellStyle = () => {
+    if (document.querySelector('link[href="/static/markdown_visual_shell.css"]')) return;
+    const sheet = document.createElement('link');
+    sheet.rel = 'stylesheet';
+    sheet.href = '/static/markdown_visual_shell.css';
+    document.head.appendChild(sheet);
   };
 
   // Third-party code runs only when explicitly requested, entirely from Lantern's own origin.
@@ -130,10 +154,7 @@
       style.rel = 'stylesheet';
       style.href = '/static/vendor/lantern-crepe.min.css';
       document.head.appendChild(style);
-      const shellStyle = document.createElement('link');
-      shellStyle.rel = 'stylesheet';
-      shellStyle.href = '/static/markdown_visual_shell.css';
-      document.head.appendChild(shellStyle);
+      ensureShellStyle();
       const script = document.createElement('script');
       script.src = '/static/vendor/lantern-crepe.min.js';
       script.nonce = nonce;
@@ -156,13 +177,14 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   };
 
-  function renderToolbar() {
+  function renderToolbar(kind, sourceText = '') {
+    ensureShellStyle();
     const shell = document.createElement('section');
     shell.className = 'md-visual-shell';
     const tools = document.createElement('div');
     tools.className = 'md-visual-tools';
     const heading = document.createElement('span');
-    heading.textContent = '✎ Edit directly in document';
+    heading.textContent = kind === 'source' ? 'Markdown source · exact text' : 'Edit directly in document';
     heading.className = 'md-visual-label';
     const saveBtn = document.createElement('button');
     saveBtn.className = 'btn primary';
@@ -187,6 +209,17 @@
     const editorHost = document.createElement('div');
     editorHost.className = 'md-visual-host';
     editorHost.id = 'md-visual-edit-' + escapeCss(path);
+    if (kind === 'source') {
+      const area = document.createElement('textarea');
+      area.className = 'md-source-area';
+      area.setAttribute('aria-label', 'Markdown source');
+      area.spellcheck = false;
+      area.wrap = 'off';
+      area.value = sourceText;
+      area.addEventListener('input', changed);
+      editorHost.append(area);
+      view.instance = { getMarkdown: () => area.value, focus: () => area.focus(), destroy: () => {} };
+    }
     shell.append(tools, editorHost);
     preview.insertAdjacentElement('afterend', shell);
     view.host = shell;
@@ -266,6 +299,8 @@
       });
       view.version = result.version;
       view.lastSaved = text;
+      view.baseline = text;
+      view.savedSincePreview = true;
       if (view.revision === revision) {
         view.dirty = false;
         await drafts.clear().catch(() => {});
@@ -293,31 +328,134 @@
     }
   }
 
-  async function close() {
-    if (!view.active || view.saving) return;
-    if (view.dirty && !confirm('Unsaved changes remain in this browser. Return to preview?')) return;
+  // Swap editing surfaces without changing documents or making a second
+  // controller for Source. Both editors share draft, version and save state.
+  async function switchEditor(kind) {
+    if (!view.active || view.loading || view.saving || kind === view.mode) return;
+    const contentNow = getEditorText();
+    const wasDirty = view.dirty || contentNow !== view.lastSaved;
+    // Milkdown can normalize raw Markdown, including HTML comments and tables.
+    // Never reinterpret an unsaved exact Source draft without a versioned save.
+    if (kind === 'visual' && view.mode === 'source' && wasDirty) {
+      status('Save Source before entering Visual Edit; your unsaved text is unchanged.', 'warn');
+      return;
+    }
+    // Never open a multi-megabyte document in the full Milkdown tree.
+    // Source -> Visual goes through the existing section-indexed editor.
+    if (kind === 'visual' && new Blob([contentNow]).size > 32 * 1024) {
+      if (wasDirty) {
+        status('Save Source before switching to section-based Visual Edit. Your draft is unchanged.', 'warn');
+        return;
+      }
+      const y = scrollY;
+      await view.instance?.destroy?.();
+      view.instance = null;
+      view.host?.remove();
+      view.host = null;
+      view.status = null;
+      view.mode = 'preview';
+      preview.hidden = false;
+      restoreButtons();
+      await start('visual');
+      requestAnimationFrame(() => scrollTo(0, y));
+      return;
+    }
+    if (wasDirty && !(await saveDraft())) return;
+    const contents = wasDirty ? contentNow : view.baseline;
+    const oldLastSaved = view.lastSaved;
+    const oldSafe = view.roundtripSafe;
+    const oldApproved = view.approvedReformat;
+    let engine = null;
+    try { if (kind === 'visual') engine = await loadBundle(); }
+    catch (error) { status('Cannot load Visual editor: ' + error.message, 'error'); return; }
+    const y = scrollY;
+    view.loading = true;
+    restoreButtons();
     clearTimeout(view.saveTimer);
     clearTimeout(view.draftTimer);
     clearTimeout(view.checkTimer);
-    if (view.dirty) await saveDraft();
-    view.active = false;
-    view.instance?.destroy();
-    view.instance = null;
-    const y = scrollY;
-    // Source of truth for the preview stays the server's existing renderer.
-    sessionStorage.setItem('lantern-md-scroll:' + path, String(y));
-    location.reload();
+    try {
+      await view.instance?.destroy?.();
+      view.instance = null;
+      view.host?.remove();
+      view.mode = kind;
+      const editorHost = renderToolbar(kind, contents);
+      if (kind === 'visual') {
+        view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
+      }
+      const converted = getEditorText();
+      const safeRoundtrip = cleanLineEndings(converted) === cleanLineEndings(contents);
+      view.roundtripSafe = kind === 'source'
+        ? (!wasDirty || oldSafe)
+        : safeRoundtrip && (!wasDirty || oldSafe);
+      view.approvedReformat = wasDirty && oldApproved;
+      view.lastSaved = wasDirty ? oldLastSaved : (kind === 'visual' ? converted : contents);
+      view.dirty = wasDirty;
+      status(view.conflict ? 'Conflict: draft retained; another client changed the file.' :
+        wasDirty ? 'Unsaved draft preserved across modes. Save before leaving.' :
+        !view.roundtripSafe ? 'Formatting differs: review required before Save.' :
+        kind === 'source' ? 'Source ready. Edits use versioned autosave.' :
+        'Ready. Edit directly in the document.',
+        view.conflict ? 'error' : view.dirty || !view.roundtripSafe ? 'warn' : 'info');
+      view.instance.focus();
+      requestAnimationFrame(() => scrollTo(0, y));
+    } catch (error) {
+      // Never discard the draft written above on a failed mode transition.
+      view.instance?.destroy?.();
+      view.instance = null;
+      view.host?.remove();
+      view.host = null;
+      view.mode = 'preview';
+      preview.hidden = false;
+      alert('Unable to switch editor: ' + error.message + '. Saved file unchanged; local draft retained.');
+    } finally {
+      view.loading = false;
+      restoreButtons();
+    }
   }
 
-  async function start() {
-    if (view.active || view.loading || window.__lanternMdPaged?.active) return;
+  async function close() {
+    if (!view.active || view.saving || view.loading) return;
+    if (view.dirty && !confirm('Unsaved changes will remain as a local draft. Show the last saved Preview?')) return;
+    if (view.dirty && !(await saveDraft())) return;
+    clearTimeout(view.saveTimer);
+    clearTimeout(view.draftTimer);
+    clearTimeout(view.checkTimer);
+    const y = scrollY;
+    await view.instance?.destroy?.();
+    view.instance = null;
+    view.host?.remove();
+    view.host = null;
+    view.status = null;
+    view.mode = 'preview';
+    preview.hidden = false;
+    restoreButtons();
+    // Preview is server-rendered. Reload only when this tab saved new source;
+    // clean toggles simply switch surfaces without a navigation or refetch.
+    if (view.savedSincePreview) {
+      sessionStorage.setItem('lantern-md-scroll:' + path, String(y));
+      location.reload();
+    } else {
+      requestAnimationFrame(() => scrollTo(0, y));
+    }
+  }
+
+  async function start(kind = 'visual') {
+    if (view.active) return switchEditor(kind);
+    if (view.loading) return;
+    const pagedNow = window.__lanternMdPaged;
+    if (pagedNow?.active) {
+      view.switchingFromPaged = true;
+      try { await pagedNow.close(kind); }
+      finally { view.switchingFromPaged = false; }
+      if (pagedNow.active) return; // Dirty section: user cancelled switch.
+    }
     view.loading = true;
-    trigger.disabled = true;
-    trigger.textContent = 'Loading editor…';
+    restoreButtons();
     try {
       const start = performance.now();
       const doc = await api('/api/md/document?p=' + encodeURIComponent(path));
-      if(doc.bytes > 32 * 1024){
+      if(kind === 'visual' && doc.bytes > 32 * 1024){
         const loadPaged = () => new Promise((resolve,reject)=>{
           if(window.LanternPagedEditor)return resolve(window.LanternPagedEditor);
           const script=document.createElement('script');
@@ -328,31 +466,48 @@
           document.head.appendChild(script);
         });
         const paged=await loadPaged();
-        await paged.open({doc,path,preview,trigger,nonce,loadBundle});
+        await paged.open({doc,path,preview,trigger,nonce,loadBundle,
+          onClosed: (changed) => {
+            view.mode = 'preview';
+            if (changed) view.savedSincePreview = true;
+            restoreButtons();
+            if (view.savedSincePreview && !view.switchingFromPaged) {
+              sessionStorage.setItem('lantern-md-scroll:' + path, String(scrollY));
+              location.reload();
+            }
+          },
+        });
+        view.mode = 'paged';
+        restoreButtons();
         return;
       }
-      const engine = await loadBundle();
+      const engine = kind === 'visual' ? await loadBundle() : null;
       let contents = doc.content;
       const recovered = await drafts.read().catch(() => null);
       view.version = doc.version;
       view.baseline = doc.content;
-      if (recovered?.content && recovered.content !== doc.content && confirm('An unsaved Markdown draft was found in this browser. Restore it?')) {
+      view.conflict = false;
+      view.dirty = false;
+      view.approvedReformat = false;
+      if (recovered?.mode !== 'paged' && typeof recovered?.content === 'string'
+        && recovered.content !== doc.content && confirm('An unsaved Markdown draft was found in this browser. Restore it?')) {
         contents = recovered.content;
         if (recovered.version !== doc.version) view.conflict = true;
       }
-      const editorHost = renderToolbar();
-      // Preserve the same screen and scroll position; only replace the content surface.
+      const editorHost = renderToolbar(kind, contents);
+      // Source needs no Milkdown runtime; both modes use the same versioned save.
       preview.hidden = true;
-      view.host.scrollIntoView({ block: 'nearest' });
-      view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
-      view.active = true;
+      if (kind === 'visual') {
+        view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
+      }
+      view.mode = kind;
       const restoredDraft = contents !== doc.content;
       const serialized = view.instance.getMarkdown();
       // A restored draft is not the remote baseline. Never accidentally treat it
       // as "already saved" and delete the only copy of unsaved edits.
       view.lastSaved = restoredDraft ? doc.content : serialized;
-      view.roundtripSafe = !restoredDraft &&
-        cleanLineEndings(serialized) === cleanLineEndings(view.baseline);
+      view.roundtripSafe = kind === 'source' || (!restoredDraft &&
+        cleanLineEndings(serialized) === cleanLineEndings(view.baseline));
       if (restoredDraft) {
         view.dirty = true;
         view.revision += 1;
@@ -360,7 +515,8 @@
         // explicitly saves it. Initial parsing may normalize Markdown syntax.
       }
       status(view.conflict ? 'Draft restored but disk version differs. Do not overwrite; download draft first.' :
-        restoredDraft ? 'Unsaved draft restored. Review changes before the first Save.' :
+        restoredDraft ? 'Unsaved draft restored.' :
+        kind === 'source' ? 'Source ready. Versioned autosave enabled.' :
         view.roundtripSafe ? 'Ready. Type directly in the document. Autosave enabled.' :
         'Visual editing ready. Formatting differs; review required before Save.',
         view.conflict ? 'error' : view.roundtripSafe ? 'info' : 'warn');
@@ -373,16 +529,21 @@
       view.host?.remove();
       view.host = null;
       view.status = null;
-      view.active = false;
+      view.mode = 'preview';
       preview.hidden = false;
-      alert('Visual editor unavailable: ' + error.message + '\nOriginal preview and file are unchanged.');
+      alert('Markdown editor unavailable: ' + error.message + '\nOriginal preview and file are unchanged.');
     } finally {
       view.loading = false;
       restoreButtons();
     }
   }
 
-  trigger.addEventListener('click', () => { void start(); });
+  trigger.addEventListener('click', () => { void start('visual'); });
+  sourceTrigger.addEventListener('click', () => { void start('source'); });
+  previewTrigger.addEventListener('click', () => {
+    if (window.__lanternMdPaged?.active) { void window.__lanternMdPaged.close(); return; }
+    if (view.active) void close();
+  });
   document.addEventListener('keydown', e => {
     if (!view.active || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;
     e.preventDefault();
@@ -402,5 +563,6 @@
     sessionStorage.removeItem(scrollKey);
     requestAnimationFrame(() => scrollTo(0, Number(priorScroll) || 0));
   }
-  window.__lanternMdVisual = { get state() { return view; }, open: start, save: () => save(true) };
+  window.__lanternMdVisual = { get state() { return view; }, open: start,
+    show: start, save: () => save(true), preview: close };
 })();

@@ -33,9 +33,10 @@
   };
 
   class PagedEditor {
-    constructor({doc, path, trigger, preview, loadBundle, nonce}) {
+    constructor({doc, path, trigger, preview, loadBundle, nonce, onClosed}) {
       this.path=path; this.trigger=trigger; this.preview=preview;
-      this.loadBundle=loadBundle; this.nonce=nonce;
+      this.loadBundle=loadBundle; this.nonce=nonce; this.onClosed=onClosed;
+      this.savedSincePreview=false;
       this.source=doc.content; this.version=doc.version; this.bytes=doc.bytes;
       this.index=null; this.worker=null; this.pending=new Map(); this.workerId=0;
       this.pageNumber=-1; this.page=null; this.pageOriginal='';
@@ -320,6 +321,7 @@
           });
           const change=patch.length-(this.page.end-this.page.start);
           this.version=result.version;this.source=newSource;
+          this.savedSincePreview=true;
           this.page.end+=change;
           for(let i=this.pageNumber+1;i<this.index.pages.length;i++){
             this.index.pages[i].start+=change;this.index.pages[i].end+=change;
@@ -453,9 +455,10 @@
     onVisibility(){
       if(document.hidden&&this.dirty)void this.draftWrite();
     }
-    async close(){
-      if(!this.active||this.saving)return;
-      if(this.dirty&&!confirm(LEAVE_WARNING+' Return to preview?'))return;
+    async close(destination='preview'){
+      if(!this.active||this.saving)return false;
+      if(this.dirty&&!confirm(LEAVE_WARNING+
+        (destination==='source'?' Switch to Source?':' Return to preview?')))return false;
       if(this.dirty)await this.draftWrite();
       this.active=false;
       clearTimeout(this.saveTimer);clearTimeout(this.draftTimer);
@@ -470,6 +473,8 @@
       this.shell.remove();this.preview.hidden=false;
       this.trigger.disabled=false;this.trigger.textContent='Edit visually';
       window.__lanternMdPaged=null;
+      this.onClosed?.(this.savedSincePreview);
+      return true;
     }
     async open() {
       const began=performance.now();
