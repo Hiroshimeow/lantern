@@ -64,7 +64,7 @@ A few things that matter outside a demo:
 - **Two people, one file:** content-hash checks reject stale writes (HTTP 409) rather than silently overwriting the other person's work.
 - **Draft recovery:** local browser drafts and a downloadable emergency copy. Switching back to Preview with unsaved edits asks for confirmation and keeps the draft. Because Wi-Fi has opinions.
 - **Formatting safety:** if opening a file would rewrite its Markdown syntax, Lantern requires a before/after review before saving.
-- **Large documents:** full-document visual editing up to 32 KiB; larger UTF-8 documents up to **5 MiB** use lossless, section-based navigation. Source mode can edit the whole document up to the same 5 MiB limit. Switching from Source to Visual on a large file enters the paged editor (save pending Source edits first). Very large code fences use a localized CodeMirror pane.
+- **Large documents:** full-document visual editing up to 32 KiB; larger UTF-8 documents up to **5 MiB** use lossless, section-based navigation. Source mode can edit the whole document up to the same 5 MiB limit. Switching from Source to Visual on a large file enters the paged editor (save pending Source edits first). Switching back from a paged section to Source also requires saving that section, so unsaved edits cannot silently disappear. Very large code fences use a localized CodeMirror pane.
 
 The visual editor lazy-loads its offline Milkdown/ProseMirror bundle only when requested. A big document does not need to summon an entire editor just because you wanted to read a heading.
 

@@ -231,6 +231,54 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_paged_unsaved_section_cannot_disappear_into_source(self):
+        path = self.root / "paged-dirty-switch.md"
+        original = "# Paged switch\n\nFirst paragraph.\n\n" + "".join(
+            "## Section " + str(i) + "\n\n" + ("A" * 450) + "\n\n" for i in range(120)
+        )
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context()
+        page = context.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=paged-dirty-switch.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            page.wait_for_function("() => !!window.__lanternMdPaged?.active", timeout=32000)
+            paragraph = page.locator(".md-visual-host .ProseMirror p").first
+            paragraph.click()
+            page.keyboard.press("End")
+            page.keyboard.type(" DRAFT")
+            page.wait_for_function("() => window.__lanternMdPaged.dirty", timeout=6000)
+            page.get_by_role("button", name="Source", exact=True).click()
+            page.wait_for_function(
+                "() => (document.querySelector('.md-visual-status')?.textContent || '').includes('Save this section before switching')",
+                timeout=7000,
+            )
+            self.assertTrue(page.evaluate("window.__lanternMdPaged.active"))
+            self.assertFalse(page.get_by_role("textbox", name="Markdown source").count())
+            self.assertIn("DRAFT", page.locator(".md-visual-host .ProseMirror").inner_text())
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            page.get_by_role("button", name="Save", exact=True).click()
+            review = page.get_by_role("button", name="Accept changes & Save")
+            try:
+                review.wait_for(timeout=1500)
+                review.click()
+            except Exception:
+                pass  # No conversion review needed for a byte-safe section.
+            # Autosave may have completed while the mode switch was blocked:
+            # the disk source/version, not the status-label wording, is truth.
+            page.wait_for_function(
+                "() => { const p=window.__lanternMdPaged; "
+                "return !!p && !p.dirty && p.source.includes('DRAFT'); }",
+                timeout=16000,
+            )
+            self.assertIn("DRAFT", path.read_text(encoding="utf-8"))
+            page.get_by_role("button", name="Source", exact=True).click()
+            page.get_by_role("textbox", name="Markdown source").wait_for(timeout=17000)
+            self.assertIn("DRAFT", page.get_by_role("textbox", name="Markdown source").input_value())
+        finally:
+            context.close()
+
     def test_legacy_editor_uses_versioned_saves(self):
         path = self.root / "legacy.md"
         path.write_text("# Legacy\n\nOriginal\n", encoding="utf-8")

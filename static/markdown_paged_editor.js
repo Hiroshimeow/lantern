@@ -457,8 +457,13 @@
     }
     async close(destination='preview'){
       if(!this.active||this.saving)return false;
-      if(this.dirty&&!confirm(LEAVE_WARNING+
-        (destination==='source'?' Switch to Source?':' Return to preview?')))return false;
+      if(destination==='source' && (this.dirty || this.currentText()!==this.lastSaved)){
+        // Source will load the server's version, not an unsaved paged section.
+        // Keep this editor in place instead of hiding its live draft.
+        this.status('Save this section before switching to Source; unsaved text stays here.','warn');
+        return false;
+      }
+      if(this.dirty&&!confirm(LEAVE_WARNING+' Return to preview?'))return false;
       if(this.dirty)await this.draftWrite();
       this.active=false;
       clearTimeout(this.saveTimer);clearTimeout(this.draftTimer);
