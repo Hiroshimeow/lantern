@@ -2,12 +2,13 @@
   "dependencies": {
     "@milkdown/crepe": "7.22.2",
     "esbuild": "0.28.2",
-    "markdown-it": "14.3.1"
+    "markdown-it": "14.3.1",
+    "cropperjs": "2.3.0"
   },
   "artifacts": {
     "lantern-crepe.min.js": {
-      "bytes": 2782272,
-      "sha256": "70df495b209ff10bb7dbb26d43643f665784fb155b7b0a3fcd56ad5bc10873bc"
+      "bytes": 2779874,
+      "sha256": "e43bddc03611dab825874616f1eac2339faeca2f7f3bfdc079d3fb5a03a511a4"
     },
     "lantern-crepe.min.css": {
       "bytes": 78366,
@@ -16,6 +17,14 @@
     "lantern-crepe.min.js.LEGAL.txt": {
       "bytes": 1679,
       "sha256": "4b183b8b263a3204d495216972cfb7d092d8a4c6ce6dd077e72f78793003e9de"
+    },
+    "lantern-image-crop.min.js": {
+      "bytes": 58719,
+      "sha256": "85dbac4183a65de6fdc75d9cccffe23eca40e259165eee28745a06feeea94ac4"
+    },
+    "lantern-image-crop.min.js.LEGAL.txt": {
+      "bytes": 131,
+      "sha256": "c0605fd352112ada262c5bb11ca427af387b86ca7fc8a08431a1dbfa5198549b"
     },
     "lantern-md-segment-worker.min.js": {
       "bytes": 150228,

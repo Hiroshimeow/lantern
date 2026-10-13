@@ -409,6 +409,8 @@ def safe_join(rel_url_path: str) -> Path:
     for part in raw.split("/"):
         if not part or part in (".", ".."):
             continue
+        if part.startswith(".lantern-uploading-"):
+            raise PermissionError("Incomplete upload is not a published file")
         parts.append(part)
     candidate = CONFIG.root.joinpath(*parts).resolve()
     root = CONFIG.root.resolve()
@@ -836,6 +838,9 @@ def icon_for(kind: str) -> str:
 
 
 def should_hide_entry(parent: Path, name: str) -> bool:
+    # Upload staging is never a published file, even when "show hidden" is on.
+    if name.startswith(".lantern-uploading-"):
+        return True
     if not CONFIG.show_hidden and name.startswith("."):
         return True
     if os.name != "nt" and CONFIG.root == Path("/").resolve() and parent.resolve() == Path("/") and not CONFIG.show_system:
@@ -1457,7 +1462,7 @@ function changeRecursiveDepth(sel){state.recursiveDepth=String(sel.value||'0');l
 function softRefresh(){return requestListUpdate('refresh')}
 function refreshFolder(){clearFolderCache();softRefresh()}
 const MEDIA_KINDS = new Set(['image','video','audio']);
-const mediaState = {kind:null,current:null,items:[],index:-1,busy:false,touchX:0,touchY:0};
+const mediaState = {kind:null,current:null,items:[],index:-1,busy:false,cropActive:false,touchX:0,touchY:0};
 function isTypingTarget(el){return el&&['INPUT','TEXTAREA','SELECT'].includes(el.tagName)}
 function isMediaKind(kind){return MEDIA_KINDS.has(kind)}
 function findLoadedItem(rel){return state.items.find(it=>!it.special&&it.rel===rel)||null}
@@ -1478,7 +1483,8 @@ function mediaUrl(it){return it?.url||fileUrl(it?.rel||'')}
 function setModalNavState(){
   const len=mediaState.items.length, idx=mediaState.index;
   const canStep=len>1||(mediaState.kind&&state.hasMore);
-  ['#modalPrevBtn','#modalNextBtn','#modalPrevFloat','#modalNextFloat'].forEach(sel=>{const b=$(sel);if(b)b.disabled=!canStep||mediaState.busy});
+  const cropButton=$('#modalCropBtn');if(cropButton){cropButton.classList.toggle('hidden',mediaState.kind!=='image');cropButton.disabled=mediaState.cropActive;}
+  ['#modalPrevBtn','#modalNextBtn','#modalPrevFloat','#modalNextFloat'].forEach(sel=>{const b=$(sel);if(b)b.disabled=!canStep||mediaState.busy||mediaState.cropActive});
   const meta=$('#modalMeta');
   if(meta){
     const pos=len?`${Math.max(0,idx)+1}/${len}${state.hasMore?'+':''}`:'0/0';
@@ -1528,7 +1534,7 @@ async function loadVideoInfo(it,video,panel){
 }
 function renderMediaItem(it,index,opts={}){
   const modal=$('#modal'),body=$('#modalBody'),title=$('#modalTitle');
-  if(!modal||!body||!it)return;
+  if(!modal||!body||!it||mediaState.cropActive)return;
   mediaState.current=it;mediaState.kind=it.kind;mediaState.index=index;
   title.textContent=it.name||'';
   body.innerHTML='';
@@ -1550,7 +1556,7 @@ function renderMediaItem(it,index,opts={}){
   setModalNavState();prefetchMediaAround();
 }
 function openPreview(kind,url,name,rel=''){
-  if(!isMediaKind(kind))return;
+  if(!isMediaKind(kind)||mediaState.cropActive)return;
   const modal=$('#modal'); if(!modal)return;
   const loaded=findLoadedItem(rel);
   const fallback=normalizeMediaItem(loaded,kind,url,name,rel);
@@ -1560,10 +1566,48 @@ function openPreview(kind,url,name,rel=''){
   renderMediaItem(mediaState.items[mediaState.index]||fallback,mediaState.index,{autoplay:true});
   modal.classList.add('show');
 }
+async function cropViewedImage(){
+  const original=mediaState.current;
+  if(mediaState.cropActive||original?.kind!=='image'||!original.rel)return;
+  mediaState.cropActive=true;setModalNavState();
+  try{
+    const cropURL='/static/vendor/lantern-image-crop.min.js';
+    const {openCrop}=await import(cropURL);
+    const result=await openCrop({src:mediaUrl(original),name:original.name||'Image'});
+    if(!result)return;
+    // Save As only: use root-confined /api/upload with atomic rename, and
+    // never alter the original media file or delete another asset.
+    const pieces=original.rel.split('/');
+    const originalName=pieces.pop()||'image';
+    const directory=pieces.join('/');
+    const stem=originalName.replace(/\.[^.]+$/,'');
+    const name=stem+'-cropped-'+Date.now()+'-'+Math.random().toString(36).slice(2,8)+'.'+result.extension;
+    toast('Saving cropped copy…');
+    const response=await fetch('/api/upload?path='+encodeURIComponent(directory)+
+      '&name='+encodeURIComponent(name)+'&conflict=rename',{
+        method:'POST',credentials:'same-origin',cache:'no-store',
+        headers:{'Content-Type':result.blob.type},body:result.blob,
+      });
+    const data=await response.json();
+    if(!response.ok||data.error||!data.file)throw Error(data.error||('Upload HTTP '+response.status));
+    const path=decodeURIComponent(String(data.file).replace(/^\//,''));
+    toast('New image created: '+path);
+    try{
+      clearFolderCache();
+      await loadMore(true);
+    }catch(error){
+      // A folder refresh error cannot undo the successful Save As.
+      toast('Image saved, but folder refresh failed: '+error.message);
+    }
+    mediaState.cropActive=false;
+    openPreview('image',fileUrl(path),path.split('/').pop(),path);
+  }catch(error){toast('Crop failed: '+error.message);}
+  finally{mediaState.cropActive=false;setModalNavState();}
+}
 async function stepMedia(delta,ev){
   if(ev&&ev.preventDefault){ev.preventDefault();ev.stopPropagation();}
   const modal=$('#modal');
-  if(!modal?.classList.contains('show')||!mediaState.kind||mediaState.busy)return;
+  if(!modal?.classList.contains('show')||!mediaState.kind||mediaState.busy||mediaState.cropActive)return;
   let items=mediaState.items;
   if(!items.length)return;
   let currentIndex=items.findIndex(it=>(mediaState.current?.rel&&it.rel===mediaState.current.rel)||it.url===mediaState.current?.url);
@@ -1585,16 +1629,17 @@ async function stepMedia(delta,ev){
   if(next===mediaState.index&&items.length===1)return;
   renderMediaItem(items[next],next,{autoplay:true});
 }
-function closeModal(){const m=$('#modal'); if(!m)return; $('#modalBody').innerHTML='';m.classList.remove('show','media-image','media-video','media-audio');mediaState.kind=null;mediaState.current=null;mediaState.items=[];mediaState.index=-1;mediaState.busy=false}
+function closeModal(){if(mediaState.cropActive)return;const m=$('#modal'); if(!m)return; $('#modalBody').innerHTML='';m.classList.remove('show','media-image','media-video','media-audio');mediaState.kind=null;mediaState.current=null;mediaState.items=[];mediaState.index=-1;mediaState.busy=false}
 function setupModalGestures(){
   const body=$('#modalBody'); if(!body||body.dataset.swipeReady)return; body.dataset.swipeReady='1';
   body.addEventListener('touchstart',e=>{const t=e.changedTouches[0];mediaState.touchX=t.clientX;mediaState.touchY=t.clientY},{passive:true});
-  body.addEventListener('touchend',e=>{const t=e.changedTouches[0];const dx=t.clientX-mediaState.touchX,dy=t.clientY-mediaState.touchY;if(Math.abs(dx)>52&&Math.abs(dx)>Math.abs(dy)*1.35){e.preventDefault();stepMedia(dx<0?1:-1)}},{passive:false});
+  body.addEventListener('touchend',e=>{if(mediaState.cropActive)return;const t=e.changedTouches[0];const dx=t.clientX-mediaState.touchX,dy=t.clientY-mediaState.touchY;if(Math.abs(dx)>52&&Math.abs(dx)>Math.abs(dy)*1.35){e.preventDefault();stepMedia(dx<0?1:-1)}},{passive:false});
 }
 setupModalGestures();
 document.addEventListener('keydown',e=>{
   const modalOpen=$('#modal')?.classList.contains('show');
   if(modalOpen){
+    if(mediaState.cropActive)return;
     if(e.key==='Escape'){e.preventDefault();closeModal();return}
     if((e.key==='ArrowLeft'||e.key==='ArrowRight')&&!isTypingTarget(document.activeElement)){
       if(mediaState.kind==='image'||e.shiftKey){e.preventDefault();stepMedia(e.key==='ArrowRight'?1:-1);return}
@@ -1716,7 +1761,11 @@ function renderListPreview(card){
   sidePreview.querySelector('.side-title-text').textContent=name;
   const body=sidePreview.querySelector('.side-content');
   const mode=m=>{body.className='side-content '+m};
-  if(kind==='image'){mode('media');body.innerHTML=`<div class="side-fit-bg" style="background-image:url('${url.replace(/'/g,"%27")}')"></div>`}
+  if(kind==='image'){mode('media');body.innerHTML=`<div class="side-fit-bg" style="background-image:url('${url.replace(/'/g,"%27")}')"></div>`;
+    const open=document.createElement('button');open.className='btn small';open.textContent='Open / Crop';
+    open.addEventListener('click',()=>openPreview('image',url,name,rel));
+    sidePreview.querySelector('.side-nav.top')?.prepend(open);
+  }
   else if(kind==='video'){mode('media video');body.innerHTML=`<div class="side-video-fit"><video class="side-video" src="${url}" controls preload="metadata" playsinline></video></div>`}
   else if(kind==='audio'){mode('media audio');body.innerHTML=`<audio class="side-audio" src="${url}" controls preload="metadata"></audio>`}
   else if(card.dataset.preview==='1'){mode('doc');body.innerHTML=`<iframe class="side-frame" src="${previewUrl(rel)}"></iframe>`}
@@ -2549,20 +2598,14 @@ class Handler(SimpleHTTPRequestHandler):
             if conflict == "ask":
                 drain_stream(self.rfile, total)
                 self.send_json(409, {"error": "exists", "file": rel_url_for_path(dest)}); return
-            if conflict == "rename":
-                stem, suffix = dest.stem, dest.suffix
-                parent = dest.parent
-                for i in range(1, 10000):
-                    cand = parent / f"{stem} ({i}){suffix}"
-                    if not cand.exists():
-                        dest = cand.resolve()
-                        break
+            # Rename is finalized *after* receiving the complete upload.
+            # An exists() / os.replace() pair is not atomic under concurrency.
 
         tmp: Optional[Path] = None
         written = 0
         remaining = total
         try:
-            fd, tmp_name = tempfile.mkstemp(prefix=dest.name + ".uploading-", dir=str(dest.parent))
+            fd, tmp_name = tempfile.mkstemp(prefix=".lantern-uploading-", dir=str(dest.parent))
             tmp = Path(tmp_name)
             with os.fdopen(fd, "wb") as f:
                 while remaining > 0:
@@ -2572,10 +2615,38 @@ class Handler(SimpleHTTPRequestHandler):
                     f.write(chunk)
                     written += len(chunk)
                     remaining -= len(chunk)
+                f.flush()
+                os.fsync(f.fileno())
             if written != total or remaining != 0:
                 raise BadRequest(f"incomplete upload: got {written} of {total} bytes")
-            os.replace(tmp, dest)
-            tmp = None
+            if conflict == "overwrite":
+                # An explicit overwrite is the only policy allowed to replace.
+                os.replace(tmp, dest)
+                tmp = None
+            else:
+                # Atomic no-clobber publication: bytes are complete in a
+                # same-directory temp; os.link never replaces an existing name.
+                # On an unsupported filesystem, fail closed (not os.replace).
+                for index in range(10000 if conflict == "rename" else 1):
+                    candidate = dest if index == 0 else dest.with_name(f"{dest.stem} ({index}){dest.suffix}")
+                    try:
+                        os.link(tmp, candidate)
+                    except FileExistsError:
+                        if conflict == "skip":
+                            self.send_json(200, {"ok": True, "skipped": True,
+                                                 "file": rel_url_for_path(dest), "reason": "exists"}); return
+                        if conflict == "ask":
+                            self.send_json(409, {"error": "exists", "file": rel_url_for_path(dest)}); return
+                        continue
+                    except OSError as exc:
+                        raise BadRequest(f"atomic no-overwrite upload unsupported on this filesystem: {exc}") from exc
+                    dest = candidate
+                    tmp.unlink()
+                    tmp = None
+                    break
+                else:
+                    self.send_json(409, {"error": "all rename candidates exist",
+                                         "file": rel_url_for_path(dest)}); return
         finally:
             if tmp is not None:
                 try:
@@ -2909,7 +2980,7 @@ class Handler(SimpleHTTPRequestHandler):
 </div>
 <input id="fileInput" class="hidden" type="file" multiple>
 <input id="folderInput" class="hidden" type="file" webkitdirectory directory multiple>
-<div id="modal" class="modal" onclick="if(event.target===this)closeModal()"><div class="modal-box"><div class="modal-head"><div class="modal-title-wrap"><div id="modalTitle" class="modal-title"></div><div id="modalMeta" class="modal-meta"></div></div><div class="actions"><button id="modalPrevBtn" class="btn small" onclick="stepMedia(-1,event)" title="Trước">←</button><button id="modalNextBtn" class="btn small" onclick="stepMedia(1,event)" title="Tiếp">→</button><button class="btn small" onclick="closeModal()">✕</button></div></div><div class="modal-stage"><button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Trước">‹</button><div id="modalBody" class="modal-body"></div><button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Tiếp">›</button></div></div></div>
+<div id="modal" class="modal" onclick="if(event.target===this)closeModal()"><div class="modal-box"><div class="modal-head"><div class="modal-title-wrap"><div id="modalTitle" class="modal-title"></div><div id="modalMeta" class="modal-meta"></div></div><div class="actions"><button id="modalCropBtn" class="btn small hidden" onclick="cropViewedImage()" title="Crop into a new image">✂ Crop</button><button id="modalPrevBtn" class="btn small" onclick="stepMedia(-1,event)" title="Trước">←</button><button id="modalNextBtn" class="btn small" onclick="stepMedia(1,event)" title="Tiếp">→</button><button class="btn small" onclick="closeModal()">✕</button></div></div><div class="modal-stage"><button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Trước">‹</button><div id="modalBody" class="modal-body"></div><button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Tiếp">›</button></div></div></div>
 <div id="uploadModal" class="upload-backdrop" onclick="if(event.target===this)closeUploadDialog()">
   <div class="upload-box">
     <div class="upload-head"><div><div class="upload-title">⬆️ Upload vào: /{html_escape(rel)}</div><div class="sub">Kéo file/folder vào vùng dấu +, hoặc bấm chọn file/folder. Folder drag/drop tốt nhất trên Chrome/Edge.</div></div><button class="btn small" onclick="closeUploadDialog()">✕</button></div>

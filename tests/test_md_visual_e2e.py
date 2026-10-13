@@ -405,11 +405,15 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             self.assertEqual(list(assets.glob("cropped-*.png")), [])
             image.click()
             page.get_by_role("button", name="Crop image", exact=True).click()
-            canvas = page.locator(".md-image-crop-canvas")
-            box = canvas.bounding_box()
-            page.mouse.move(box["x"] + box["width"] * .15, box["y"] + box["height"] * .15)
+            # Drag a real lower-right Cropper handle; unlike the old
+            # screen-grab implementation, the rectangle remains editable.
+            handle = page.locator("cropper-handle[action='se-resize']")
+            handle.wait_for()
+            box = handle.bounding_box()
+            self.assertIsNotNone(box)
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
             page.mouse.down()
-            page.mouse.move(box["x"] + box["width"] * .65, box["y"] + box["height"] * .65, steps=8)
+            page.mouse.move(box["x"] + box["width"] / 2 - 3, box["y"] + box["height"] / 2 - 3, steps=9)
             page.mouse.up()
             dialog.get_by_role("button", name="Apply crop").click()
             page.wait_for_function(
@@ -435,6 +439,48 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             self.assertEqual(errors, [])
         finally:
             context.close()
+
+    def test_crop_conflicting_markdown_save_keeps_asset_and_rejects_overwrite(self):
+        from tests.test_image_cache_e2e import png_bytes
+        folder=self.root/"crop-conflict"
+        assets=folder/"assets"
+        assets.mkdir(parents=True,exist_ok=True)
+        (assets/"original.png").write_bytes(png_bytes((19,90,155),size=90))
+        doc=folder/"shared.md"
+        doc.write_text("# Shared\n\n![Picture](assets/original.png)\n\nInitial text.\n",encoding="utf-8")
+        ca=self.browser.new_context()
+        cb=self.browser.new_context()
+        try:
+            a=ca.new_page()
+            b=cb.new_page()
+            url=self.base+"/api/plugin/preview?p=crop-conflict%2Fshared.md"
+            a.goto(url);a.get_by_role("button",name="Edit visually").click()
+            image=a.locator(".md-visual-host img:not(.ProseMirror-separator)").first
+            image.wait_for(timeout=20000);image.click()
+            a.get_by_role("button",name="Crop image",exact=True).click()
+            a.get_by_role("dialog",name="Crop image").wait_for(timeout=15000)
+            a.locator("cropper-selection").wait_for(timeout=15000)
+            b.goto(url);b.get_by_role("button",name="Source",exact=True).click()
+            source=b.get_by_role("textbox",name="Markdown source")
+            source.wait_for(timeout=15000)
+            source.fill("# Shared\n\n![Picture](assets/original.png)\n\nChanged by client B.\n")
+            b.keyboard.press("Control+s")
+            b.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=18000)
+            a.get_by_role("dialog",name="Crop image").get_by_role("button",name="Apply crop").click()
+            a.wait_for_function(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown().includes('assets/cropped-')",
+                timeout=18000)
+            a.locator(".md-visual-status").filter(has_text=re.compile(r"^Conflict")).wait_for(timeout=18000)
+            saved=doc.read_text(encoding="utf-8")
+            self.assertIn("Changed by client B.",saved)
+            self.assertIn("assets/original.png",saved)
+            self.assertNotIn("assets/cropped-",saved)
+            files=list(assets.glob("cropped-*.png"))
+            self.assertEqual(len(files),1,files)
+            self.assertEqual(files[0].read_bytes()[:8],b"\x89PNG\r\n\x1a\n")
+            self.assertTrue(a.evaluate("() => window.__lanternMdVisual.state.conflict"))
+        finally:
+            ca.close();cb.close()
 
     def test_crop_paged_visual_preserves_unedited_sections(self):
         from tests.test_image_cache_e2e import png_bytes
@@ -512,7 +558,10 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             image.wait_for(timeout=15000)
             image.click()
             page.get_by_role("button", name="Crop image", exact=True).click()
-            page.get_by_role("dialog", name="Crop image").get_by_role("button", name="Delete image").click()
+            # Delete remains Markdown-only: it is NOT part of the shared crop dialog.
+            page.get_by_role("dialog", name="Crop image").get_by_role("button", name="Cancel").click()
+            image.click()
+            page.get_by_role("button", name="Delete image", exact=True).click()
             page.wait_for_function(
                 "() => !window.__lanternMdPaged.currentText().includes('assets/existing.png')",
                 timeout=12000)

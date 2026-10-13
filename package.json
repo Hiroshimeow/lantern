@@ -11,6 +11,7 @@
     "@milkdown/crepe": "7.22.2",
     "@milkdown/kit": "7.22.2",
     "codemirror": "^6.0.2",
+    "cropperjs": "2.3.0",
     "esbuild": "0.28.2",
     "markdown-it": "^14.3.1"
   }

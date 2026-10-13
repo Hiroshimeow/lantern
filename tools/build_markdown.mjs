@@ -22,6 +22,21 @@ await build({
   sourcemap: false,
   logLevel: 'info',
 });
+// Shared Cropper UI is an independent ES module loaded only when a user crops.
+// The media viewer must never load the 2.7 MB Milkdown editor.
+const imageCropOut = path.join(vendor, 'lantern-image-crop.min.js');
+await build({
+  entryPoints: [path.join(root, 'tools', 'image_crop_entry.js')],
+  outfile: imageCropOut,
+  bundle: true,
+  platform: 'browser',
+  format: 'esm',
+  target: ['chrome114', 'firefox115', 'safari16'],
+  minify: true,
+  legalComments: 'external',
+  sourcemap: false,
+  logLevel: 'info',
+});
 // The block lexer runs off-thread so loading a 5 MiB document never blocks typing.
 const worker = path.join(vendor, 'lantern-md-segment-worker.min.js');
 await build({
@@ -50,6 +65,7 @@ await build({
   logLevel:'info',
 });
 const artifactPaths = [out, out.replace(/\.js$/, '.css'), out + '.LEGAL.txt',
+  imageCropOut, imageCropOut + '.LEGAL.txt',
   worker, worker + '.LEGAL.txt', codeBlockOut, codeBlockOut+'.LEGAL.txt'];
 const artifacts = {};
 for (const file of artifactPaths) {
@@ -59,7 +75,7 @@ for (const file of artifactPaths) {
   }
 }
 fs.writeFileSync(path.join(vendor, 'lantern-crepe.manifest.json'), JSON.stringify({
-  dependencies: {'@milkdown/crepe':'7.22.2', esbuild:'0.28.2', 'markdown-it':'14.3.1'},
+  dependencies: {'@milkdown/crepe':'7.22.2', esbuild:'0.28.2', 'markdown-it':'14.3.1',cropperjs:'2.3.0'},
   artifacts,
 }, null, 2) + '\n');
 console.log('Lantern Crepe offline bundle:', artifacts);
