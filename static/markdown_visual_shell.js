@@ -10,6 +10,9 @@
 
   const path = trigger.getAttribute('data-path');
   const nonce = document.currentScript?.nonce || '';
+  // Files near 41 KiB fit in one editor; retain paged editing for larger
+  // documents to cap ProseMirror work and preserve byte-exact page boundaries.
+  const FULL_VISUAL_LIMIT_BYTES = 64 * 1024;
   const root = document.querySelector('.content');
   // Exactly one authoritative mode. The legacy active getter remains for
   // browser tests and for the common save/draft path in either editor.
@@ -45,6 +48,7 @@
   };
 
   // Browser-local crash recovery: retain the unsaved revision even if FJP/LAN disconnects.
+  const draftWrites = new Set();
   const drafts = {
     async store(mode, data) {
       if (!globalThis.indexedDB) return null;
@@ -60,26 +64,40 @@
           const storage = transaction.objectStore('drafts');
           let op;
           if (mode === 'get') op = storage.get(key);
-          else if (mode === 'delete') op = storage.delete(key);
-          else op = storage.put(data, key);
-          op.onsuccess = () => resolve(op.result);
+          else if (mode === 'delete') {
+            storage.delete('paged:' + key); // Old 32-KiB paged drafts for this same document.
+            op = storage.delete(key);
+          } else op = storage.put(data, key);
+          let result;
+          op.onsuccess = () => { result = op.result; };
           op.onerror = () => reject(op.error);
-          transaction.oncomplete = () => db.close();
-          transaction.onabort = () => db.close();
+          transaction.oncomplete = () => { db.close(); resolve(result); };
+          transaction.onabort = () => { db.close(); reject(transaction.error); };
         };
       });
     },
     async read() { return this.store('get'); },
     async write(content) {
-      return this.store('put', { content, version: view.version, at: Date.now() });
+      const pending = this.store('put', { content, version: view.version, at: Date.now() });
+      draftWrites.add(pending);
+      try { return await pending; }
+      finally { draftWrites.delete(pending); }
     },
-    async clear() { return this.store('delete'); },
+    async clear() {
+      // A pending visibility/idle write must not resurrect a discarded draft.
+      await Promise.allSettled([...draftWrites]);
+      return this.store('delete');
+    },
   };
   const getEditorText = () => view.instance?.getMarkdown() || '';
+  // HTML textareas normalize CRLF/CR to LF when read. This is not a user edit,
+  // so compare against the normalized baseline without rewriting disk bytes.
+  const matchesLastSaved = text => text === (view.mode === 'source'
+    ? view.lastSaved.replace(/\r\n?/g, '\n') : view.lastSaved);
   const saveDraft = async () => {
     if (!view.active || !view.instance) return true;
     const text = getEditorText();
-    if (text === view.lastSaved && !view.dirty) return true;
+    if (matchesLastSaved(text)) return true;
     try { await drafts.write(text); return true; }
     catch {
       status('Local draft storage unavailable. Keep this editor open or download the draft.', 'error');
@@ -110,7 +128,7 @@
     const observedRevision = view.revision;
     view.checkTimer = setTimeout(() => {
       if (!view.active || !view.instance || observedRevision !== view.revision) return;
-      if (getEditorText() === view.lastSaved) {
+      if (matchesLastSaved(getEditorText())) {
         view.dirty = false;
         clearTimeout(view.draftTimer);
         clearTimeout(view.saveTimer);
@@ -247,7 +265,7 @@
       const h = document.createElement('h3');
       h.textContent = label;
       const pre = document.createElement('pre');
-      pre.textContent = value.length > 30000 ? value.slice(0, 30000) + '\n… (truncated comparison)' : value;
+      pre.textContent = value.length > FULL_VISUAL_LIMIT_BYTES ? value.slice(0, FULL_VISUAL_LIMIT_BYTES) + '\n… (truncated comparison)' : value;
       panel.append(h, pre);
       contents.append(panel);
     }
@@ -276,7 +294,7 @@
     }
     if (view.saving) { view.requestAgain = true; return; }
     const text = getEditorText();
-    if (text === view.lastSaved) {
+    if (matchesLastSaved(text)) {
       view.dirty = false;
       await drafts.clear().catch(() => {});
       if (manual) status('Already saved');
@@ -333,7 +351,9 @@
   async function switchEditor(kind) {
     if (!view.active || view.loading || view.saving || kind === view.mode) return;
     const contentNow = getEditorText();
-    const wasDirty = view.dirty || contentNow !== view.lastSaved;
+    // Milkdown may emit a mount transaction without changing Markdown.
+    // Compare content, not its transient dirty flag, before switching modes.
+    const wasDirty = !matchesLastSaved(contentNow);
     // Milkdown can normalize raw Markdown, including HTML comments and tables.
     // Never reinterpret an unsaved exact Source draft without a versioned save.
     if (kind === 'visual' && view.mode === 'source' && wasDirty) {
@@ -342,7 +362,7 @@
     }
     // Never open a multi-megabyte document in the full Milkdown tree.
     // Source -> Visual goes through the existing section-indexed editor.
-    if (kind === 'visual' && new Blob([contentNow]).size > 32 * 1024) {
+    if (kind === 'visual' && new Blob([contentNow]).size > FULL_VISUAL_LIMIT_BYTES) {
       if (wasDirty) {
         status('Save Source before switching to section-based Visual Edit. Your draft is unchanged.', 'warn');
         return;
@@ -416,18 +436,32 @@
 
   async function close() {
     if (!view.active || view.saving || view.loading) return;
-    if (view.dirty && !confirm('Unsaved changes will remain as a local draft. Show the last saved Preview?')) return;
-    if (view.dirty && !(await saveDraft())) return;
+    const unsaved = !matchesLastSaved(getEditorText());
+    if (unsaved && !confirm('Discard unsaved changes and return to Preview?')) return;
     clearTimeout(view.saveTimer);
     clearTimeout(view.draftTimer);
     clearTimeout(view.checkTimer);
+    // Stop new draft writes while waiting for any in-flight writes to finish.
+    const previousMode = view.mode;
+    view.mode = 'preview';
+    view.loading = true;
+    restoreButtons();
+    try { await drafts.clear(); }
+    catch {
+      view.mode = previousMode;
+      view.loading = false;
+      restoreButtons();
+      status('Cannot clear local draft. Keep editing or download a copy before closing.', 'error');
+      return;
+    }
     const y = scrollY;
     await view.instance?.destroy?.();
     view.instance = null;
     view.host?.remove();
     view.host = null;
     view.status = null;
-    view.mode = 'preview';
+    view.dirty = false;
+    view.loading = false;
     preview.hidden = false;
     restoreButtons();
     // Preview is server-rendered. Reload only when this tab saved new source;
@@ -455,7 +489,7 @@
     try {
       const start = performance.now();
       const doc = await api('/api/md/document?p=' + encodeURIComponent(path));
-      if(kind === 'visual' && doc.bytes > 32 * 1024){
+      if(kind === 'visual' && doc.bytes > FULL_VISUAL_LIMIT_BYTES){
         const loadPaged = () => new Promise((resolve,reject)=>{
           if(window.LanternPagedEditor)return resolve(window.LanternPagedEditor);
           const script=document.createElement('script');
@@ -489,10 +523,15 @@
       view.conflict = false;
       view.dirty = false;
       view.approvedReformat = false;
-      if (recovered?.mode !== 'paged' && typeof recovered?.content === 'string'
-        && recovered.content !== doc.content && confirm('An unsaved Markdown draft was found in this browser. Restore it?')) {
-        contents = recovered.content;
-        if (recovered.version !== doc.version) view.conflict = true;
+      if (recovered?.mode !== 'paged' && typeof recovered?.content === 'string') {
+        if (recovered.content !== doc.content &&
+            confirm('An unsaved Markdown draft was found in this browser. Restore it?')) {
+          contents = recovered.content;
+          if (recovered.version !== doc.version) view.conflict = true;
+        } else {
+          // A declined or already-saved draft must not be offered again.
+          await drafts.clear().catch(() => {});
+        }
       }
       const editorHost = renderToolbar(kind, contents);
       // Source needs no Milkdown runtime; both modes use the same versioned save.
@@ -550,12 +589,12 @@
     void save(true);
   });
   window.addEventListener('beforeunload', e => {
-    if (!view.active || !view.dirty) return;
+    if (!view.active || matchesLastSaved(getEditorText())) return;
     e.preventDefault();
     e.returnValue = '';
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && view.dirty) void saveDraft();
+    if (document.hidden && view.active && !matchesLastSaved(getEditorText())) void saveDraft();
   });
   const scrollKey = 'lantern-md-scroll:' + path;
   const priorScroll = sessionStorage.getItem(scrollKey);

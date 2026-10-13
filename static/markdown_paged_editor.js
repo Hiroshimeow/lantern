@@ -45,6 +45,7 @@
       this.dirty=false; this.saving=false; this.conflict=false; this.revision=0;
       this.saveTimer=0; this.draftTimer=0; this.changedTimer=0; this.reindex=null;
       this.active=false; this.loadingPage=false; this.savePromise=null;
+      this.pendingDraftWrites=new Set();
       this.draftKey='paged:'+location.origin+':'+path;
       this.onLeave=this.onLeave.bind(this); this.onKey=this.onKey.bind(this);
       this.onVisibility=this.onVisibility.bind(this);
@@ -59,6 +60,11 @@
       return this.rich ? this.rich.getMarkdown() : '';
     }
     pageSource() { return this.source.slice(this.page.start,this.page.end); }
+    hasUnsaved() { return !!this.page && this.currentText() !== this.lastSaved; }
+    async clearDraft() {
+      await Promise.allSettled([...this.pendingDraftWrites]);
+      await this.storeDraft('delete');
+    }
     workerIndex(source) {
       if (!this.worker) {
         this.worker=new Worker(WORKER_URL);
@@ -112,26 +118,32 @@
           const db=request.result;
           const txn=db.transaction('drafts',mode==='get'?'readonly':'readwrite');
           const store=txn.objectStore('drafts');
-          const operation=mode==='get'?store.get(this.draftKey):
-            mode==='delete'?store.delete(this.draftKey):store.put(value,this.draftKey);
-          operation.onsuccess=()=>resolve(operation.result);
+          let operation;
+          if (mode==='get') operation=store.get(this.draftKey);
+          else if (mode==='delete') {
+            store.delete(location.origin+':'+this.path); // Stale full-mode draft.
+            operation=store.delete(this.draftKey);
+          } else operation=store.put(value,this.draftKey);
+          let result;
+          operation.onsuccess=()=>{result=operation.result;};
           operation.onerror=()=>reject(operation.error);
-          txn.oncomplete=()=>db.close();
-          txn.onabort=()=>db.close();
+          txn.oncomplete=()=>{db.close();resolve(result);};
+          txn.onabort=()=>{db.close();reject(txn.error);};
         };
       });
     }
     async draftWrite() {
-      if(!this.active || !this.dirty || !this.page) return;
+      if(!this.active || this.loadingPage || !this.hasUnsaved()) return;
       const current=this.currentText();
-      if(current===this.lastSaved)return;
-      try {
-        await this.storeDraft('put',{
-          mode:'paged', content:current, version:this.version,
-          original:this.pageOriginal, start:this.page.start,
-          end:this.page.end, at:Date.now(),
-        });
-      } catch { this.status('Cannot store local draft; keep this tab open until saved.','error'); }
+      const pending=this.storeDraft('put',{
+        mode:'paged', content:current, version:this.version,
+        original:this.pageOriginal, start:this.page.start,
+        end:this.page.end, at:Date.now(),
+      });
+      this.pendingDraftWrites.add(pending);
+      try { await pending; }
+      catch { this.status('Cannot store local draft; keep this tab open until saved.','error'); }
+      finally { this.pendingDraftWrites.delete(pending); }
     }
     changed(generation) {
       if(generation!==this.generation||!this.active)return;
@@ -330,7 +342,7 @@
           this.roundtripSafe=true;this.approved=false;
           if(this.revision===revision) {
             this.dirty=false;
-            await this.storeDraft('delete').catch(()=>{});
+            await this.clearDraft().catch(()=>{});
             this.status('Saved ✓');
           } else {
             this.dirty=true;
@@ -362,7 +374,7 @@
       if(!Number.isFinite(num))return false;
       if(num===this.pageNumber&&!restore)return true;
       if(this.saving&&!await this.savePromise)return false;
-      if(this.dirty&&!await this.save(true))return false;
+      if(this.hasUnsaved()&&!await this.save(true))return false;
       clearTimeout(this.saveTimer);clearTimeout(this.draftTimer);clearTimeout(this.changedTimer);
       this.loadingPage=true;this.updateNav();
       try {
@@ -446,28 +458,37 @@
       setTimeout(()=>URL.revokeObjectURL(url),3000);
     }
     onLeave(event){
-      if(this.active&&this.dirty){event.preventDefault();event.returnValue=LEAVE_WARNING;}
+      if(this.active&&this.hasUnsaved()){event.preventDefault();event.returnValue=LEAVE_WARNING;}
     }
     onKey(event){
       if(!this.active||!(event.ctrlKey||event.metaKey)||event.key.toLowerCase()!=='s')return;
       event.preventDefault();void this.save(true);
     }
     onVisibility(){
-      if(document.hidden&&this.dirty)void this.draftWrite();
+      if(document.hidden&&this.hasUnsaved())void this.draftWrite();
     }
     async close(destination='preview'){
-      if(!this.active||this.saving)return false;
-      if(destination==='source' && (this.dirty || this.currentText()!==this.lastSaved)){
+      if(!this.active||this.saving||this.loadingPage)return false;
+      const unsaved=this.hasUnsaved();
+      if(destination==='source' && unsaved){
         // Source will load the server's version, not an unsaved paged section.
         // Keep this editor in place instead of hiding its live draft.
         this.status('Save this section before switching to Source; unsaved text stays here.','warn');
         return false;
       }
-      if(this.dirty&&!confirm(LEAVE_WARNING+' Return to preview?'))return false;
-      if(this.dirty)await this.draftWrite();
-      this.active=false;
+      if(unsaved&&!confirm('Discard unsaved changes and return to Preview?'))return false;
       clearTimeout(this.saveTimer);clearTimeout(this.draftTimer);
       clearTimeout(this.changedTimer);clearTimeout(this.headingSearchTimer);
+      // Existing navigation guard blocks a second mode switch until cleanup
+      // finishes; a late visibility event must not recreate the draft.
+      this.loadingPage=true;this.updateNav();
+      try { await this.clearDraft(); }
+      catch {
+        this.loadingPage=false;this.updateNav();
+        this.status('Cannot clear local draft. Keep editing or download a copy before closing.','error');
+        return false;
+      }
+      this.active=false;
       removeEventListener('beforeunload',this.onLeave);
       document.removeEventListener('keydown',this.onKey);
       document.removeEventListener('visibilitychange',this.onVisibility);
@@ -495,8 +516,11 @@
         this.index=index;this.engine=engine;
         this.initUI();this.preview.hidden=true;this.active=true;
         window.__lanternMdPaged=this;
-        const restored=draft?.mode==='paged' && typeof draft.content==='string' ?
-          (confirm('Unsaved Markdown draft found. Restore it?')?draft:null):null;
+        let restored=null;
+        if(draft?.mode==='paged' && typeof draft.content==='string') {
+          if(confirm('Unsaved Markdown draft found. Restore it?')) restored=draft;
+          else await this.clearDraft();
+        }
         let initial=0;
         if(restored){
           initial=index.pages.findIndex(p=>p.start===restored.start);

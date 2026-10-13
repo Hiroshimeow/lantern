@@ -99,7 +99,7 @@ class PagedVisualE2E(unittest.TestCase):
         (assets / 'wide.svg').write_text(
             '<svg xmlns="http://www.w3.org/2000/svg" width="1850" height="900">'
             '<rect width="1850" height="900" fill="navy"/></svg>', encoding='utf-8')
-        original = b'# Pictures\n\n![Picture](assets/wide.svg)\n\n' + sample(700)
+        original = b'# Pictures\n\n![Picture](assets/wide.svg)\n\n' + sample(1500)
         (sub / 'large.md').write_bytes(original)
         context = self.browser.new_context(viewport={'width':800,'height':700})
         try:

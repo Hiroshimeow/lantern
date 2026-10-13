@@ -542,7 +542,7 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
         (assets / "existing.png").write_bytes(original_image)
         document = folder / "paged.md"
         content = "# Big\n\n![Keep asset](assets/existing.png)\n\n" + "".join(
-            f"## Section {i}\n\n" + "Text " * 110 + "\n\n" for i in range(80))
+            f"## Section {i}\n\n" + "Text " * 110 + "\n\n" for i in range(140))
         self.assertGreater(len(content.encode("utf-8")), 32 * 1024)
         document.write_text(content, encoding="utf-8")
         context = self.browser.new_context()
@@ -574,7 +574,9 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
                 review.click()
             except Exception:
                 pass
-            page.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=18000)
+            # Autosave/mount transactions may replace the transient Saved label
+            # with Ready. Verify committed source and clean versioned state.
+            page.wait_for_function("() => {const p=window.__lanternMdPaged;return !!p && !p.saving && !p.dirty && !p.source.includes('assets/existing.png');}",timeout=18000)
             self.assertEqual((assets / "existing.png").read_bytes(), original_image)
             self.assertEqual(deletes, [])
             self.assertNotIn("![Keep asset]", document.read_text(encoding="utf-8"))

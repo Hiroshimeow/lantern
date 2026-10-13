@@ -168,7 +168,7 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
-    def test_unsaved_source_returns_preview_with_local_draft(self):
+    def test_unsaved_source_returns_preview_and_discards_draft(self):
         path = self.root / "draft.md"
         original = "# Draft\n\nOriginal\n"
         path.write_text(original, encoding="utf-8")
@@ -193,17 +193,17 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), original)
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for(timeout=14000)
-            self.assertIn("Uncommitted draft", area.input_value())
-            self.assertTrue(page.evaluate("window.__lanternMdVisual.state.dirty"))
+            self.assertEqual(area.input_value(), original)
+            self.assertFalse(page.evaluate("window.__lanternMdVisual.state.dirty"))
         finally:
             context.close()
 
     def test_large_source_to_paged_visual_and_back(self):
         path = self.root / "large-switch.md"
         original = "# Large switch\n\n" + "".join(
-            "## Section " + str(i) + "\n\n" + ("A" * 450) + "\n\n" for i in range(120)
+            "## Section " + str(i) + "\n\n" + ("A" * 450) + "\n\n" for i in range(170)
         )
-        self.assertGreater(len(original), 32 * 1024)
+        self.assertGreater(len(original), 64 * 1024)
         path.write_text(original, encoding="utf-8")
         context = self.browser.new_context()
         page = context.new_page()
@@ -234,7 +234,7 @@ class MarkdownModesE2E(unittest.TestCase):
     def test_paged_unsaved_section_cannot_disappear_into_source(self):
         path = self.root / "paged-dirty-switch.md"
         original = "# Paged switch\n\nFirst paragraph.\n\n" + "".join(
-            "## Section " + str(i) + "\n\n" + ("A" * 450) + "\n\n" for i in range(120)
+            "## Section " + str(i) + "\n\n" + ("A" * 450) + "\n\n" for i in range(170)
         )
         path.write_text(original, encoding="utf-8")
         context = self.browser.new_context()
@@ -276,6 +276,221 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             page.get_by_role("textbox", name="Markdown source").wait_for(timeout=17000)
             self.assertIn("DRAFT", page.get_by_role("textbox", name="Markdown source").input_value())
+        finally:
+            context.close()
+
+    def test_41_kib_document_opens_entire_visual_not_section_editor(self):
+        path = self.root / "41k-complete.md"
+        parts = ["# Complete visual file\n\n"]
+        for i in range(400):
+            part = f"## Section {i}\n\nParagraph {i}: " + (
+                "mixed **bold** normal text and Unicode tiếng Việt. " * 3) + "\n\n"
+            if len("".join(parts + [part]).encode("utf-8")) >= 41*1024:
+                break
+            parts.append(part)
+        original = "".join(parts) + "\nEND-OF-41K-DOCUMENT\n"
+        self.assertGreater(len(original.encode("utf-8")), 40*1024)
+        self.assertLess(len(original.encode("utf-8")), 43*1024)
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1200, "height": 850})
+        page = context.new_page()
+        saves = []
+        page.on("request", lambda request: saves.append(request.url)
+                if "/api/md/save" in request.url else None)
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=41k-complete.md", wait_until="domcontentloaded")
+            self.assertIn("END-OF-41K-DOCUMENT",page.locator("article.md-preview").inner_text())
+            page.get_by_role("button",name="Edit visually",exact=True).click()
+            page.wait_for_function("""() => window.__lanternMdVisual.state.mode !== 'preview'
+                && !window.__lanternMdVisual.state.loading""",timeout=30000)
+            self.assertEqual(page.evaluate("window.__lanternMdVisual.state.mode"), "visual")
+            self.assertFalse(page.evaluate("!!window.__lanternMdPaged?.active"))
+            editor=page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=18000)
+            self.assertIn("END-OF-41K-DOCUMENT", editor.inner_text())
+            self.assertIn("Section 0",editor.inner_text())
+            # Read-only visual mounting must not write even after autosave idle.
+            page.wait_for_timeout(2850)
+            self.assertEqual(path.read_text(encoding="utf-8"),original)
+            self.assertEqual(saves,[])
+            print("MD_41K_FULL_VISUAL_LOAD_MS",page.evaluate(
+                "window.__lanternMdMetrics.loadMs"),flush=True)
+        finally:
+            context.close()
+
+    def test_41_kib_visual_conversion_review_shows_complete_end(self):
+        path=self.root/"41k-review.md"
+        parts=["# Conversion review\n\n| Name | Value |\n| - | :-: |\n| a | b |\n\n"]
+        for i in range(400):
+            part=f"## Heading {i}\n\nText with **bold** {i} " + (
+                "and regular text words with links [here](#anchor). " * 3) + "\n\n"
+            if len("".join(parts+[part]).encode("utf-8"))>=41*1024:
+                break
+            parts.append(part)
+        original="".join(parts)+"\nREVIEW-FILE-END-MARKER\n"
+        self.assertGreater(len(original.encode()),40*1024)
+        self.assertLess(len(original.encode()),43*1024)
+        path.write_text(original,encoding="utf-8")
+        context=self.browser.new_context()
+        page=context.new_page()
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=41k-review.md",wait_until="domcontentloaded")
+            page.get_by_role("button",name="Edit visually",exact=True).click()
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.mode === 'visual' && !window.__lanternMdVisual.state.loading",
+                timeout=30000)
+            self.assertFalse(page.evaluate("window.__lanternMdVisual.state.roundtripSafe"))
+            para=page.locator(".md-visual-host .ProseMirror p").first
+            para.click()
+            page.keyboard.press("End")
+            page.keyboard.type(" EDIT")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown() !== window.__lanternMdVisual.state.lastSaved",
+                timeout=5000)
+            page.get_by_role("button",name="Save",exact=True).click()
+            review=page.locator("dialog.md-format-review")
+            review.wait_for(timeout=15000)
+            panels=review.locator("pre")
+            self.assertEqual(panels.count(),2)
+            self.assertIn("REVIEW-FILE-END-MARKER",panels.nth(0).inner_text())
+            self.assertIn("REVIEW-FILE-END-MARKER",panels.nth(1).inner_text())
+            review.get_by_role("button",name="Keep original / Cancel save").click()
+            self.assertEqual(path.read_text(encoding="utf-8"),original)
+        finally:
+            context.close()
+
+    def test_confirmed_exit_discards_source_draft_instead_of_caching_it(self):
+        path=self.root/"discard-source.md"
+        original="# Source discard\n\nKept disk version.\n"
+        path.write_text(original,encoding="utf-8")
+        context=self.browser.new_context()
+        page=context.new_page()
+        prompts=[]
+        page.on("dialog",lambda dlg: (prompts.append(dlg.message),dlg.accept()))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=discard-source.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            area=page.get_by_role("textbox",name="Markdown source")
+            area.fill("# Source discard\n\nUNSAVED-CACHE-MARKER\n")
+            key=self.base+":discard-source.md"
+            page.wait_for_function("""key=>new Promise(resolve=>{
+                const req=indexedDB.open('lantern-md-drafts',1);
+                req.onsuccess=()=>{
+                  const db=req.result;
+                  const tx=db.transaction('drafts','readonly');
+                  const get=tx.objectStore('drafts').get(key);
+                  get.onsuccess=()=>{resolve(!!get.result?.content?.includes('UNSAVED-CACHE-MARKER'));db.close()};
+                };
+            })""",arg=key,timeout=8000)
+            page.get_by_role("button",name="Preview",exact=True).click()
+            page.locator("article.md-preview").wait_for(state="visible",timeout=12000)
+            page.wait_for_timeout(1200)
+            recovered=page.evaluate("""key=>new Promise(resolve=>{
+                const req=indexedDB.open('lantern-md-drafts',1);
+                req.onsuccess=()=>{
+                  const db=req.result;const tx=db.transaction('drafts','readonly');
+                  const get=tx.objectStore('drafts').get(key);
+                  get.onsuccess=()=>{resolve(get.result||null);db.close()};
+                };
+            })""",arg=key)
+            self.assertIsNone(recovered,"Confirmed discard must clear IndexedDB draft")
+            self.assertEqual(path.read_text(encoding="utf-8"),original)
+            page.get_by_role("button",name="Source",exact=True).click()
+            area.wait_for()
+            self.assertEqual(area.input_value(),original)
+            self.assertEqual(len(prompts),1,"Should not offer the discarded draft again")
+        finally:
+            context.close()
+
+    def test_declining_old_draft_restoration_forgets_it(self):
+        path=self.root/"declined-old-cache.md"
+        original="# Clean source\n\nReal disk content.\n"
+        path.write_text(original,encoding="utf-8")
+        context=self.browser.new_context()
+        page=context.new_page()
+        prompts=[]
+        page.on("dialog",lambda dialog:(prompts.append(dialog.message),dialog.dismiss()))
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=declined-old-cache.md")
+            key=self.base+":declined-old-cache.md"
+            page.evaluate("""key => new Promise((resolve,reject)=>{
+                const req=indexedDB.open('lantern-md-drafts',1);
+                req.onupgradeneeded=()=>req.result.createObjectStore('drafts');
+                req.onerror=()=>reject(req.error);
+                req.onsuccess=()=>{
+                  const db=req.result;
+                  const tx=db.transaction('drafts','readwrite');
+                  tx.objectStore('drafts').put({
+                    content:'# Clean source\\n\\nSTALE-CACHE-CONTENT\\n',
+                    version:'old-version',at:Date.now()},key);
+                  tx.oncomplete=()=>{db.close();resolve();};
+                  tx.onerror=()=>reject(tx.error);
+                };
+            })""",key)
+            page.get_by_role("button",name="Source",exact=True).click()
+            area=page.get_by_role("textbox",name="Markdown source")
+            area.wait_for()
+            self.assertEqual(area.input_value(),original)
+            self.assertEqual(len(prompts),1)
+            page.get_by_role("button",name="Preview",exact=True).click()
+            page.locator("article.md-preview").wait_for(state="visible")
+            page.get_by_role("button",name="Source",exact=True).click()
+            area.wait_for()
+            self.assertEqual(area.input_value(),original)
+            self.assertEqual(len(prompts),1,"Dismissed cache should not prompt again")
+        finally:
+            context.close()
+
+    def test_paged_confirmed_exit_clears_draft_and_preserves_file(self):
+        path=self.root/"discard-paged.md"
+        original="# Paged discard\n\nFirst paragraph.\n\n" + "".join(
+            f"## Part {i}\n\n" + ("Some original text. " * 32) + "\n\n"
+            for i in range(150)
+        )
+        self.assertGreater(len(original.encode("utf-8")),64*1024)
+        path.write_text(original,encoding="utf-8")
+        context=self.browser.new_context()
+        page=context.new_page()
+        prompts=[]
+        page.on("dialog",lambda dlg:(prompts.append(dlg.message),dlg.accept()))
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=discard-paged.md",wait_until="domcontentloaded")
+            # Hold backend writes so this specifically tests a dirty exit, not
+            # an autosave that happened while Playwright was waiting on IndexedDB.
+            page.route("**/api/md/save",lambda route: route.abort())
+            page.get_by_role("button",name="Edit visually",exact=True).click()
+            page.wait_for_function(
+                "() => !!window.__lanternMdPaged?.active && !window.__lanternMdPaged.loadingPage && window.__lanternMdPaged.pageNumber >= 0",
+                timeout=30000)
+            para=page.locator(".md-visual-host .ProseMirror p").first
+            para.click()
+            page.keyboard.press("End")
+            page.keyboard.type(" UNSAVED-PAGED-MARKER")
+            key="paged:"+self.base+":discard-paged.md"
+            page.wait_for_function("""key=>new Promise(resolve=>{
+                const req=indexedDB.open('lantern-md-drafts',1);
+                req.onsuccess=()=>{
+                  const db=req.result;
+                  const get=db.transaction('drafts','readonly').objectStore('drafts').get(key);
+                  get.onsuccess=()=>{resolve(!!get.result?.content?.includes('UNSAVED-PAGED-MARKER'));db.close()};
+                };
+            })""",arg=key,timeout=7000)
+            self.assertTrue(page.evaluate(
+                "() => window.__lanternMdPaged.currentText() !== window.__lanternMdPaged.lastSaved"),
+                "Changing editor text must be treated as unsaved even if the dirty flag races")
+            page.get_by_role("button",name="Preview",exact=True).click()
+            page.locator("article.md-preview").wait_for(state="visible",timeout=12000)
+            cached=page.evaluate("""key=>new Promise(resolve=>{
+                const req=indexedDB.open('lantern-md-drafts',1);
+                req.onsuccess=()=>{
+                  const db=req.result;
+                  const get=db.transaction('drafts','readonly').objectStore('drafts').get(key);
+                  get.onsuccess=()=>{resolve(get.result||null);db.close()};
+                };
+            })""",arg=key)
+            self.assertIsNone(cached)
+            self.assertEqual(path.read_text(encoding="utf-8"),original)
+            self.assertEqual(len(prompts),1)
         finally:
             context.close()
 
