@@ -96,7 +96,7 @@ class WindowsRunLauncherTests(unittest.TestCase):
         # production service, its YAML or any running terminal.
         files = (
             "lan_drive.py", "plugin.py", "lantern_terminal.py", "lantern_ws.py",
-            "lantern_scm.py", "lantern_md_editor.py", "requirements.txt",
+            "lantern_terminal_auth.py", "lantern_scm.py", "lantern_md_editor.py", "requirements.txt",
         )
         for name in files:
             shutil.copy2(ROOT / name, self.repo / name)

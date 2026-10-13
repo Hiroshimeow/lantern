@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import email.utils
 import hashlib
+import getpass
 import html
 import io
 import json
@@ -71,6 +72,7 @@ except Exception:
 from http.server import SimpleHTTPRequestHandler
 from lantern_terminal import TerminalManager
 from lantern_scm import ScmService
+from lantern_terminal_auth import TerminalAccess, hash_password, update_password_yaml
 from lantern_ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
 from lantern_md_editor import (MarkdownEditorError, read_document as read_markdown_document,
                                save_document as save_markdown_document,
@@ -157,6 +159,8 @@ class AppConfig:
     folders_first: bool = True
     search_debounce_ms: int = 240
     terminal_enabled: bool = True
+    terminal_password_hash: str = ""
+    terminal_local_bypass: bool = True
     terminal_max_sessions: int = 16
     terminal_max_buffer_chars: int = 204800
     terminal_start_height_px: int = 380
@@ -221,6 +225,7 @@ DEFAULT_CONFIG_DATA: Dict[str, Any] = {
     "folders_first": True,
     "search_debounce_ms": 240,
     "terminal_enabled": True,
+    "terminal_local_bypass": True,
     "terminal_max_sessions": 16,
     "terminal_max_buffer_chars": 204800,
     "terminal_start_height_px": 380,
@@ -292,8 +297,8 @@ def yaml_quote(value: Any) -> str:
     return f'"{text}"'
 
 
-def config_to_dict(cfg: "AppConfig") -> Dict[str, Any]:
-    return {
+def config_to_dict(cfg: "AppConfig", *, include_secrets: bool = False) -> Dict[str, Any]:
+    data = {
         "root": str(cfg.root),
         "port": cfg.port,
         "host": cfg.host,
@@ -307,6 +312,7 @@ def config_to_dict(cfg: "AppConfig") -> Dict[str, Any]:
         "folders_first": cfg.folders_first,
         "search_debounce_ms": cfg.search_debounce_ms,
         "terminal_enabled": cfg.terminal_enabled,
+        "terminal_local_bypass": cfg.terminal_local_bypass,
         "terminal_max_sessions": cfg.terminal_max_sessions,
         "terminal_max_buffer_chars": cfg.terminal_max_buffer_chars,
         "terminal_start_height_px": cfg.terminal_start_height_px,
@@ -325,11 +331,18 @@ def config_to_dict(cfg: "AppConfig") -> Dict[str, Any]:
         "upload_parallel": cfg.upload_parallel,
         "upload_conflict": cfg.upload_conflict,
     }
+    if include_secrets:
+        data["terminal_password_hash"] = cfg.terminal_password_hash
+    return data
 
 
 def write_config_file(cfg: "AppConfig") -> None:
     cfg.config_path.parent.mkdir(parents=True, exist_ok=True)
-    data = config_to_dict(cfg)
+    data = config_to_dict(cfg, include_secrets=True)
+    # An interactive local CLI may have rotated the hash since startup.
+    current = load_simple_yaml(cfg.config_path).get("terminal_password_hash")
+    if isinstance(current, str):
+        data["terminal_password_hash"] = current
     lines = [
         "# LAN Drive config - file này có thể sửa tay hoặc đổi trong UI.",
         "# Chạy: python3 lan_drive.py --config lan_drive_config.yaml",
@@ -338,7 +351,7 @@ def write_config_file(cfg: "AppConfig") -> None:
         "root", "port", "host", "title", "cache_dir",
         "show_hidden", "show_system", "default_sort", "default_view",
         "page_limit", "folders_first", "search_debounce_ms",
-        "terminal_enabled", "terminal_max_sessions", "terminal_max_buffer_chars",
+        "terminal_enabled", "terminal_password_hash", "terminal_local_bypass", "terminal_max_sessions", "terminal_max_buffer_chars",
         "terminal_start_height_px", "terminal_mobile_extra_keys",
         "thumb_fit", "folder_preview_enabled", "folder_preview_mode", "folder_preview_fit",
         "folder_preview_rotate", "folder_preview_animation", "folder_preview_interval_ms",
@@ -346,7 +359,18 @@ def write_config_file(cfg: "AppConfig") -> None:
         "upload_auto_start", "upload_parallel", "upload_conflict",
     ]:
         lines.append(f"{key}: {yaml_quote(data[key])}")
-    cfg.config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(prefix=".lantern-password-", dir=str(cfg.config_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write("\n".join(lines) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, cfg.config_path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def normalize_sort(value: Any) -> str:
@@ -401,6 +425,19 @@ def is_windows_drive_listing_request(rel: str) -> bool:
     return os.name == "nt" and rel in ("", "/") and str(CONFIG.root) in ("/", "\\")
 
 
+def is_protected_config(path: Path) -> bool:
+    candidate = path.resolve()
+    cfg = Path(getattr(CONFIG, "config_path", config_file_default_path())).resolve()
+    return candidate == cfg or candidate.name.lower() == "lan_drive_config.yaml"
+
+
+def protect_config_mutation(path: Path) -> None:
+    candidate = path.resolve()
+    cfg = Path(getattr(CONFIG, "config_path", config_file_default_path())).resolve()
+    if is_protected_config(candidate) or (candidate != CONFIG.root.resolve() and candidate in cfg.parents):
+        raise PermissionError("Lantern authentication configuration is local-only")
+
+
 def safe_join(rel_url_path: str) -> Path:
     """Map URL path to filesystem path inside CONFIG.root."""
     raw = urllib.parse.unquote(rel_url_path.split("?", 1)[0].split("#", 1)[0])
@@ -409,8 +446,8 @@ def safe_join(rel_url_path: str) -> Path:
     for part in raw.split("/"):
         if not part or part in (".", ".."):
             continue
-        if part.startswith(".lantern-uploading-"):
-            raise PermissionError("Incomplete upload is not a published file")
+        if part.startswith((".lantern-uploading-", ".lantern-password-")):
+            raise PermissionError("Internal staging files are not published")
         parts.append(part)
     candidate = CONFIG.root.joinpath(*parts).resolve()
     root = CONFIG.root.resolve()
@@ -418,6 +455,8 @@ def safe_join(rel_url_path: str) -> Path:
         candidate.relative_to(root)
     except ValueError:
         raise PermissionError("Path is outside root")
+    if is_protected_config(candidate):
+        raise PermissionError("Lantern configuration is local-only")
     return candidate
 
 
@@ -470,6 +509,8 @@ def ensure_under_root(path: Path) -> Path:
         resolved.relative_to(CONFIG.root.resolve())
     except ValueError:
         raise PermissionError("Path is outside root")
+    if is_protected_config(resolved):
+        raise PermissionError("Lantern configuration is local-only")
     return resolved
 
 
@@ -551,6 +592,7 @@ def reject_self_nesting(src: Path, dest: Path) -> None:
 
 
 def remove_existing_target(path: Path) -> None:
+    protect_config_mutation(path)
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     elif path.exists() or path.is_symlink():
@@ -558,6 +600,7 @@ def remove_existing_target(path: Path) -> None:
 
 
 def copy_item(src: Path, dest_dir: Path, *, name: Optional[str] = None, conflict: str = "rename") -> Optional[Path]:
+    protect_config_mutation(src)
     final_name = clean_component(name if name is not None else src.name)
     dest = conflict_target(dest_dir / final_name, conflict)
     if dest is None:
@@ -838,8 +881,16 @@ def icon_for(kind: str) -> str:
 
 
 def should_hide_entry(parent: Path, name: str) -> bool:
+    # Avoid resolving every entry in a large directory. Only matching names
+    # and symlinks need expensive realpath checks to hide the local YAML.
+    if name.casefold() == "lan_drive_config.yaml":
+        return True
+    configured = getattr(CONFIG, "config_path", None)
+    cfg_name = Path(configured).name.casefold() if configured else "lan_drive_config.yaml"
+    if (name.casefold() == cfg_name or (parent / name).is_symlink()) and is_protected_config(parent / name):
+        return True
     # Upload staging is never a published file, even when "show hidden" is on.
-    if name.startswith(".lantern-uploading-"):
+    if name.startswith((".lantern-uploading-", ".lantern-password-")):
         return True
     if not CONFIG.show_hidden and name.startswith("."):
         return True
@@ -2160,6 +2211,7 @@ def list_entries_page(path: Path, offset: int, limit: int, sort_mode: str, query
 
 
 WS_HUB = WebSocketHub()
+TERMINAL_ACCESS: Optional[TerminalAccess] = None
 TERM_MANAGER: Optional[TerminalManager] = None
 SCM_SERVICE: Optional[ScmService] = None
 
@@ -2252,11 +2304,13 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
             if parsed.path == "/ws":
-                if TERM_MANAGER is None or SCM_SERVICE is None:
+                if TERM_MANAGER is None or SCM_SERVICE is None or TERMINAL_ACCESS is None:
                     self.send_error(503, "runtime not initialized"); return
-                return upgrade_websocket(self, WS_HUB, TERM_MANAGER, SCM_SERVICE)
+                return upgrade_websocket(self, WS_HUB, TERM_MANAGER, SCM_SERVICE, TERMINAL_ACCESS)
             if parsed.path.startswith("/static/"):
                 return self.serve_app_asset(parsed.path)
+            if parsed.path == "/api/terminal/auth":
+                return self.api_terminal_auth()
             if parsed.path == "/api/info":
                 return self.api_info()
             if parsed.path == "/api/config":
@@ -2309,6 +2363,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             parsed = urllib.parse.urlsplit(self.path)
             route = parsed.path
+            if route == "/api/terminal/login": return self.api_terminal_login()
+            if route == "/api/terminal/logout": return self.api_terminal_logout()
             if route == "/api/upload": return self.api_upload(parsed.query)
             if route == "/api/save": return self.api_save()
             if route == "/api/md/save": return self.api_md_save()
@@ -2332,6 +2388,49 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(403, {"error": str(e)})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
+
+    def api_terminal_auth(self) -> None:
+        access = TERMINAL_ACCESS
+        if access is None:
+            self.send_json(503, {"error": "Terminal auth is not ready"})
+            return
+        ip = self.client_address[0]
+        self.send_bytes(200, json_dumps({
+            "required": access.required(ip),
+            "authenticated": access.permitted(ip, self.headers.get("Cookie", "")),
+            "configured": access.configured,
+        }).encode("utf-8"), "application/json; charset=utf-8", {"Cache-Control": "no-store"})
+
+    def api_terminal_login(self) -> None:
+        access = TERMINAL_ACCESS
+        if access is None:
+            self.send_json(503, {"error": "Terminal auth is not ready"}); return
+        if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+            self.send_json(415, {"error": "JSON required"}); return
+        data = self.read_json(max_bytes=4096)
+        code, token = access.login(self.client_address[0], data.get("password"))
+        if code != 200:
+            message = ("Set a Terminal password on the Lantern host first" if code == 503 else
+                       "Too many attempts. Try again in five minutes." if code == 429 else "Incorrect password")
+            self.send_json(code, {"error": message}); return
+        secure = self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+        self.send_bytes(200, b'{"ok":true}', "application/json; charset=utf-8", {
+            "Set-Cookie": access.cookie_header(token, secure=secure),
+            "Cache-Control": "no-store",
+        })
+
+    def api_terminal_logout(self) -> None:
+        access = TERMINAL_ACCESS
+        if access is None:
+            self.send_json(503, {"error": "Terminal auth is not ready"}); return
+        token = access.cookie_token(self.headers.get("Cookie", ""))
+        access.logout(token)
+        WS_HUB.close_token(token)
+        secure = self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+        self.send_bytes(200, b'{"ok":true}', "application/json; charset=utf-8", {
+            "Set-Cookie": access.clear_cookie(secure=secure),
+            "Cache-Control": "no-store",
+        })
 
     def api_info(self) -> None:
         data = {
@@ -2719,8 +2818,8 @@ class Handler(SimpleHTTPRequestHandler):
         name = clean_component(str(data.get("name", "")))
         if not target.exists():
             self.send_json(404, {"error": "not found"}); return
-        dest = (target.parent / name).resolve()
-        dest.relative_to(CONFIG.root.resolve())
+        dest = ensure_under_root(target.parent / name)
+        protect_config_mutation(target)
         if dest.exists():
             self.send_json(409, {"error": "target exists"}); return
         target.rename(dest)
@@ -2751,6 +2850,7 @@ class Handler(SimpleHTTPRequestHandler):
             src = resolve_existing(rel)
             if src.resolve() == CONFIG.root.resolve():
                 raise BadRequest("cannot move root")
+            protect_config_mutation(src)
             result = move_item(src, dest_dir, conflict=conflict)
             if result is None:
                 skipped += 1
@@ -2795,6 +2895,7 @@ class Handler(SimpleHTTPRequestHandler):
                 raise BadRequest(f"duplicate target in batch: {name}")
             if dest.exists():
                 raise BadRequest(f"target exists: {name}")
+            protect_config_mutation(src)
             planned.append((src, dest))
             seen.add(dest)
         renamed = []
@@ -2854,6 +2955,7 @@ class Handler(SimpleHTTPRequestHandler):
             target = safe_join("/" + str(rel))
             if target.resolve() == CONFIG.root.resolve():
                 continue
+            protect_config_mutation(target)
             if target.is_dir():
                 shutil.rmtree(target)
                 deleted += 1
@@ -3161,6 +3263,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sort", choices=sorted(VALID_SORTS), default=None, help="Default sort mode")
     p.add_argument("--view", choices=sorted(VALID_VIEWS), default=None, help="Default view mode")
     p.add_argument("--page-limit", type=int, default=None, help="Items per lazy-load page")
+    p.add_argument("--set-terminal-password", action="store_true", help="Set a local Terminal password in YAML without starting the server")
     p.add_argument("--save-config", action="store_true", help="Persist CLI overrides to the config file. Without this, CLI overrides are runtime-only.")
     return p.parse_args()
 
@@ -3198,6 +3301,8 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         folders_first=bool(data.get("folders_first", True)),
         search_debounce_ms=max(100, min(int(data.get("search_debounce_ms") or 240), 1500)),
         terminal_enabled=bool(data.get("terminal_enabled", True)),
+        terminal_password_hash=str(data.get("terminal_password_hash") or ""),
+        terminal_local_bypass=bool(data.get("terminal_local_bypass", True)),
         terminal_max_sessions=max(1, min(int(data.get("terminal_max_sessions") or 16), 32)),
         terminal_max_buffer_chars=max(10000, min(int(data.get("terminal_max_buffer_chars") or 204800), 5000000)),
         terminal_start_height_px=max(220, min(int(data.get("terminal_start_height_px") or 380), 900)),
@@ -3219,11 +3324,21 @@ def build_config(args: argparse.Namespace) -> AppConfig:
 
 
 def main() -> None:
-    global CONFIG, TERM_MANAGER, SCM_SERVICE
+    global CONFIG, TERMINAL_ACCESS, TERM_MANAGER, SCM_SERVICE
     args = parse_args()
+    if args.set_terminal_password:
+        # No password on argv, stdout, process metadata, or in shell history.
+        password = getpass.getpass("New remote Terminal password (12+ chars): ")
+        confirmation = getpass.getpass("Confirm password: ")
+        if password != confirmation:
+            raise SystemExit("Passwords do not match")
+        update_password_yaml(Path(args.config), hash_password(password))
+        print("Terminal password hash updated in YAML. Restart Lantern to activate.")
+        return
     config_path = Path(args.config).expanduser().resolve()
     config_existed = config_path.exists()
     CONFIG = build_config(args)
+    TERMINAL_ACCESS = TerminalAccess(CONFIG.terminal_password_hash, local_bypass=CONFIG.terminal_local_bypass)
     TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
     SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():

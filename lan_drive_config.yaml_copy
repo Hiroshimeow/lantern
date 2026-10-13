@@ -1,6 +1,8 @@
 # Lantern configuration TEMPLATE. Git tracks this file only.
 # Copy to lan_drive_config.yaml, then edit the ignored local copy.
-# Warning: Lantern has no authentication. LAN binding must be explicit.
+# File browser is intentionally open within root; remote Terminal needs a password.
+# Set a password locally with: python lan_drive.py --set-terminal-password
+# Do not enter a plaintext password in this template. LAN binding must be explicit.
 root: "."
 port: 9999
 host: "127.0.0.1"
@@ -14,6 +16,9 @@ page_limit: 100
 folders_first: true
 search_debounce_ms: 240
 terminal_enabled: true
+terminal_local_bypass: true
+# Generated locally by --set-terminal-password; never set plain text.
+terminal_password_hash: ""
 terminal_max_sessions: 16
 terminal_max_buffer_chars: 204800
 terminal_start_height_px: 380

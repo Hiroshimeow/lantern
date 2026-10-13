@@ -459,6 +459,7 @@ class TerminalUiParityTests(unittest.TestCase):
             require({client});
             const sleep=ms=>new Promise(r=>setTimeout(r,ms));
             (async()=>{{
+              global.__lanternTerminalScm.handleMessage({{type:'terminal_auth',required:false,authenticated:true,configured:false}});
               global.newTerminalSession();
               await sleep(60);
               const state=global.__lanternTerminalScm.state;

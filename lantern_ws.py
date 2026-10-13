@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import queue
@@ -175,6 +176,16 @@ class WebSocketHub:
             self.peers.discard(peer)
             peer.subscriptions.clear()
 
+    def close_token(self, token: str):
+        if not token:
+            return
+        with self.lock:
+            peers = [peer for peer in self.peers
+                     if hmac.compare_digest(getattr(peer, "auth_token", ""), token)]
+        for peer in peers:
+            self.remove(peer)
+            peer.close()
+
     def subscribe(self, peer, term_id: str):
         with self.lock:
             if peer in self.peers:
@@ -191,6 +202,9 @@ class WebSocketHub:
         with self.lock:
             peers = list(self.peers)
         for peer in peers:
+            if (str(message.get("type") or "").startswith("terminal_")
+                    and not getattr(peer, "can_terminal", lambda: True)()):
+                continue
             if (message.get("type") == "terminal_output" and getattr(peer, "protocol", "v2") != "legacy"
                     and message.get("terminalId") not in peer.subscriptions):
                 continue
@@ -224,7 +238,7 @@ def _legacy_snapshot_payload(terminal):
             "output": {k: s[-20000:] for k, s in output.items()}}, truncated
 
 
-def upgrade(handler, hub, terminal, scm):
+def upgrade(handler, hub, terminal, scm, access=None):
     if not same_origin(handler):
         handler.send_error(403, "WebSocket Origin must match Host")
         return
@@ -255,14 +269,21 @@ def upgrade(handler, hub, terminal, scm):
     handler.end_headers()
 
     peer = WebSocketPeer(handler)
+    # Cookie is captured at handshake; every command/broadcast checks the
+    # current expiry/revocation with the same immutable request credentials.
+    peer.auth_token = access.cookie_token(handler.headers.get("Cookie", "")) if access else ""
+    peer.can_terminal = (lambda: access.permitted(
+        handler.client_address[0], handler.headers.get("Cookie", ""))) if access else (lambda: True)
     # Explicit URL version avoids timer races when a LAN client is slow to send.
     if urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query).get("v") == ["2"]:
         peer.protocol = "v2"
     def legacy_fallback() -> None:
         # Older LAN browser tabs reconnect without the v2 handshake. Preserve their
         # terminal view until those tabs reload the new JS. This path is temporary.
+        if not peer.can_terminal():
+            return
         with terminal.lock:
-            if peer.closed or peer.protocol != "pending":
+            if peer.closed or peer.protocol != "pending" or not peer.can_terminal():
                 return
             peer.protocol = "legacy"
             try:
@@ -277,9 +298,13 @@ def upgrade(handler, hub, terminal, scm):
     legacy_timer = threading.Timer(0.7, legacy_fallback)
     legacy_timer.daemon = True
     try:
+        if access is not None:
+            peer.send({"type": "terminal_auth", "required": access.required(handler.client_address[0]),
+                       "authenticated": peer.can_terminal(), "configured": access.configured})
         with terminal.lock:
-            # Metadata first. New browsers request output only for their active tab.
-            peer.send({"type": "terminal_list", "terminals": terminal.list()})
+            # Never reveal terminal metadata to unauthenticated LAN clients.
+            if peer.can_terminal():
+                peer.send({"type": "terminal_list", "terminals": terminal.list()})
             hub.add(peer)
         legacy_timer.start()
         while True:
@@ -312,6 +337,11 @@ def _terminal_error_reply(message, error):
     if not isinstance(message, dict):
         return reply
     operation = message.get("type")
+    if isinstance(error, PermissionError) and str(error).startswith("Terminal locked"):
+        reply["code"] = "terminal_auth_required"
+        reply["operation"] = str(operation or "")
+        reply["terminalId"] = str(message.get("terminalId") or "")
+        return reply
     if operation in {"terminal_create", "terminal_run", "terminal_input", "terminal_key", "terminal_resize", "terminal_subscribe"}:
         reply["operation"] = operation
         reply["terminalId"] = str(message.get("terminalId") or "")
@@ -326,6 +356,8 @@ def dispatch(peer, msg, terminal, scm, hub=None):
     if not isinstance(msg, dict):
         raise ValueError("message must be an object")
     typ = str(msg.get("type") or "")
+    if typ.startswith("terminal_") and not getattr(peer, "can_terminal", lambda: True)():
+        raise PermissionError("Terminal locked: enter the password on the host-issued sign-in form")
     if typ == "terminal_client_v2":
         peer.protocol = "v2"
         return

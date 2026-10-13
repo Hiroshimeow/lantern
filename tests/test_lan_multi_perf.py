@@ -393,6 +393,7 @@ class Term {
 global.Terminal=Term;
 global.FitAddon={FitAddon:class{fit(){}}};
 global.ResizeObserver=class{observe(){}disconnect(){}};
+api.handleMessage({type:'terminal_auth',required:false,authenticated:true,configured:false});
 api.state.connected=true;api.state.termListReady=true;
 global.newTerminalSession();
 const entries=[...api.state.terms.entries()];

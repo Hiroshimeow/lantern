@@ -157,6 +157,8 @@ page_limit: 100
 folders_first: true
 search_debounce_ms: 240
 terminal_enabled: $terminalEnabled
+terminal_local_bypass: true
+terminal_password_hash: ""
 terminal_max_sessions: 16
 terminal_max_buffer_chars: 204800
 terminal_start_height_px: 380
@@ -198,10 +200,10 @@ cd /d "%~dp0app"
     Write-Host "  URL:    $url"
 
     if ($HostAddress -eq "0.0.0.0") {
-        Write-Warning "Lantern has no authentication. Binding to 0.0.0.0 exposes file operations to reachable networks."
+        Write-Warning "File Browser remains unauthenticated within its root. Remote Terminal requires a host-generated password."
     }
     if ($EnableTerminal) {
-        Write-Warning "Terminal is enabled. Anyone who can reach Lantern can execute commands as this Windows user."
+        Write-Warning "Terminal is enabled. Remote users must unlock with a password generated locally, or Terminal stays locked."
     }
 
     if (-not $NoStart) {

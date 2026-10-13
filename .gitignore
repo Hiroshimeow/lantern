@@ -1,4 +1,6 @@
 # Runtime state and per-machine settings (never commit)
+.lantern-password-*
+.lantern-uploading-*
 lan_drive_config.yaml
 lan_drive_config.local.yaml
 lan_drive_config.*.local.yaml

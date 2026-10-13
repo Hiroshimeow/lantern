@@ -144,7 +144,30 @@ Restart Lantern, then open `http://SERVER-LAN-IP:9999` from another device (or y
 
 ### 🔐 Security: the joke ends here
 
-Lantern has **no built-in login, permissions, or authorization**. If someone can reach the server, they can access the files exposed through it. When browser terminal access is enabled, they may be able to execute commands with **the server user's OS privileges**.
+Lantern intentionally does **not** require login for file browsing/editing within its configured root. However, **remote Terminal access now requires a local-host-generated password**. Terminal WebSocket commands, metadata and output are gated server-side; unauthenticated clients can still browse files and view Git/SCM. Git commands that launch a shell (commit/pull/push/checkout) require Terminal unlock too. Localhost retains the original no-password Terminal experience.
+
+### 🔑 Set your Terminal password (on the host only)
+
+From the Lantern checkout (or installation directory), run:
+
+```powershell
+python lan_drive.py --set-terminal-password --config lan_drive_config.yaml
+```
+
+For the separate Windows installer (`install.bat` / `install.ps1`), the actual config is `%LOCALAPPDATA%\\Lantern\\lan_drive_config.local.yaml`. Use this PowerShell command instead:
+
+```powershell
+$lantern = Join-Path $env:LOCALAPPDATA 'Lantern'
+& "$lantern\\.venv\\Scripts\\python.exe" "$lantern\\app\\lan_drive.py" --config "$lantern\\lan_drive_config.local.yaml" --set-terminal-password
+```
+
+Enter the password twice **locally**. Lantern saves only a salted PBKDF2 password hash as `terminal_password_hash` in ignored `lan_drive_config.yaml`, not the plaintext password. **Restart Lantern once to activate the changed password**; changing it on the host and restarting invalidates all browser sessions. No API can set or reveal the password. If no password is configured, remote Terminal stays **locked** (fail-closed).
+
+Remote visitors open **Terminal → enter password → Unlock Terminal**. After successful login, their browser receives an `HttpOnly`, `SameSite=Strict` session cookie valid for up to 8 hours, bound to its source IP; **Lock Terminal** revokes the session. Five failed attempts from one IP impose a five-minute cooldown. Use a new password whenever you want to revoke all previously authorized visitors (restart required).
+
+Configuration defaults: `terminal_local_bypass: true` permits only actual loopback client addresses (`127.0.0.1` / `::1`) without password; the `Host` and `X-Forwarded-For` headers are not trusted to grant access. **Reverse proxies forwarding through loopback** can obscure the original client. Set `terminal_local_bypass: false` before launching such a proxy (then localhost also requires login). The YAML itself is blocked from Lantern's file view/download/upload/copy and archive paths; do not expose backups or make the server's executable source writable by untrusted users.
+
+**Encryption matters:** Tailscale connections benefit from WireGuard transport encryption. Ordinary HTTP over LAN transmits passwords/session cookies without browser-level TLS protection; put HTTPS in front of Lantern before sharing Terminal credentials on an untrusted LAN. Terminal-only authentication is **not** whole-app security: editable scripts, Git config/hooks and other execution-capable files within the shared root can remain dangerous.
 
 Use the smallest useful root, restrict firewall rules, avoid Administrator/root, prefer loopback or private Tailscale, and **never expose Lantern directly to the public internet** without an authenticated front end.
 
@@ -248,7 +271,7 @@ Only rebuild the vendored visual Markdown assets when changing frontend build de
 - DOCX/Excel previews are bounded content views, not Word/Excel clones.
 - Browser PDF rendering depends on PDF support in the browser; direct-open/download fallbacks exist.
 - Browser print-to-PDF for Markdown uses the browser's print engine.
-- There is **no authentication**, no promise of surviving a server restart with terminal sessions, and no public-internet security guarantee.
+- File Browser remains unauthenticated within the configured root; remote Terminal alone has password authentication. No promise of surviving a server restart with terminal sessions, and no public-internet security guarantee.
 - There is currently **no license file**; normal copyright restrictions apply until one is added.
 
 ---
