@@ -34,6 +34,47 @@ class TerminalPasswordTests(unittest.TestCase):
             self.assertEqual(text.count("terminal_password_hash:"), 1)
             self.assertEqual(config.read_text(encoding="utf-8").count("terminal_password_hash:"), 1)
 
+    def test_passwordless_config_values_do_not_require_remote_terminal_login(self):
+        for value in ("", "no-password", " NO-PASSWORD "):
+            for bypass in (True, False):
+                with self.subTest(value=value, local_bypass=bypass):
+                    access = TerminalAccess(value, local_bypass=bypass)
+                    self.assertFalse(access.configured)
+                    self.assertFalse(access.required("100.99.88.77"))
+                    self.assertTrue(access.permitted("100.99.88.77", ""))
+
+    def test_invalid_hash_does_not_silently_disable_auth(self):
+        access = TerminalAccess("invalid-hash", local_bypass=True)
+        self.assertTrue(access.required("100.99.88.77"))
+        self.assertFalse(access.permitted("100.99.88.77", ""))
+        self.assertFalse(access.configured)
+
+    def test_cli_empty_password_disables_auth_and_preserves_yaml(self):
+        import sys
+        with tempfile.TemporaryDirectory() as temp:
+            config=Path(temp)/"lan_drive_config.yaml"
+            config.write_text(
+                'root: "D:/Test"\nport: 9999\n# preserve comment\n'
+                'terminal_password_hash: "' + hash_password("old-long-password") + '"\n',
+                encoding="utf-8")
+            with patch.object(sys, "argv", ["lan_drive.py", "--config", str(config),
+                                             "--set-terminal-password"]):
+                with patch("lan_drive.getpass.getpass", side_effect=["", ""]):
+                    lan_drive.main()
+            data=lan_drive.load_simple_yaml(config)
+            self.assertEqual(data["terminal_password_hash"], "")
+            self.assertIn("# preserve comment", config.read_text(encoding="utf-8"))
+            self.assertFalse(TerminalAccess(data["terminal_password_hash"]).required("100.99.88.77"))
+
+    def test_yaml_explicit_no_password_value_is_supported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config=Path(temp)/"lan_drive_config.yaml"
+            update_password_yaml(config, "no-password")
+            self.assertIn('terminal_password_hash: "no-password"',
+                          config.read_text(encoding="utf-8"))
+            self.assertFalse(TerminalAccess(lan_drive.load_simple_yaml(config)["terminal_password_hash"])
+                             .required("192.168.0.50"))
+
     def test_local_cli_setup_writes_yaml_without_starting_server(self):
         import sys
         with tempfile.TemporaryDirectory() as temp:
@@ -49,8 +90,8 @@ class TerminalPasswordTests(unittest.TestCase):
                 "cli-generated-long-password",data["terminal_password_hash"]))
             self.assertEqual(data["port"],9999)
 
-    def test_remote_denied_without_password_and_local_bypass_uses_peer_not_host(self):
-        auth = TerminalAccess("", local_bypass=True)
+    def test_password_enabled_still_gates_remote_and_uses_peer_address(self):
+        auth = TerminalAccess(hash_password("local-remote-long-password"), local_bypass=True)
         self.assertFalse(auth.required("::1"))
         self.assertFalse(auth.required("127.0.0.1"))
         self.assertTrue(auth.permitted("127.0.0.1", ""))

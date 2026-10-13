@@ -200,10 +200,10 @@ cd /d "%~dp0app"
     Write-Host "  URL:    $url"
 
     if ($HostAddress -eq "0.0.0.0") {
-        Write-Warning "File Browser remains unauthenticated within its root. Remote Terminal requires a host-generated password."
+        Write-Warning "File Browser remains unauthenticated within its root; Terminal has no password unless configured on the host."
     }
     if ($EnableTerminal) {
-        Write-Warning "Terminal is enabled. Remote users must unlock with a password generated locally, or Terminal stays locked."
+        Write-Warning "Terminal is enabled. Unless you set a password locally, reachable LAN/Tailscale users can run commands as this Windows user."
     }
 
     if (-not $NoStart) {

@@ -242,7 +242,7 @@ function Main {
     Say "Mode:   $mode"
     Say "URL:    $url"
     if ($hostValue -notin @("127.0.0.1", "localhost", "::1")) {
-        Say "WARNING: File Browser remains open on this network. Remote Terminal requires a host-set password; without one it stays locked."
+        Say "WARNING: File Browser is accessible on this network. Terminal is passwordless unless a password hash is configured locally."
     }
     if ($SetupOnly) {
         Say "Setup-only verification complete. No process started."

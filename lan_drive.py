@@ -3263,7 +3263,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sort", choices=sorted(VALID_SORTS), default=None, help="Default sort mode")
     p.add_argument("--view", choices=sorted(VALID_VIEWS), default=None, help="Default view mode")
     p.add_argument("--page-limit", type=int, default=None, help="Items per lazy-load page")
-    p.add_argument("--set-terminal-password", action="store_true", help="Set a local Terminal password in YAML without starting the server")
+    terminal_password_cli = p.add_mutually_exclusive_group()
+    terminal_password_cli.add_argument("--set-terminal-password", action="store_true", help="Set a local Terminal password in YAML without starting the server")
+    terminal_password_cli.add_argument("--no-password", action="store_true", help="Disable Terminal password for this server process only; do not change the YAML")
     p.add_argument("--save-config", action="store_true", help="Persist CLI overrides to the config file. Without this, CLI overrides are runtime-only.")
     return p.parse_args()
 
@@ -3328,17 +3330,21 @@ def main() -> None:
     args = parse_args()
     if args.set_terminal_password:
         # No password on argv, stdout, process metadata, or in shell history.
-        password = getpass.getpass("New remote Terminal password (12+ chars): ")
+        password = getpass.getpass("New remote Terminal password (blank = no password): ")
         confirmation = getpass.getpass("Confirm password: ")
         if password != confirmation:
             raise SystemExit("Passwords do not match")
-        update_password_yaml(Path(args.config), hash_password(password))
-        print("Terminal password hash updated in YAML. Restart Lantern to activate.")
+        update_password_yaml(Path(args.config), hash_password(password) if password else "")
+        print(("Terminal password updated" if password else "Terminal password disabled")
+              + " in YAML. Restart Lantern to apply.")
         return
     config_path = Path(args.config).expanduser().resolve()
     config_existed = config_path.exists()
     CONFIG = build_config(args)
-    TERMINAL_ACCESS = TerminalAccess(CONFIG.terminal_password_hash, local_bypass=CONFIG.terminal_local_bypass)
+    # Command-line bypass is process-local: a second port reading the same YAML
+    # still enforces its configured password unless it also opts out.
+    effective_hash = "" if args.no_password else CONFIG.terminal_password_hash
+    TERMINAL_ACCESS = TerminalAccess(effective_hash, local_bypass=CONFIG.terminal_local_bypass)
     TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
     SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():

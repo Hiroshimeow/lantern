@@ -57,6 +57,123 @@ class TerminalRemoteAuthBrowserE2E(unittest.TestCase):
             self.proc.wait(timeout=5)
         self.tmp.cleanup()
 
+    def test_explicit_no_password_grants_terminal_without_login(self):
+        """Even with loopback bypass disabled, no-password means open Terminal."""
+        from playwright.sync_api import sync_playwright
+        root=self.root/"passwordless-root"
+        root.mkdir()
+        config=self.root/"passwordless.yaml"
+        config.write_text("terminal_local_bypass: false\nterminal_password_hash: no-password\n",
+                          encoding="utf-8")
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1",0))
+            port=sock.getsockname()[1]
+        url=f"http://127.0.0.1:{port}"
+        proc=subprocess.Popen(
+            [sys.executable,str(ROOT/"lan_drive.py"),"--config",str(config),
+             "--root",str(root),"--host","127.0.0.1","--port",str(port)],
+            cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                try:
+                    with urllib.request.urlopen(url+"/api/terminal/auth",timeout=.5) as response:
+                        status=json.load(response)
+                    break
+                except Exception:
+                    time.sleep(.1)
+            else:
+                self.fail("isolated no-password fixture never started")
+            self.assertEqual(status,{"required":False,"authenticated":True,"configured":False})
+            with sync_playwright() as play:
+                browser=play.chromium.launch(channel="msedge",headless=True)
+                context=browser.new_context()
+                try:
+                    page=context.new_page()
+                    page.goto(url,wait_until="domcontentloaded")
+                    page.wait_for_function(
+                        "() => {const s=window.__lanternTerminalScm?.state;"
+                        "return !!s && !s.auth.required && s.auth.authenticated && s.termListReady;}",
+                        timeout=18000)
+                    self.assertFalse(page.locator("#lxTermAuth").is_visible())
+                    page.evaluate("window.newTerminalSession()")
+                    page.wait_for_function(
+                        "() => [...window.__lanternTerminalScm.state.terms.values()].some("
+                        "t=>!t.pending&&t.meta.running&&t.meta.generation)",
+                        timeout=18000)
+                    self.assertFalse(any(c["name"]=="lantern_terminal" for c in context.cookies()))
+                finally:
+                    context.close()
+                    browser.close()
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=6)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_two_ports_same_yaml_cli_no_password_only_unprotects_own_port(self):
+        """One process uses the stored hash; --no-password bypasses only its port."""
+        from playwright.sync_api import sync_playwright
+        original_yaml = self.yaml.read_bytes()
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            other_port = sock.getsockname()[1]
+        other_url = f"http://127.0.0.1:{other_port}"
+        other = subprocess.Popen(
+            [sys.executable, str(ROOT / "lan_drive.py"),
+             "--config", str(self.yaml), "--root", str(self.root),
+             "--host", "127.0.0.1", "--port", str(other_port),
+             "--no-password"],
+            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                try:
+                    with urllib.request.urlopen(other_url+"/api/terminal/auth", timeout=.5) as res:
+                        unprotected = json.load(res)
+                    break
+                except Exception:
+                    if other.poll() is not None:
+                        self.fail("Second Lantern process stopped before accepting connections")
+                    time.sleep(.1)
+            else:
+                self.fail("Second Lantern process never started")
+            with urllib.request.urlopen(self.url+"/api/terminal/auth", timeout=2) as res:
+                protected = json.load(res)
+            self.assertEqual(protected,
+                             {"required":True,"authenticated":False,"configured":True})
+            self.assertEqual(unprotected,
+                             {"required":False,"authenticated":True,"configured":False})
+            self.assertEqual(self.yaml.read_bytes(),original_yaml,
+                             "--no-password must never change the shared configuration")
+            with sync_playwright() as play:
+                browser=play.chromium.launch(channel="msedge",headless=True)
+                try:
+                    locked=browser.new_page()
+                    locked.goto(self.url,wait_until="domcontentloaded")
+                    locked.wait_for_function("() => window.__lanternTerminalScm?.state.auth.required",
+                                             timeout=18000)
+                    locked.evaluate("window.toggleTerminal()")
+                    locked.locator("#lxTermAuth").wait_for(state="visible",timeout=10000)
+                    opened=browser.new_page()
+                    opened.goto(other_url,wait_until="domcontentloaded")
+                    opened.wait_for_function("""() => {
+                        const s=window.__lanternTerminalScm?.state;
+                        return !!s && !s.auth.required && s.auth.authenticated && s.termListReady;
+                    }""",timeout=18000)
+                    opened.evaluate("window.toggleTerminal()")
+                    self.assertFalse(opened.locator("#lxTermAuth").is_visible())
+                    self.assertEqual(self.yaml.read_bytes(), original_yaml)
+                finally:
+                    browser.close()
+        finally:
+            other.terminate()
+            try:
+                other.wait(timeout=6)
+            except subprocess.TimeoutExpired:
+                other.kill()
+                other.wait(timeout=5)
+
     def test_locked_ws_unlocked_terminal_logout_files_remain_open(self):
         from playwright.sync_api import sync_playwright
         with sync_playwright() as play:

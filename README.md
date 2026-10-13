@@ -144,28 +144,52 @@ Restart Lantern, then open `http://SERVER-LAN-IP:9999` from another device (or y
 
 ### 🔐 Security: the joke ends here
 
-Lantern intentionally does **not** require login for file browsing/editing within its configured root. However, **remote Terminal access now requires a local-host-generated password**. Terminal WebSocket commands, metadata and output are gated server-side; unauthenticated clients can still browse files and view Git/SCM. Git commands that launch a shell (commit/pull/push/checkout) require Terminal unlock too. Localhost retains the original no-password Terminal experience.
+Lantern does **not** require login for file browsing/editing within its configured root. **Terminal password protection is optional and OFF by default**: when no password is configured, localhost, LAN and Tailscale clients can all use Terminal. With a password enabled, only localhost bypasses it by default; remote Terminal commands, metadata and output are protected server-side. Git/SCM browsing remains available, but Git actions that run shell commands require Terminal unlock when protection is enabled.
 
-### 🔑 Set your Terminal password (on the host only)
+**Warning:** without Terminal password protection, anyone who can reach Lantern can run commands with the server user's OS privileges. Bind only to trusted networks.
 
-From the Lantern checkout (or installation directory), run:
+### 🔑 Optional Terminal password (set or clear on the host)
+
+Terminal is passwordless unless a password hash has been configured. These YAML forms are equivalent:
+
+```yaml
+# Default: omit terminal_password_hash entirely, or use either value:
+terminal_password_hash: ""
+# terminal_password_hash: no-password
+```
+
+You do **not** need to run `--set-terminal-password` unless you want to enable authentication. Omitting the command on a later start does **not** remove an existing password.
+
+**Per-process override (`--no-password`):** If the YAML already contains a password hash, `--no-password` disables Terminal authentication **only for that launched Lantern process and its port**. The saved hash is unchanged; a second server without the flag still requires the password. For example, run these as separate processes:
+
+```powershell
+# Port 9999: enforces the saved YAML password (when one is set)
+python lan_drive.py --config lan_drive_config.yaml --host 0.0.0.0 --port 9999
+
+# Port 9998: no Terminal password, despite using the same YAML
+python lan_drive.py --config lan_drive_config.yaml --host 0.0.0.0 --port 9998 --no-password
+```
+
+The difference is deliberate: `terminal_password_hash: no-password` (or empty/absent hash) disables password protection for **every** process reading that YAML, whereas the `--no-password` flag overrides the hash for **one running process only**. It does not persist in YAML and it cannot be combined with `--set-terminal-password`. Only expose a passwordless LAN port to trusted users.
+
+To enable protection or clear an existing password in the YAML, run this command locally from your Lantern checkout:
 
 ```powershell
 python lan_drive.py --set-terminal-password --config lan_drive_config.yaml
 ```
 
-For the separate Windows installer (`install.bat` / `install.ps1`), the actual config is `%LOCALAPPDATA%\\Lantern\\lan_drive_config.local.yaml`. Use this PowerShell command instead:
+For the separate Windows installer (`install.bat` / `install.ps1`), the actual config is `%LOCALAPPDATA%\Lantern\lan_drive_config.local.yaml`. Use this PowerShell command instead:
 
 ```powershell
 $lantern = Join-Path $env:LOCALAPPDATA 'Lantern'
-& "$lantern\\.venv\\Scripts\\python.exe" "$lantern\\app\\lan_drive.py" --config "$lantern\\lan_drive_config.local.yaml" --set-terminal-password
+& "$lantern\.venv\Scripts\python.exe" "$lantern\app\lan_drive.py" --config "$lantern\lan_drive_config.local.yaml" --set-terminal-password
 ```
 
-Enter the password twice **locally**. Lantern saves only a salted PBKDF2 password hash as `terminal_password_hash` in ignored `lan_drive_config.yaml`, not the plaintext password. **Restart Lantern once to activate the changed password**; changing it on the host and restarting invalidates all browser sessions. No API can set or reveal the password. If no password is configured, remote Terminal stays **locked** (fail-closed).
+Enter a password of at least 12 characters twice **locally** to enable protection. Lantern stores a salted PBKDF2 hash, never the plaintext password. To **disable** an existing password, run the same command and press Enter twice at the password prompts, or set `terminal_password_hash: ""` / `terminal_password_hash: no-password` in the local YAML. **Restart Lantern to apply changes**; restart also invalidates existing Terminal login sessions. There is no remote password-setting API. A malformed hash (other than the explicit passwordless values) stays locked instead of opening access.
 
-Remote visitors open **Terminal → enter password → Unlock Terminal**. After successful login, their browser receives an `HttpOnly`, `SameSite=Strict` session cookie valid for up to 8 hours, bound to its source IP; **Lock Terminal** revokes the session. Five failed attempts from one IP impose a five-minute cooldown. Use a new password whenever you want to revoke all previously authorized visitors (restart required).
+**Only when a password is configured**, remote visitors open **Terminal → enter password → Unlock Terminal**. After login, their browser receives an `HttpOnly`, `SameSite=Strict` session cookie valid for up to 8 hours, bound to its source IP; **Lock Terminal** revokes the session. Five failed attempts from one IP impose a five-minute cooldown. In passwordless mode, no login form or session is required.
 
-Configuration defaults: `terminal_local_bypass: true` permits only actual loopback client addresses (`127.0.0.1` / `::1`) without password; the `Host` and `X-Forwarded-For` headers are not trusted to grant access. **Reverse proxies forwarding through loopback** can obscure the original client. Set `terminal_local_bypass: false` before launching such a proxy (then localhost also requires login). The YAML itself is blocked from Lantern's file view/download/upload/copy and archive paths; do not expose backups or make the server's executable source writable by untrusted users.
+**When password protection is enabled**, `terminal_local_bypass: true` permits actual loopback clients (`127.0.0.1` / `::1`) without a password; `Host` and `X-Forwarded-For` headers do not grant access. Reverse proxies forwarding through loopback may obscure real clients; configure `terminal_local_bypass: false` in that setup (then localhost must also log in). This setting does **not** enable authentication when the password hash is empty or `no-password`. The YAML is blocked from Lantern's file operations; avoid exposing its backups or letting untrusted users change server code.
 
 **Encryption matters:** Tailscale connections benefit from WireGuard transport encryption. Ordinary HTTP over LAN transmits passwords/session cookies without browser-level TLS protection; put HTTPS in front of Lantern before sharing Terminal credentials on an untrusted LAN. Terminal-only authentication is **not** whole-app security: editable scripts, Git config/hooks and other execution-capable files within the shared root can remain dangerous.
 
@@ -271,7 +295,7 @@ Only rebuild the vendored visual Markdown assets when changing frontend build de
 - DOCX/Excel previews are bounded content views, not Word/Excel clones.
 - Browser PDF rendering depends on PDF support in the browser; direct-open/download fallbacks exist.
 - Browser print-to-PDF for Markdown uses the browser's print engine.
-- File Browser remains unauthenticated within the configured root; remote Terminal alone has password authentication. No promise of surviving a server restart with terminal sessions, and no public-internet security guarantee.
+- File Browser remains unauthenticated within the configured root; remote Terminal password protection is **opt-in**, stored in the local YAML. No promise of surviving a server restart with terminal sessions, and no public-internet security guarantee.
 - There is currently **no license file**; normal copyright restrictions apply until one is added.
 
 ---

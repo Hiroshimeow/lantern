@@ -53,7 +53,7 @@ def password_matches(password: str, encoded: str) -> bool:
 
 def update_password_yaml(config: Path, encoded: str) -> None:
     """Edit only the hash field; preserve machine config and comments."""
-    if not encoded.startswith("pbkdf2_sha256$"):
+    if encoded.strip().casefold() not in {"", "no-password"} and not encoded.startswith("pbkdf2_sha256$"):
         raise ValueError("Invalid password hash")
     config = Path(config).resolve()
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -101,7 +101,15 @@ class TerminalAccess:
     def configured(self) -> bool:
         return self._hash.startswith("pbkdf2_sha256$") and self._hash.count("$") == 3
 
+    @property
+    def passwordless(self) -> bool:
+        return self._hash.strip().casefold() in {"", "no-password"}
+
     def required(self, client_ip: str) -> bool:
+        # Explicit opt-in: no configured password means no Terminal login,
+        # including LAN/Tailscale; malformed hashes still fail closed.
+        if self.passwordless:
+            return False
         if not self.local_bypass:
             return True
         try:
