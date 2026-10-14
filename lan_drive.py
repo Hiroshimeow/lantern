@@ -70,11 +70,11 @@ try:
 except Exception:
     LAN_PLUGIN = None  # lan_drive.py must remain standalone
 from http.server import SimpleHTTPRequestHandler
-from lantern_terminal import TerminalManager
-from lantern_scm import ScmService
-from lantern_terminal_auth import TerminalAccess, hash_password, update_password_yaml
-from lantern_ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
-from lantern_md_editor import (MarkdownEditorError, read_document as read_markdown_document,
+from lantern.terminal import TerminalManager
+from lantern.scm import ScmService
+from lantern.terminal_auth import TerminalAccess, hash_password, update_password_yaml
+from lantern.ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
+from lantern.md_editor import (MarkdownEditorError, read_document as read_markdown_document,
                                save_document as save_markdown_document,
                                MAX_MARKDOWN_EDITOR_BYTES)
 

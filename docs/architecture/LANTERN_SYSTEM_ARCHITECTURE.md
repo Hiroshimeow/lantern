@@ -38,10 +38,10 @@ flowchart LR
     FS["Configured Root Filesystem"]
     CACHE["Thumbnail / Preview Cache"]
     PLUGIN["plugin.py\nPreview Engine"]
-    WS["lantern_ws.py\nWebSocket Hub"]
-    TERM["lantern_terminal.py\nTerminalManager"]
+    WS["lantern/ws.py\nWebSocket Hub"]
+    TERM["lantern/terminal.py\nTerminalManager"]
     PTY["WinConPty / PosixPty"]
-    SCM["lantern_scm.py\nScmService"]
+    SCM["lantern/scm.py\nScmService"]
     GIT["git CLI"]
     MEDIA["Pillow / ffmpeg / ffprobe\noptional"]
     STATIC["static/*\nxterm.js / Mermaid / JS"]
@@ -70,7 +70,7 @@ flowchart LR
 
 ### Primary trust assumption
 
-Lantern has no built-in authentication. The intended trust boundary is the private LAN/Tailscale network plus host firewall/reverse-proxy controls.
+Lantern's File Browser is accessible within the configured root without login. Remote Terminal can optionally require a host-set password; without one, Terminal access relies on the trusted LAN/Tailscale network and host controls.
 
 ---
 
@@ -81,10 +81,10 @@ Lantern has no built-in authentication. The intended trust boundary is the priva
 | `lan_drive.py` | HTTP server, file manager UI/API, media serving, configuration | `AppConfig`, `Handler`, `main` |
 | `plugin.py` | document/Markdown preview and preview-page CSP | `render_content`, `_render_markdown`, `render_preview_page` |
 | `static/markdown_preview.js` | Mermaid render, PNG export, Print/PDF UI | `loadMermaid`, `initializeMermaid`, `renderOne`, `exportPng` |
-| `lantern_ws.py` | WebSocket framing, connection hub, command dispatch | `WebSocketPeer`, `WebSocketHub`, `upgrade`, `dispatch` |
-| `lantern_terminal.py` | PTY/ConPTY session ownership and retained output | `NativePty`, `WinConPty`, `PosixPty`, `TerminalManager` |
+| `lantern/ws.py` | WebSocket framing, connection hub, command dispatch | `WebSocketPeer`, `WebSocketHub`, `upgrade`, `dispatch` |
+| `lantern/terminal.py` | PTY/ConPTY session ownership and retained output | `NativePty`, `WinConPty`, `PosixPty`, `TerminalManager` |
 | `static/terminal_scm.js` | xterm UI, reconnect, terminal tabs, Git panel | `connect`, `makeX`, `newTerminal`, `refreshScm`, `runGit` |
-| `lantern_scm.py` | read-side Git queries and metadata watching | `ScmService` |
+| `lantern/scm.py` | read-side Git queries and metadata watching | `ScmService` |
 | `tests/test_plugin.py` | preview/CSP/Markdown security contracts | `MarkdownPreviewTests`, `HtmlAudit` |
 | `tests/test_terminal_ui.py` | browser terminal behavior contracts | `TerminalUiParityTests` |
 | `tests/test_terminal_scm.py` | terminal manager, SCM, WebSocket protocol | parity test classes |
@@ -528,7 +528,7 @@ sequenceDiagram
     participant U as User
     participant XT as xterm.js
     participant JS as terminal_scm.js
-    participant WS as lantern_ws.py
+    participant WS as lantern/ws.py
     participant TM as TerminalManager
     participant PTY as WinConPty/PosixPty
     participant SH as Shell
@@ -694,7 +694,7 @@ flowchart TD
 sequenceDiagram
     participant UI as Git panel
     participant JS as terminal_scm.js
-    participant WS as lantern_ws.py
+    participant WS as lantern/ws.py
     participant SCM as ScmService
     participant GIT as git CLI
 

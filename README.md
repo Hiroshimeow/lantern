@@ -270,21 +270,24 @@ Main source map:
 ```text
 lan_drive.py                HTTP server, filesystem, media, config
 plugin.py                   Document preview, Markdown, native PDF shell
-lantern_md_editor.py        Markdown save/version/draft contracts
-lantern_terminal.py         PTY / Windows ConPTY
-lantern_ws.py               WebSocket transport
-lantern_scm.py              Git/SCM service
+lantern/                    Internal Python runtime package
+  md_editor.py              Markdown save/version/draft contracts
+  terminal.py               PTY / Windows ConPTY
+  terminal_auth.py          Optional remote Terminal authentication
+  ws.py                     WebSocket transport
+  scm.py                    Git/SCM service
 static/                     Browser frontend + offline vendor bundles
 tools/                      Build and safe migration scripts
 tests/                      Unit / integration / Edge browser E2E
+docs/architecture/          System diagrams and function flows
 docs/images/                Actual Lantern UI screenshots
 run.bat                     Three-action Windows launcher
 lan_drive_config.yaml_copy  Git-tracked configuration template
 ```
 
 Want diagrams? We have diagrams about our diagrams:
-[System architecture](LANTERN_SYSTEM_ARCHITECTURE.md) and
-[detailed function flows](LANTERN_FUNCTION_FLOWS.md), with **44 Mermaid diagrams** in total.
+[System architecture](docs/architecture/LANTERN_SYSTEM_ARCHITECTURE.md) and
+[detailed function flows](docs/architecture/LANTERN_FUNCTION_FLOWS.md), with **44 Mermaid diagrams** in total.
 
 Only rebuild the vendored visual Markdown assets when changing frontend build dependencies: `npm ci && npm run build:markdown`. This is a developer step, not a user installation requirement.
 

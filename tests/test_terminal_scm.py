@@ -9,9 +9,9 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from lantern_terminal import TerminalManager, WinConPty, encode_terminal_key, resolve_shell
-from lantern_scm import ScmService, build_git_command
-from lantern_ws import WebSocketPeer, dispatch, _terminal_error_reply
+from lantern.terminal import TerminalManager, WinConPty, encode_terminal_key, resolve_shell
+from lantern.scm import ScmService, build_git_command
+from lantern.ws import WebSocketPeer, dispatch, _terminal_error_reply
 
 
 class FakePty:
@@ -47,7 +47,7 @@ class TerminalParityTests(unittest.TestCase):
             "PI_WEB_SHELL": "",
             "COMSPEC": r"C:\Windows\System32\cmd.exe",
         }):
-            with patch("lantern_terminal.shutil.which", side_effect=lambda name:
+            with patch("lantern.terminal.shutil.which", side_effect=lambda name:
                        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
                        if name == "powershell" else None):
                 shell, args, family = resolve_shell()
@@ -55,7 +55,7 @@ class TerminalParityTests(unittest.TestCase):
                 self.assertIn("-NoProfile", args)
                 self.assertTrue(shell.lower().endswith("powershell.exe"))
 
-            with patch("lantern_terminal.shutil.which", return_value=None):
+            with patch("lantern.terminal.shutil.which", return_value=None):
                 shell, args, family = resolve_shell()
                 self.assertEqual(family, "cmd")
                 self.assertTrue(shell.lower().endswith("cmd.exe"))

@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from lantern_terminal_auth import TerminalAccess, hash_password, password_matches, update_password_yaml
-from lantern_ws import WebSocketHub, dispatch, _terminal_error_reply
+from lantern.terminal_auth import TerminalAccess, hash_password, password_matches, update_password_yaml
+from lantern.ws import WebSocketHub, dispatch, _terminal_error_reply
 import lan_drive
 
 

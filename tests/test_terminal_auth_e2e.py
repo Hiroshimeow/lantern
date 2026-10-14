@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from lantern_terminal_auth import hash_password
+from lantern.terminal_auth import hash_password
 
 ROOT = Path(__file__).resolve().parent.parent
 

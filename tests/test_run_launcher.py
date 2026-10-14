@@ -95,11 +95,11 @@ class WindowsRunLauncherTests(unittest.TestCase):
         # A fully isolated clone, port and data directory. Do not touch the
         # production service, its YAML or any running terminal.
         files = (
-            "lan_drive.py", "plugin.py", "lantern_terminal.py", "lantern_ws.py",
-            "lantern_terminal_auth.py", "lantern_scm.py", "lantern_md_editor.py", "requirements.txt",
+            "lan_drive.py", "plugin.py", "requirements.txt",
         )
         for name in files:
             shutil.copy2(ROOT / name, self.repo / name)
+        shutil.copytree(ROOT / "lantern", self.repo / "lantern")
         shutil.copytree(ROOT / "static", self.repo / "static")
 
         pid = None

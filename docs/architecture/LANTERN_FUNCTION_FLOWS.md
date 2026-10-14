@@ -74,7 +74,7 @@ flowchart TB
     WS --> WSO["same_origin() upgrade check"]
     WSO --> TERM["Terminal privilege = Lantern OS user"]
 
-    TERM --> WARN["No auth: network access is security boundary"]
+    TERM --> WARN["Terminal auth optional; untrusted networks remain unsafe"]
 
     classDef risk fill:#7f1d1d,stroke:#fca5a5,color:#fff
     classDef guard fill:#14532d,stroke:#86efac,color:#fff
@@ -143,7 +143,7 @@ flowchart LR
     Handler --> move_item
     Handler --> extract_archive
     Handler --> render_preview["plugin.render_preview_page"]
-    Handler --> upgrade_ws["lantern_ws.upgrade"]
+    Handler --> upgrade_ws["lantern.ws.upgrade"]
 ```
 
 ---
@@ -292,7 +292,7 @@ sequenceDiagram
     participant JS as markdown_preview.js
     participant M as Mermaid runtime
 
-    U->>H: GET /api/plugin/preview?p=LANTERN_SYSTEM_ARCHITECTURE.md
+    U->>H: GET /api/plugin/preview?p=docs/architecture/LANTERN_SYSTEM_ARCHITECTURE.md
     H->>H: safe_join()
     H->>P: render_preview_page(path, root)
     P->>P: _render_markdown()
@@ -566,9 +566,9 @@ flowchart TD
 flowchart TB
     LD["lan_drive.py"]
     PL["plugin.py"]
-    LW["lantern_ws.py"]
-    LT["lantern_terminal.py"]
-    LS["lantern_scm.py"]
+    LW["lantern/ws.py"]
+    LT["lantern/terminal.py"]
+    LS["lantern/scm.py"]
 
     TS["static/terminal_scm.js"]
     MP["static/markdown_preview.js"]
@@ -656,9 +656,9 @@ flowchart TD
     Q -- document preview / Markdown parse --> PL["plugin.py"]
     Q -- Mermaid / PNG / Print-PDF --> MP["static/markdown_preview.js"]
     Q -- terminal browser UI --> TS["static/terminal_scm.js"]
-    Q -- WebSocket protocol --> WS["lantern_ws.py"]
-    Q -- PTY lifecycle / shell IO --> TM["lantern_terminal.py"]
-    Q -- Git status/history/diff --> SCM["lantern_scm.py"]
+    Q -- WebSocket protocol --> WS["lantern/ws.py"]
+    Q -- PTY lifecycle / shell IO --> TM["lantern/terminal.py"]
+    Q -- Git status/history/diff --> SCM["lantern/scm.py"]
 
     LD --> TL["test_security.py / endpoint tests"]
     PL --> TP["test_plugin.py"]
@@ -678,9 +678,9 @@ Lantern is deliberately structured around a small set of owners:
 1. **`lan_drive.py` owns HTTP and filesystem behavior.**
 2. **`plugin.py` owns safe document-to-preview HTML generation.**
 3. **`markdown_preview.js` owns browser-only Mermaid/export behavior.**
-4. **`lantern_ws.py` owns the browser/server realtime protocol.**
-5. **`lantern_terminal.py` owns native terminal process lifetime and replay.**
-6. **`lantern_scm.py` owns read-side Git state; Git mutations stay visible in terminal tabs.**
+4. **`lantern/ws.py` owns the browser/server realtime protocol.**
+5. **`lantern/terminal.py` owns native terminal process lifetime and replay.**
+6. **`lantern/scm.py` owns read-side Git state; Git mutations stay visible in terminal tabs.**
 7. **Security relies on trusted-network deployment, root confinement, same-origin checks, preview escaping/CSP, and explicit terminal enablement.**
 
 That separation is the main reason Lantern can remain small while still providing file manager + preview + terminal + SCM functionality in one application.

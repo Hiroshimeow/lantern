@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import plugin
-from lantern_terminal import TerminalManager
-from lantern_ws import WebSocketHub, dispatch
+from lantern.terminal import TerminalManager
+from lantern.ws import WebSocketHub, dispatch
 
 
 class Peer:
@@ -102,7 +102,7 @@ class LanTerminalTests(unittest.TestCase):
 
     def test_extreme_active_replay_is_bounded_without_losing_server_history(self):
         import json
-        from lantern_ws import _MAX_QUEUED_BYTES
+        from lantern.ws import _MAX_QUEUED_BYTES
         hub = WebSocketHub()
         pts = {}
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,7 +125,7 @@ class LanTerminalTests(unittest.TestCase):
     def test_legacy_reconnect_snapshot_is_bounded_without_deleting_server_history(self):
         import json
         from types import SimpleNamespace
-        from lantern_ws import _legacy_snapshot_payload, _MAX_QUEUED_BYTES
+        from lantern.ws import _legacy_snapshot_payload, _MAX_QUEUED_BYTES
         tail = "\x1b" * 200000
         retained = [(f"t{i}", tail) for i in range(64)]
         manager = SimpleNamespace(

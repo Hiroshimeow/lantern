@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from lantern_md_editor import MarkdownEditorError, read_document, save_document, MAX_MARKDOWN_EDITOR_BYTES
+from lantern.md_editor import MarkdownEditorError, read_document, save_document, MAX_MARKDOWN_EDITOR_BYTES
 
 ROOT = Path(__file__).resolve().parent.parent
 
