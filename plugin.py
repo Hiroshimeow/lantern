@@ -24,6 +24,7 @@ import json
 import os
 import re
 import secrets
+import string
 import subprocess
 import threading
 import zipfile
@@ -289,6 +290,11 @@ def _safe_markdown_target(url: str, source_path: Path, root: Path, image: bool =
     return encoded or "/"
 
 
+_MD_PROTECTED_INLINE_RE = re.compile(
+    r"\\([" + re.escape(string.punctuation) + r"])|`([^`\n]+)`"
+)
+
+
 def _md_inline(text: str, source_path: Path, root: Path) -> str:
     stash: List[str] = []
 
@@ -297,11 +303,15 @@ def _md_inline(text: str, source_path: Path, root: Path) -> str:
         stash.append(fragment)
         return token
 
-    work = re.sub(
-        r"`([^`\n]+)`",
-        lambda m: keep(f"<code>{h(m.group(1))}</code>"),
-        text,
-    )
+    # Protect escaped punctuation and code spans BEFORE applying emphasis or
+    # link markup. Escapes cannot become formatting delimiters, and backslashes
+    # inside code spans are literal text rather than Markdown escapes.
+    def preserve_literal(match: re.Match[str]) -> str:
+        if match.group(1) is not None:
+            return keep(h(match.group(1)))
+        return keep(f"<code>{h(match.group(2))}</code>")
+
+    work = _MD_PROTECTED_INLINE_RE.sub(preserve_literal, text)
 
     def image_repl(match: re.Match[str]) -> str:
         alt = match.group(1)
@@ -324,9 +334,11 @@ def _md_inline(text: str, source_path: Path, root: Path) -> str:
     work = re.sub(r"\[([^\]]+)\]\(([^)\r\n]*)\)", link_repl, work)
     escaped = h(work)
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
-    escaped = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", escaped)
+    # Unlike asterisks, CommonMark underscores inside words are literal.
+    # Without word-boundary checks, names such as foo_bar_baz silently lose _.
+    escaped = re.sub(r"(?<![\w_])__([^_\n]+)__(?![\w_])", r"<strong>\1</strong>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", escaped)
-    escaped = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<em>\1</em>", escaped)
+    escaped = re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"<em>\1</em>", escaped)
 
     changed = True
     while changed:

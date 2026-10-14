@@ -59,6 +59,47 @@ class MarkdownModesE2E(unittest.TestCase):
                 cls.proc.wait(timeout=5)
             cls.tmp.cleanup()
 
+    def test_preview_underscores_comments_and_escapes_without_source_mutation(self):
+        original = (
+            "# Long_file_name_2026\n\n"
+            "Identifiers: foo_bar_baz, module__name__suffix, data_set_01.csv.\n\n"
+            "Escaped: \\*literal\\* and \\_underscored\\_.\n\n"
+            "Normal: _italic_ and __strong__.\n\n"
+            "<!-- private note that remains editable in Source -->\n\n"
+            "Example: !<--not an HTML comment--> and plain \\*.\n"
+        )
+        path = self.root / "preview-escaping-regression.md"
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1250, "height": 800})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=preview-escaping-regression.md",
+                      wait_until="domcontentloaded")
+            preview = page.locator("article.md-preview")
+            self.assertEqual(page.get_by_role("heading", level=1).inner_text(),
+                             "Long_file_name_2026")
+            self.assertIn("foo_bar_baz", preview.inner_text())
+            self.assertIn("module__name__suffix", preview.inner_text())
+            self.assertIn("data_set_01.csv", preview.inner_text())
+            self.assertIn("Escaped: *literal* and _underscored_.",
+                          preview.inner_text())
+            self.assertIn("<em>italic</em>", preview.inner_html())
+            self.assertIn("<strong>strong</strong>", preview.inner_html())
+            self.assertNotIn("private note", preview.inner_text())
+            self.assertIn("!<--not an HTML comment-->", preview.inner_text())
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for()
+            self.assertEqual(source.input_value(), original)
+            page.get_by_role("button", name="Preview", exact=True).click()
+            preview.wait_for(state="visible")
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_three_modes_preserve_exact_source_and_render_mermaid(self):
         initial = (
             "# Three modes\n\n"

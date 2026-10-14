@@ -56,6 +56,8 @@ On first launch, the bootstrap needs internet access to download missing tools. 
 
 In **Preview**, GFM pipe tables are rendered (including escaped pipes and pipes inside inline code), and HTML comments stay hidden. Long tables continue as consecutive HTML table sections of at most 160 data rows each, with the column headers repeated; extra rows are **not** shown as raw Markdown. This is a Preview rendering budget, independent of the **64 KiB** threshold that enables paged **Edit visually**. Preview itself reads a bounded amount of Markdown (up to 600,000 characters) and reports when its source is truncated. In **Edit visually** and **Source**, comments and Mermaid code remain available to edit. Mermaid is rendered as a diagram **only in Preview**. HTML content such as raw `<table>` tags is escaped, not executed.
 
+For literal Markdown punctuation, a backslash escapes formatting: `\*` displays as `*`, and `\_` displays as `_`. Underscores inside identifiers and filenames (such as `my_file_2026.md`) stay visible instead of being mistaken for italics. **Preview** hides valid HTML comments (`<!-- ... -->`); malformed `!<-- ... -->` text is not a comment and remains visible. **Edit visually** keeps comments available for editing.
+
 A few things that matter outside a demo:
 
 - **Tables:** add or remove rows and columns in the visual editor.

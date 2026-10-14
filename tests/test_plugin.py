@@ -328,6 +328,69 @@ class MarkdownPreviewTests(unittest.TestCase):
         self.assertIn("| code | is not table |", article)
         self.assertIn("<td>one</td>", article)
 
+    def test_preview_preserves_underscores_in_identifiers_and_filenames(self) -> None:
+        source = (
+            "# module_name_with_underscores\n\n"
+            "Identifiers: foo_bar_baz, module__name__suffix, my_file_2026.md, "
+            "khong_mat_dau_gach_duoi, xin_chao_việt_nam.\n\n"
+            "| Filename | Identifier |\n"
+            "| --- | --- |\n"
+            "| read_me_2026.md | user__id__token |\n\n"
+            "_legitimate emphasis_ and __strong emphasis__.\n"
+        )
+        article = self.render_markdown(source).split(
+            "<article class='md-preview'>", 1)[1].split("</article>", 1)[0]
+        for term in (
+            "module_name_with_underscores", "foo_bar_baz",
+            "module__name__suffix", "my_file_2026.md",
+            "khong_mat_dau_gach_duoi", "xin_chao_việt_nam",
+            "read_me_2026.md", "user__id__token",
+        ):
+            self.assertIn(term, article)
+        self.assertIn("<em>legitimate emphasis</em>", article)
+        self.assertIn("<strong>strong emphasis</strong>", article)
+        self.assertNotIn("<em>bar</em>", article)
+        self.assertNotIn("<strong>name</strong>", article)
+
+    def test_preview_escaped_punctuation_is_literal_but_not_markup(self) -> None:
+        tick = chr(96)
+        source = (
+            r"Stars: \*literal\* and underscores: \_literal\_." "\n\n"
+            r"Inline escaped: word\_part and word\*part." "\n\n"
+            r"Brackets: \[not a link](file.txt)." "\n\n"
+            f"Backticks: \\{tick}not code\\{tick} and code: {tick}literal \\_ \\*{tick}.\n\n"
+            r"Escaped HTML opener: \<!-- visible as text -->" "\n"
+        )
+        article = self.render_markdown(source).split(
+            "<article class='md-preview'>", 1)[1].split("</article>", 1)[0]
+        self.assertIn("Stars: *literal* and underscores: _literal_.", article)
+        self.assertIn("Inline escaped: word_part and word*part.", article)
+        self.assertIn("[not a link](file.txt).", article)
+        self.assertIn("Backticks: " + tick + "not code" + tick, article)
+        self.assertIn("<code>literal \\_ \\*</code>", article)
+        self.assertIn("&lt;!-- visible as text --&gt;", article)
+        self.assertNotIn("<em>literal</em>", article)
+        self.assertNotIn("<a href=", article)
+
+    def test_preview_hides_only_real_html_comments_not_escape_markup(self) -> None:
+        source = (
+            "Before<!-- hidden internal comment -->After\n\n"
+            "<!-- hidden multi\n"
+            "line with _literal_ *markers* -->\n\n"
+            "Escapes: \\* and \\_ are visible punctuation.\n\n"
+            "Malformed syntax: !<--this is not a HTML comment-->.\n\n"
+            "Real markup: <!-- hidden again -->done.\n"
+        )
+        article = self.render_markdown(source).split(
+            "<article class='md-preview'>", 1)[1].split("</article>", 1)[0]
+        self.assertIn("BeforeAfter", article)
+        self.assertIn("Escapes: * and _ are visible punctuation.", article)
+        self.assertIn("!&lt;--this is not a HTML comment--&gt;", article)
+        self.assertIn("Real markup: done.", article)
+        self.assertNotIn("hidden internal comment", article)
+        self.assertNotIn("hidden multi", article)
+        self.assertNotIn("hidden again", article)
+
     def test_preview_hides_html_comments_but_keeps_code_examples(self) -> None:
         page = self.render_markdown(
             "Before\n\n"
