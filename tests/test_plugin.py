@@ -244,6 +244,90 @@ class MarkdownPreviewTests(unittest.TestCase):
         self.assertIn("<code>a|b</code>", page)
         self.assertEqual(page.count("<table>"), 1)
 
+    def test_gfm_table_continues_past_160_rows_without_raw_markdown(self) -> None:
+        # Regression: after 160 data rows, the renderer previously fell out of
+        # table mode and displayed all remaining | ... | lines as one paragraph.
+        for row_count in (159, 160, 161, 320, 321):
+            with self.subTest(rows=row_count):
+                source = (
+                    "| ID | Parameter |\n"
+                    "| --- | :--- |\n"
+                    + "".join(f"| {i} | ROW-{i:03d} |\n" for i in range(1, row_count + 1))
+                    + "\n## Following heading\n\nAfter the table.\n"
+                )
+                page = self.render_markdown(source)
+                article = page.split("<article class='md-preview'>", 1)[1].split("</article>", 1)[0]
+                tables = re.findall(r"<table>(.*?)</table>", article, flags=re.DOTALL)
+                expected_tables = (row_count + 159) // 160
+                self.assertEqual(len(tables), expected_tables)
+                self.assertEqual(article.count("<td>"), row_count * 2)
+                self.assertEqual(article.count("<th>"), expected_tables * 2)
+                self.assertEqual(article.count("<tbody>"), expected_tables)
+                self.assertIn(f"<td>ROW-{row_count:03d}</td>", tables[-1])
+                self.assertIn("<h2>Following heading</h2>", article)
+                self.assertIn("<p>After the table.</p>", article)
+                self.assertNotIn(f"<p>| {row_count} |", article)
+                for chunk in tables:
+                    self.assertLessEqual(chunk.count("<tr>") - 1, 160)
+                if row_count > 160:
+                    self.assertIn("<th>ID</th>", tables[-1],
+                                  "Continuation table repeats the header")
+
+    def test_large_gfm_table_70_kib_keeps_all_rows_structured_and_escaped(self) -> None:
+        # Deliberately larger than the *editor* 64 KiB threshold. Preview
+        # should not use that separate threshold or lose its Markdown context.
+        rows = 400
+        value = "long value " * 18
+        source = (
+            "# Table near the editor threshold\n\n"
+            "| Index | Value | Code |\n"
+            "| --- | --- | --- |\n"
+            + "".join(
+                f"| {i} | {value} ROW-{i:03d} | "
+                + (r"escaped \| cell" if i == 161 else
+                   "<script>alert(1)</script>" if i == 321 else
+                   chr(96) + "a|b" + chr(96))
+                + " |\n"
+                for i in range(1, rows + 1)
+            )
+            + "\n## After large table\n\nDone.\n"
+        )
+        self.assertGreater(len(source.encode("utf-8")), 64 * 1024)
+        self.assertLess(len(source.encode("utf-8")), plugin.MAX_PREVIEW_BYTES)
+        page = self.render_markdown(source)
+        article = page.split("<article class='md-preview'>", 1)[1].split("</article>", 1)[0]
+        self.assertEqual(article.count("<table>"), 3)
+        self.assertEqual(article.count("<tbody>"), 3)
+        self.assertEqual(article.count("<td>"), rows * 3)
+        self.assertEqual(article.count("<th>"), 9)
+        self.assertIn("ROW-160", article)
+        self.assertIn("ROW-161", article)
+        self.assertIn("ROW-400", article)
+        self.assertIn("<td>escaped | cell</td>", article)
+        self.assertIn("<code>a|b</code>", article)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", article)
+        self.assertNotIn("<script>alert(1)</script>", article)
+        self.assertIn("<h2>After large table</h2>", article)
+        self.assertNotIn("Preview truncated to keep", article)
+        self.assertEqual(article.count("<p>Done.</p>"), 1)
+        self.assertNotIn("<p>| 161 |", article)
+
+    def test_table_continuation_stops_at_blank_or_fenced_block(self) -> None:
+        first = "| A | B |\n| - | - |\n" + "".join(
+            f"| x{i} | {i} |\n" for i in range(164)
+        )
+        source = (
+            first + "\nParagraph after table.\n\n"
+            "~~~markdown\n| code | is not table |\n| --- | --- |\n~~~\n\n"
+            "| Second | Table |\n| --- | --- |\n| one | two |\n"
+        )
+        article = self.render_markdown(source).split("<article class='md-preview'>", 1)[1].split("</article>", 1)[0]
+        self.assertEqual(article.count("<table>"), 3)
+        self.assertEqual(article.count("<td>"), (164 + 1) * 2)
+        self.assertIn("<p>Paragraph after table.</p>", article)
+        self.assertIn("| code | is not table |", article)
+        self.assertIn("<td>one</td>", article)
+
     def test_preview_hides_html_comments_but_keeps_code_examples(self) -> None:
         page = self.render_markdown(
             "Before\n\n"

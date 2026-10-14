@@ -54,7 +54,7 @@ On first launch, the bootstrap needs internet access to download missing tools. 
 
 **Preview** is the fast, read-only starting point. The Markdown toolbar switches between **Preview / Edit visually / Source** without navigating away when nothing needs refreshing. **Edit visually** lets you type into the rendered document; **Source** edits the exact Markdown text and does not load the large visual editor bundle. Both editors share versioned saves and local draft recovery. Save the resulting **Markdown file**, not a proprietary document.
 
-In **Preview**, GFM pipe tables are rendered (including escaped pipes and pipes inside inline code), and HTML comments stay hidden. In **Edit visually** and **Source**, comments and Mermaid code remain available to edit. Mermaid is rendered as a diagram **only in Preview**. HTML content such as raw `<table>` tags is escaped, not executed.
+In **Preview**, GFM pipe tables are rendered (including escaped pipes and pipes inside inline code), and HTML comments stay hidden. Long tables continue as consecutive HTML table sections of at most 160 data rows each, with the column headers repeated; extra rows are **not** shown as raw Markdown. This is a Preview rendering budget, independent of the **64 KiB** threshold that enables paged **Edit visually**. Preview itself reads a bounded amount of Markdown (up to 600,000 characters) and reports when its source is truncated. In **Edit visually** and **Source**, comments and Mermaid code remain available to edit. Mermaid is rendered as a diagram **only in Preview**. HTML content such as raw `<table>` tags is escaped, not executed.
 
 A few things that matter outside a demo:
 

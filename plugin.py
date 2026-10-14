@@ -528,25 +528,36 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             close_list()
             close_quote()
             headers = _split_table_row(line)
-            rows: List[List[str]] = []
-            i += 2
-            while i < len(lines) and "|" in lines[i] and lines[i].strip() and len(rows) < MAX_TABLE_ROWS:
-                rows.append(_split_table_row(lines[i]))
-                i += 1
             head = "".join(f"<th>{_md_inline(cell, path, root)}</th>" for cell in headers)
-            body_rows = []
-            for row in rows:
-                cells = row + [""] * max(0, len(headers) - len(row))
-                body_rows.append(
-                    "<tr>" + "".join(f"<td>{_md_inline(cell, path, root)}</td>" for cell in cells[:len(headers)]) + "</tr>"
+            i += 2
+            # Keep a bounded row batch for DOM/layout cost, but do not leave
+            # table mode when the batch fills. Each continuation repeats the
+            # heading row; all remaining rows stay structured HTML, not a
+            # paragraph of literal Markdown pipes.
+            while True:
+                rows: List[List[str]] = []
+                while (i < len(lines) and "|" in lines[i] and lines[i].strip()
+                       and len(rows) < MAX_TABLE_ROWS):
+                    rows.append(_split_table_row(lines[i]))
+                    i += 1
+                body_rows = []
+                for row in rows:
+                    cells = row + [""] * max(0, len(headers) - len(row))
+                    body_rows.append(
+                        "<tr>" + "".join(
+                            f"<td>{_md_inline(cell, path, root)}</td>"
+                            for cell in cells[:len(headers)]
+                        ) + "</tr>"
+                    )
+                out.append(
+                    '<div class="table-wrap"><table><thead><tr>'
+                    + head
+                    + "</tr></thead><tbody>"
+                    + "".join(body_rows)
+                    + "</tbody></table></div>"
                 )
-            out.append(
-                '<div class="table-wrap"><table><thead><tr>'
-                + head
-                + "</tr></thead><tbody>"
-                + "".join(body_rows)
-                + "</tbody></table></div>"
-            )
+                if i >= len(lines) or "|" not in lines[i] or not lines[i].strip():
+                    break
             continue
 
         if not stripped:

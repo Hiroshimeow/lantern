@@ -116,6 +116,46 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_preview_long_table_continuation_is_structured_in_real_edge(self):
+        # The 160-row Markdown Preview budget must not spill subsequent rows
+        # into a paragraph. This fixture also exceeds the separate 64 KiB
+        # *visual editor* threshold, which must not affect Preview rendering.
+        path = self.root / "preview-long-table.md"
+        original = (
+            "# Detailed table\n\n"
+            "| Number | Key | Value |\n"
+            "| --- | --- | --- |\n"
+            + "".join(
+                f"| {i} | ROW-{i:03d} | " + ("a" * 190) + " |\n"
+                for i in range(1, 361)
+            )
+            + "\n## Following section\n\nStill readable.\n"
+        )
+        self.assertGreater(len(original.encode("utf-8")), 64 * 1024)
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1366, "height": 900})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=preview-long-table.md",
+                      wait_until="domcontentloaded", timeout=20000)
+            tables = page.locator("article.md-preview table")
+            self.assertEqual(tables.count(), 3)
+            self.assertEqual(tables.nth(0).locator("tbody tr").count(), 160)
+            self.assertEqual(tables.nth(1).locator("tbody tr").count(), 160)
+            self.assertEqual(tables.nth(2).locator("tbody tr").count(), 40)
+            self.assertEqual(tables.nth(1).locator("thead th").first.inner_text(), "Number")
+            self.assertEqual(tables.nth(2).locator("tbody tr").last.locator("td").nth(1).inner_text(), "ROW-360")
+            self.assertTrue(page.get_by_role("heading", name="Following section").is_visible())
+            paragraphs = page.locator("article.md-preview p").all_inner_texts()
+            self.assertFalse(any("| 161 |" in text or "| 321 |" in text for text in paragraphs))
+            self.assertIn("Still readable.", paragraphs)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_dirty_visual_to_source_retains_unsaved_edits(self):
         path = self.root / "visual-dirty.md"
         original = "# Visual draft\n\nOriginal text.\n"
