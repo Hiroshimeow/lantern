@@ -76,7 +76,7 @@ class SharedCropBrowserE2E(unittest.TestCase):
             self.assertAlmostEqual(abs(changed-prior)/scale,1,delta=.15,
                 msg="one arrow key must resize one source pixel, not twice via duplicate handlers")
             self.assertEqual(page.locator("#modalTitle").inner_text(), "picture.png")
-            dialog.get_by_role("button", name="Apply crop").click()
+            dialog.get_by_role("button", name="Save cropped copy").click()
             page.wait_for_function(
                 "() => !!document.querySelector('#modalBody img')?.src.includes('-cropped-')",
                 timeout=22000)

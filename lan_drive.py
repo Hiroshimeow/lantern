@@ -1625,20 +1625,26 @@ async function cropViewedImage(overwriteOriginal=false){
   try{
     const cropURL='/static/vendor/lantern-image-crop.min.js';
     const {openCrop}=await import(cropURL);
-    // Capture the original content hash BEFORE the dialog. Changes made by
-    // another tab during cropping must be refused instead of silently lost.
+    // Capture the original content hash BEFORE the dialog whenever overwrite
+    // is available. The user can choose Save Copy or Overwrite inside Crop;
+    // a concurrent change during the dialog must still be refused.
+    const originalExt=(original.rel.match(/\.([^.]+)$/)||[])[1]?.toLowerCase();
+    const validType={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp'}[originalExt];
+    const canOverwrite=!!validType;
     let originalVersion=null;
-    if(overwriteOriginal){
+    if(canOverwrite){
       const check=await fetch('/api/image/version?p='+encodeURIComponent(original.rel),{cache:'no-store'});
       const state=await check.json();
       if(!check.ok||!state.version)throw Error(state.error||'Cannot inspect original image');
       originalVersion=state.version;
     }
-    const result=await openCrop({src:mediaUrl(original),name:original.name||'Image'});
+    const result=await openCrop({
+      src:mediaUrl(original),name:original.name||'Image',
+      allowOverwrite:canOverwrite,preferredAction:overwriteOriginal?'overwrite':'copy'
+    });
     if(!result)return;
-    if(overwriteOriginal){
-      const originalExt=(original.rel.match(/\.([^.]+)$/)||[])[1]?.toLowerCase();
-      const validType={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp'}[originalExt];
+    const persistOverwrite=result.action==='overwrite'||(!result.action&&overwriteOriginal);
+    if(persistOverwrite){
       if(validType!==result.blob.type)throw Error('Crop output format differs from original; use Crop (Save As)');
       if(!confirm('Overwrite original image? All files using this image will change. This cannot be undone. EXIF/ICC metadata may be lost.'))return;
       const response=await fetch('/api/image/overwrite?p='+encodeURIComponent(original.rel),{

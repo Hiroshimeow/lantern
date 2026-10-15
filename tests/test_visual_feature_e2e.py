@@ -3,6 +3,7 @@
 The production Lantern process / port 9999 must never be targeted.
 """
 from __future__ import annotations
+import base64
 import os
 import unittest
 from tests.test_image_cache_e2e import png_bytes
@@ -34,11 +35,30 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
             page.evaluate('() => {if(state.previewPane)togglePreviewPane();}')
             card.locator('.card-main').click()
             page.locator('#modal.show.media-image').wait_for()
-            page.locator('#modalCropOverwriteBtn').click()
+            # The normal Crop entry point must expose both persistence choices
+            # inside the crop dialog, so Overwrite is not a hidden pre-crop mode.
+            page.locator('#modalCropBtn').click()
             dialog=page.get_by_role('dialog',name='Crop image')
             dialog.wait_for(timeout=15000)
             page.locator('cropper-handle[action$="-resize"]').first.wait_for(timeout=15000)
-            dialog.get_by_role('button',name='Apply crop').click()
+            self.assertTrue(dialog.get_by_role('button',name='Save cropped copy').is_visible())
+            overwrite=dialog.get_by_role('button',name='Overwrite original')
+            self.assertTrue(overwrite.is_visible())
+
+            # Paste a second image like Paint: it becomes a movable/resizable
+            # overlay and is flattened into the crop result on persistence.
+            pasted=base64.b64encode(png_bytes((235,30,40),size=96)).decode()
+            page.evaluate("""encoded => {
+              const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
+              const file=new File([bytes],'clipboard.png',{type:'image/png'});
+              const dt=new DataTransfer();dt.items.add(file);
+              const dialog=document.querySelector('.lantern-crop-dialog');
+              dialog.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt}));
+            }""",pasted)
+            layer=dialog.locator('.lantern-crop-paste-layer')
+            layer.wait_for(state='visible',timeout=8000)
+            self.assertTrue(layer.locator('.lantern-crop-paste-resize').is_visible())
+            overwrite.click()
             page.wait_for_function(
                 "() => !document.querySelector('.lantern-crop-dialog') &&"
                 " document.querySelector('#modalBody img')?.src.includes('sha256')",
@@ -46,6 +66,15 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
             self.assertNotEqual(target.read_bytes(),old)
             self.assertEqual(sorted(x.name for x in folder.iterdir()),['original.png'])
             self.assertIn('original.png',page.locator('#modalTitle').inner_text())
+            pixel=page.evaluate("""async () => {
+              const img=document.querySelector('#modalBody img');await img.decode();
+              const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+              const ctx=c.getContext('2d');ctx.drawImage(img,0,0);
+              return [...ctx.getImageData(Math.floor(c.width/2),Math.floor(c.height/2),1,1).data];
+            }""")
+            self.assertGreater(pixel[0],180,pixel)
+            self.assertLess(pixel[1],100,pixel)
+            self.assertLess(pixel[2],120,pixel)
             self.assertEqual(errors,[])
         finally:context.close()
 
@@ -69,10 +98,10 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
         try:
             stale=begin_crop(b)
             current=begin_crop(a)
-            current.get_by_role('button',name='Apply crop').click()
+            current.get_by_role('button',name='Overwrite original').click()
             a.wait_for_function("() => document.querySelector('#modalBody img')?.src.includes('sha256')",timeout=23000)
             first_commit=target.read_bytes()
-            stale.get_by_role('button',name='Apply crop').click()
+            stale.get_by_role('button',name='Overwrite original').click()
             b.wait_for_function("() => document.querySelector('#toast')?.textContent?.includes('image changed')",timeout=14000)
             self.assertEqual(target.read_bytes(),first_commit)
             self.assertEqual(sorted(p.name for p in folder.iterdir()),['sample.png'])

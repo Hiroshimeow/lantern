@@ -21,9 +21,14 @@ const CSS = [
   '.lantern-crop-tip{margin:0 0 12px;color:#b9cad9}',
   '.lantern-crop-stage{position:relative;display:block;width:100%;height:min(63dvh,680px);min-height:180px;background:#070b10;overflow:hidden;border:1px solid #526981;touch-action:none}',
   '.lantern-crop-stage cropper-canvas{display:block;width:100%;height:100%}',
+  '.lantern-crop-paste-layer{position:absolute;z-index:30;border:2px solid #ffd178;border-radius:4px;cursor:move;touch-action:none;user-select:none;box-shadow:0 0 0 1px rgba(0,0,0,.55)}',
+  '.lantern-crop-paste-layer>img{display:block;width:100%;height:100%;object-fit:fill;pointer-events:none}',
+  '.lantern-crop-paste-resize{position:absolute;right:-9px;bottom:-9px;width:18px;height:18px;border:2px solid #101a28;background:#ffd178;cursor:nwse-resize;padding:0!important;min-height:0!important}',
+  '.lantern-crop-paste-remove{position:absolute;right:-11px;top:-11px;width:22px;height:22px;border-radius:50%!important;padding:0!important;min-height:0!important;background:#7d2632!important;line-height:18px}',
   '.lantern-crop-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:12px}',
   '.lantern-crop-actions button{border:1px solid #536a83;border-radius:8px;background:#263748;color:#fff;padding:7px 12px;font:inherit;cursor:pointer;min-height:36px}',
   '.lantern-crop-actions button.primary{background:#337b62;border-color:#44a885}',
+  '.lantern-crop-actions button.danger{background:#7d2632;border-color:#b94b5b}',
   '.lantern-crop-actions button:disabled{opacity:.6;cursor:progress}',
   '.lantern-crop-size{font:12px/1.4 ui-monospace,monospace;color:#cfe0ed;margin-right:auto}',
   '.lantern-crop-status{min-height:20px;margin-top:8px;color:#ffce80}',
@@ -123,7 +128,7 @@ function toBlob(canvas,type,quality) {
     catch(e){reject(e);}
   });
 }
-export async function openCrop({src,name='image',signal}={}) {
+export async function openCrop({src,name='image',signal,allowOverwrite=false,preferredAction='copy'}={}) {
   if(!src)throw Error('Image URL missing.');
   const url=new URL(src,location.href);
   if(url.origin!==location.origin)throw Error('Only local images can be cropped.');
@@ -137,7 +142,7 @@ export async function openCrop({src,name='image',signal}={}) {
   dialog.setAttribute('aria-label','Crop image');
   const heading=document.createElement('h2');heading.textContent='Crop image — '+name;
   const tip=document.createElement('p');tip.className='lantern-crop-tip';
-  tip.textContent='Drag any corner to resize, or drag inside to move. Zoom with +/− or the mouse wheel. A new file will be created.';
+  tip.textContent='Drag any corner to resize, or drag inside to move. Zoom with +/− or the mouse wheel. Ctrl+V pastes an image layer; drag it to move and drag its corner to resize.';
   const stage=document.createElement('div');stage.className='lantern-crop-stage';
   const actions=document.createElement('div');actions.className='lantern-crop-actions';
   const measure=document.createElement('span');measure.className='lantern-crop-size';measure.setAttribute('aria-live','polite');actions.append(measure);
@@ -145,14 +150,20 @@ export async function openCrop({src,name='image',signal}={}) {
     const b=document.createElement('button');b.type='button';b.textContent=label;b.className=klass;actions.append(b);return b;
   };
   const zoomOut=button('−'),zoomIn=button('+'),reset=button('Reset');
-  const cancel=button('Cancel'),apply=button('Apply crop','primary');
+  const cancel=button('Cancel');
+  const apply=allowOverwrite?null:button('Apply crop','primary');
+  const saveCopy=allowOverwrite?button('Save cropped copy',preferredAction==='copy'?'primary':''):null;
+  const overwrite=allowOverwrite?button('Overwrite original',preferredAction==='overwrite'?'primary danger':'danger'):null;
   const status=document.createElement('div');status.className='lantern-crop-status';status.setAttribute('role','status');
   dialog.append(heading,tip,stage,actions,status);document.body.append(dialog);dialog.showModal();
   return new Promise(resolve=>{
     let cropper,selection,cropperImage,source,format,done=false,exporting=false,frame=0;
+    const pasteLayers=[];
+    const cropButtons=[apply,saveCopy,overwrite].filter(Boolean);
     const finish=result=>{
       if(done)return;done=true;abort.abort();signal?.removeEventListener('abort',abortParent);
       if(frame)cancelAnimationFrame(frame);
+      for(const layer of pasteLayers) URL.revokeObjectURL(layer.url);
       cropper?.destroy();dialog.close();dialog.remove();resolve(result);
     };
     abort.signal.addEventListener('abort',()=>finish(null),{once:true});
@@ -175,6 +186,75 @@ export async function openCrop({src,name='image',signal}={}) {
     });
     // The viewer listens for keyboard navigation on document.
     dialog.addEventListener('touchend',e=>e.stopPropagation(),{passive:true});
+    const selectionBounds=()=>{
+      if(!selection)return null;
+      const r=selection.getBoundingClientRect(),base=stage.getBoundingClientRect();
+      if(!r.width||!r.height)return null;
+      return {left:r.left-base.left,top:r.top-base.top,width:r.width,height:r.height};
+    };
+    const placeLayer=(layer,left,top,width,height)=>{
+      const bounds=selectionBounds();if(!bounds)return;
+      width=Math.max(24,Math.min(width,bounds.width));
+      height=Math.max(24,Math.min(height,bounds.height));
+      left=Math.max(bounds.left,Math.min(left,bounds.left+bounds.width-width));
+      top=Math.max(bounds.top,Math.min(top,bounds.top+bounds.height-height));
+      Object.assign(layer.el.style,{left:left+'px',top:top+'px',width:width+'px',height:height+'px'});
+    };
+    const clampLayers=()=>{
+      const bounds=selectionBounds();if(!bounds)return;
+      for(const layer of pasteLayers) {
+        const left=parseFloat(layer.el.style.left)||bounds.left,top=parseFloat(layer.el.style.top)||bounds.top;
+        const width=layer.el.offsetWidth||32,height=layer.el.offsetHeight||32;
+        placeLayer(layer,left,top,width,height);
+      }
+    };
+    const removeLayer=layer=>{
+      const at=pasteLayers.indexOf(layer);if(at>=0)pasteLayers.splice(at,1);
+      layer.el.remove();URL.revokeObjectURL(layer.url);
+    };
+    const addPastedLayer=async file=>{
+      if(!selection)throw Error('Crop selection is not ready yet.');
+      if(!file||!file.type.startsWith('image/'))throw Error('Clipboard does not contain an image.');
+      if(file.size>MAX_BYTES)throw Error('Pasted image exceeds 20 MiB.');
+      const objectURL=URL.createObjectURL(file);
+      const img=new Image();img.decoding='async';img.src=objectURL;
+      try{await img.decode();}catch(e){URL.revokeObjectURL(objectURL);throw Error('Cannot decode pasted image.');}
+      const bounds=selectionBounds();if(!bounds){URL.revokeObjectURL(objectURL);throw Error('Crop selection is not ready yet.');}
+      const scale=Math.min(bounds.width*.45/img.naturalWidth,bounds.height*.45/img.naturalHeight);
+      const width=Math.max(32,img.naturalWidth*scale),height=Math.max(32,img.naturalHeight*scale);
+      const el=document.createElement('div');el.className='lantern-crop-paste-layer';el.tabIndex=0;
+      el.setAttribute('aria-label','Pasted image layer');
+      const resize=document.createElement('button');resize.type='button';resize.className='lantern-crop-paste-resize';resize.setAttribute('aria-label','Resize pasted image');
+      const remove=document.createElement('button');remove.type='button';remove.className='lantern-crop-paste-remove';remove.textContent='×';remove.setAttribute('aria-label','Remove pasted image');
+      el.append(img,resize,remove);stage.append(el);
+      const layer={el,image:img,url:objectURL,ratio:img.naturalWidth/img.naturalHeight};pasteLayers.push(layer);
+      placeLayer(layer,bounds.left+(bounds.width-width)/2,bounds.top+(bounds.height-height)/2,width,height);
+      el.addEventListener('pointerdown',event=>{
+        if(event.button!==0||event.target.closest('button'))return;
+        const start={x:event.clientX,y:event.clientY,left:parseFloat(el.style.left)||0,top:parseFloat(el.style.top)||0,width:el.offsetWidth,height:el.offsetHeight};
+        el.setPointerCapture(event.pointerId);event.preventDefault();
+        const move=e=>placeLayer(layer,start.left+e.clientX-start.x,start.top+e.clientY-start.y,start.width,start.height);
+        const end=e=>{el.removeEventListener('pointermove',move);el.releasePointerCapture?.(e.pointerId);};
+        el.addEventListener('pointermove',move);el.addEventListener('pointerup',end,{once:true});el.addEventListener('pointercancel',end,{once:true});
+      });
+      resize.addEventListener('pointerdown',event=>{
+        if(event.button!==0)return;
+        const start={x:event.clientX,width:el.offsetWidth,left:parseFloat(el.style.left)||0,top:parseFloat(el.style.top)||0};
+        resize.setPointerCapture(event.pointerId);event.preventDefault();event.stopPropagation();
+        const move=e=>{const width=Math.max(32,start.width+e.clientX-start.x);placeLayer(layer,start.left,start.top,width,width/layer.ratio);};
+        const end=e=>{resize.removeEventListener('pointermove',move);resize.releasePointerCapture?.(e.pointerId);};
+        resize.addEventListener('pointermove',move);resize.addEventListener('pointerup',end,{once:true});resize.addEventListener('pointercancel',end,{once:true});
+      });
+      remove.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();removeLayer(layer);});
+      status.textContent='Pasted image added. Drag to move; drag the corner to resize.';
+    };
+    dialog.addEventListener('paste',event=>{
+      const item=[...(event.clipboardData?.items||[])].find(x=>x.type?.startsWith('image/'));
+      const file=item?.getAsFile?.();
+      if(!file)return;
+      event.preventDefault();event.stopPropagation();
+      void addPastedLayer(file).catch(error=>{status.textContent=error.message||String(error);});
+    });
     const update=()=>{
       if(frame||done||!selection||!cropperImage||!source)return;
       frame=requestAnimationFrame(()=>{
@@ -188,35 +268,47 @@ export async function openCrop({src,name='image',signal}={}) {
     zoomOut.addEventListener('click',()=>{cropperImage?.$zoom(-.15);update();});
     zoomIn.addEventListener('click',()=>{cropperImage?.$zoom(.15);update();});
     reset.addEventListener('click',()=>{cropperImage?.$reset();selection?.$reset();update();});
-    apply.addEventListener('click',async()=>{
+    const exportCrop=async action=>{
       if(!selection||!cropperImage||exporting)return;
-      exporting=true;apply.disabled=true;reset.disabled=true;zoomIn.disabled=true;zoomOut.disabled=true;
+      exporting=true;for(const control of cropButtons)control.disabled=true;reset.disabled=true;zoomIn.disabled=true;zoomOut.disabled=true;
       status.textContent='Encoding image…';
       try {
         const rect=selectedPixels(selection,cropperImage,source.naturalWidth,source.naturalHeight);
         if(rect.width*rect.height>MAX_PIXELS)throw Error('Crop exceeds the 60 MP export limit; select a smaller area.');
-        if(rect.width===source.naturalWidth&&rect.height===source.naturalHeight)
+        if(!pasteLayers.length&&rect.width===source.naturalWidth&&rect.height===source.naturalHeight)
           throw Error('Choose a smaller area; this selection covers the entire image.');
         const canvas=document.createElement('canvas');canvas.width=rect.width;canvas.height=rect.height;
         let blob;
         try {
           const ctx=canvas.getContext('2d');
           if(!ctx)throw Error('No canvas drawing context available.');
-          // One full-resolution draw only on Apply; no per-pointer canvas repaint.
           ctx.drawImage(source,rect.x,rect.y,rect.width,rect.height,0,0,rect.width,rect.height);
+          if(pasteLayers.length){
+            const selectedBox=selection.getBoundingClientRect();
+            if(!selectedBox.width||!selectedBox.height)throw Error('Crop selection is not laid out.');
+            const scaleX=rect.width/selectedBox.width,scaleY=rect.height/selectedBox.height;
+            for(const layer of pasteLayers){
+              const box=layer.el.getBoundingClientRect();
+              ctx.drawImage(layer.image,(box.left-selectedBox.left)*scaleX,(box.top-selectedBox.top)*scaleY,
+                box.width*scaleX,box.height*scaleY);
+            }
+          }
           const type=format==='image/bmp'||format==='image/webp-alpha'?'image/png':format;
           blob=await toBlob(canvas,type,type==='image/jpeg'?.92:undefined);
           if(blob.type!==type&&!(type==='image/webp'&&blob.type==='image/png'))
             throw Error('Browser did not provide the required encoder.');
           if(blob.size>MAX_BYTES)throw Error('Output exceeds 20 MiB; choose a smaller crop.');
         }finally{canvas.width=0;canvas.height=0;}
-        if(!abort.signal.aborted&&!done)finish({blob,extension:imageExtension(blob.type),rect,sourceType:format});
+        if(!abort.signal.aborted&&!done)finish({blob,extension:imageExtension(blob.type),rect,sourceType:format,action});
       }catch(e){if(!done&&!abort.signal.aborted)status.textContent=e.message||String(e);}
       finally {
         exporting=false;
-        if(!done){apply.disabled=false;reset.disabled=false;zoomIn.disabled=false;zoomOut.disabled=false;}
+        if(!done){for(const control of cropButtons)control.disabled=false;reset.disabled=false;zoomIn.disabled=false;zoomOut.disabled=false;}
       }
-    });
+    };
+    apply?.addEventListener('click',()=>{void exportCrop('apply');});
+    saveCopy?.addEventListener('click',()=>{void exportCrop('copy');});
+    overwrite?.addEventListener('click',()=>{void exportCrop('overwrite');});
     (async()=>{
       try {
         format=await sourceFormat(url.href,abort.signal);
@@ -236,12 +328,12 @@ export async function openCrop({src,name='image',signal}={}) {
           handle.setAttribute('aria-label','Resize '+(name[corner]||corner)+' corner');
         }
         selection.tabIndex=0;selection.setAttribute('aria-label','Move crop selection');
-        selection.addEventListener('change',update);
+        selection.addEventListener('change',()=>{update();clampLayers();});
         update();
         status.textContent='Original image remains unchanged.';
       }catch(e){
         if(!abort.signal.aborted&&!done)status.textContent='Crop unavailable: '+(e.message||String(e));
-        apply.disabled=true;
+        for(const control of cropButtons)control.disabled=true;
       }
     })();
   });

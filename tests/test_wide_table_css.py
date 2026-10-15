@@ -17,10 +17,15 @@ class WideTableStyleTests(unittest.TestCase):
         self.assertNotRegex(rule,r'(?<!-)width:100%;')
 
     def test_wide_table_scroller_and_cell_minimum(self):
-        css=(ROOT/'static/markdown_visual_shell.css').read_text()
+        css=(ROOT/'static/markdown_visual_shell.css').read_text(encoding='utf-8')
         block=list(re.finditer(r'\.md-visual-host \.milkdown \.milkdown-table-block\s*\{([^}]+)\}',css))[-1].group(1)
-        self.assertIn('overflow-x:auto',block)
+        wrapper=list(re.finditer(r'\.md-visual-host \.milkdown \.milkdown-table-block \.table-wrapper\s*\{([^}]+)\}',css))[-1].group(1)
+        # Milkdown's add/delete handles extend outside the table block, so that
+        # outer block must not clip them. Only the inner table wrapper scrolls.
+        self.assertIn('overflow:visible',block)
         self.assertIn('max-width:100%',block)
+        self.assertIn('overflow-x:auto',wrapper)
+        self.assertIn('max-width:100%',wrapper)
         self.assertIn('min-width:10ch',css)
         self.assertIn('min-width:12ch',css)
 
