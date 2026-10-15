@@ -123,3 +123,49 @@ class MarkdownInteractionsBrowser(unittest.TestCase):
             self.assertEqual(page.locator('.table-wrap th').count(),30)
         finally:
             page.close()
+
+    def test_position_restore_failure_keeps_source_editor_open(self):
+        markup = ('<div class="content"><button data-action="mode-preview">Preview</button>'
+                  '<button data-action="mode-source">Source</button>'
+                  '<button data-action="visual-edit" data-path="sample.md">Edit visually</button>'
+                  '<article class="md-preview"><p data-l="3">Second paragraph.</p></article></div>')
+        page = self.page(markup, '# Title\n\nSecond paragraph.\n')
+        try:
+            page.evaluate('''() => {
+              window.LanternAnchorBridge.restore=async () => { throw Error('synthetic mapping failure') };
+            }''')
+            page.locator('[data-action="mode-source"]').click()
+            page.locator('textarea.md-source-area').wait_for(timeout=3000)
+            self.assertTrue(page.evaluate('window.__lanternMdVisual.state.mode === "source"'))
+            self.assertTrue(page.locator('article.md-preview').is_hidden())
+        finally:
+            page.close()
+
+    def test_late_visual_table_mount_keeps_document_outside_resize(self):
+        markup = '<div class="content"><article class="md-preview"></article></div>'
+        page = self.page(markup, '| A | B |\n|---|---|\n| 1 | 2 |\n')
+        try:
+            page.evaluate('''() => {
+              const host = document.createElement('div');
+              host.className='md-visual-host';
+              host.innerHTML='<div class="milkdown"><div class="milkdown-table-block" style="width:400px">'
+                + '<div class="table-wrapper"><table class="children"><thead><tr>'
+                + Array.from({length:20},(_,i)=>'<th>Column '+i+'</th>').join('')
+                + '</tr></thead></table></div></div></div>';
+              document.querySelector('.content').append(host);
+            }''')
+            pan = page.locator('.md-visual-host .lantern-table-pan')
+            pan.wait_for(state='visible', timeout=3000)
+            first = page.locator('.md-visual-host th').first.bounding_box()
+            edge_y = first['y'] + first['height'] / 2
+            edge_x = first['x'] + first['width'] - 3
+            page.mouse.move(edge_x, edge_y)
+            page.mouse.down()
+            page.mouse.move(edge_x + 34, edge_y, steps=5)
+            page.mouse.up()
+            after = page.locator('.md-visual-host th').first.bounding_box()
+            self.assertGreater(after['width'], first['width'] + 22)
+            self.assertEqual(page.locator('.md-visual-host th').count(), 20)
+            self.assertEqual(page.evaluate('window.__source'), '| A | B |\n|---|---|\n| 1 | 2 |\n')
+        finally:
+            page.close()
