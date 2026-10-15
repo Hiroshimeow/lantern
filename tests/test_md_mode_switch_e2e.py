@@ -157,6 +157,57 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_fixed_mode_bar_and_source_mapping_from_deep_preview_scroll(self):
+        original = "# Navigation\n\n" + "\n\n".join(
+            f"Block {i} content for source editing." for i in range(170)) + "\n"
+        target = self.root / "deep-source-navigation.md"
+        target.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 960, "height": 650})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=deep-source-navigation.md",
+                      wait_until="domcontentloaded")
+            marker = page.locator(".md-preview p").nth(120)
+            marker.scroll_into_view_if_needed()
+            page.evaluate("""() => {
+                const node = document.querySelectorAll('.md-preview p')[120];
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                const selection = getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }""")
+            self.assertGreater(page.evaluate("scrollY"), 400)
+            self.assertLessEqual(abs(page.locator(".md-bar").bounding_box()["y"]), 2)
+            page.get_by_role("button", name="Source", exact=True).click()
+            area = page.get_by_role("textbox", name="Markdown source")
+            area.wait_for(timeout=12000)
+            self.assertFalse(page.locator('.content > .note').is_visible())
+            self.assertFalse(page.locator('.content > .muted').is_visible())
+            position = page.evaluate("""() => {
+                const el = document.querySelector('.md-source-area');
+                return {line:el.value.slice(0,el.selectionStart).split('\\n').length,
+                  innerScroll:el.scrollTop, visible:el.getBoundingClientRect().top};
+            }""")
+            self.assertEqual(position["line"], 243)
+            self.assertGreater(position["innerScroll"], 800)
+            self.assertLessEqual(abs(page.locator(".md-bar").bounding_box()["y"]), 2)
+            self.assertTrue(page.locator('[data-action="md-save"]').is_visible())
+            self.assertTrue(page.locator('[data-action="md-download-draft"]').is_visible())
+            self.assertTrue(page.locator('[data-action="md-back-preview"]').is_visible())
+            self.assertTrue(page.get_by_role("button", name="Preview", exact=True).is_visible())
+            page.get_by_role("button", name="Preview", exact=True).click()
+            marker.wait_for(state="visible", timeout=12000)
+            rect = marker.bounding_box()
+            header = page.locator(".md-bar").bounding_box()
+            self.assertGreater(rect["y"], header["height"] - 25)
+            self.assertLess(rect["y"], 650)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_preview_long_table_continuation_is_structured_in_real_edge(self):
         # The 160-row Markdown Preview budget must not spill subsequent rows
         # into a paragraph. This fixture also exceeds the separate 64 KiB

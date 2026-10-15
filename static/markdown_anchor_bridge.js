@@ -46,11 +46,14 @@
     const content = area.value;
     const selection = bookmark ? sourceSelection(content, bookmark) : null;
     const at = offsetForLine(content, line);
+    // Focus and place the selection before restoring the textarea's own scroll.
+    // Selecting a caret can otherwise reset scrollTop in Chromium/Edge.
+    area.focus({preventScroll: true});
     area.setSelectionRange(selection?.start ?? at, selection?.end ?? at);
+    area.scrollIntoView({block:'start', behavior:'instant'});
     const style = getComputedStyle(area);
     const height = Number.parseFloat(style.lineHeight) || 21;
     area.scrollTop = Math.max(0, (positiveLine(line) - 2) * height);
-    area.focus({preventScroll: true});
     return selection?.start ?? at;
   }
   function anchorFromElement(element) {

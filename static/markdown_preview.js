@@ -3,6 +3,17 @@
   window.opener = null;
   const appScript = document.currentScript;
   const nonce = appScript ? appScript.nonce : "";
+  const fixedBar = document.querySelector('.bar.md-bar');
+  if (fixedBar) {
+    const syncHeight = () => {
+      const height = Math.ceil(fixedBar.getBoundingClientRect().height) + 'px';
+      if (document.documentElement.style.getPropertyValue('--md-bar-height') !== height)
+        document.documentElement.style.setProperty('--md-bar-height', height);
+    };
+    syncHeight();
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncHeight).observe(fixedBar);
+    else addEventListener('resize', syncHeight);
+  }
   const diagrams = Array.from(document.querySelectorAll(".mermaid-diagram")).slice(0, 24);
   const docName = (document.querySelector("[data-doc-name]")?.getAttribute("data-doc-name") || "document")
     .replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "document";

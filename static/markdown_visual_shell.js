@@ -6,6 +6,11 @@
   const sourceTrigger = document.querySelector('[data-action="mode-source"]');
   const previewTrigger = document.querySelector('[data-action="mode-preview"]');
   const preview = document.querySelector('article.md-preview');
+  const topActions = document.querySelector('[data-md-edit-actions]');
+  const topStatus = document.querySelector('[data-md-status]');
+  const saveHeader = document.querySelector('[data-action="md-save"]');
+  const draftHeader = document.querySelector('[data-action="md-download-draft"]');
+  const backHeader = document.querySelector('[data-action="md-back-preview"]');
   if (!trigger || !sourceTrigger || !previewTrigger || !preview) return;
 
   const path = trigger.getAttribute('data-path');
@@ -161,6 +166,7 @@
   };
   const restoreButtons = () => {
     const paged = !!window.__lanternMdPaged?.active;
+    root?.classList.toggle('md-editing', view.active || paged);
     trigger.disabled = view.loading || view.saving || paged;
     trigger.textContent = paged ? 'Editing by section' : 'Edit visually';
     sourceTrigger.disabled = view.loading || view.saving;
@@ -171,6 +177,12 @@
       control.setAttribute('aria-pressed', String(view.mode === mode || (mode === 'visual' && paged)));
     }
     if (view.saveButton) view.saveButton.disabled = view.saving;
+    if (topActions) topActions.hidden = !view.active;
+    if (topStatus) {
+      topStatus.hidden = !view.active;
+      // Paged documents own a separate status element; never shadow its selector.
+      topStatus.classList.toggle('md-visual-status', view.active);
+    }
   };
 
   const ensureShellStyle = () => {
@@ -217,31 +229,7 @@
     ensureShellStyle();
     const shell = document.createElement('section');
     shell.className = 'md-visual-shell';
-    const tools = document.createElement('div');
-    tools.className = 'md-visual-tools';
-    const heading = document.createElement('span');
-    heading.textContent = kind === 'source' ? 'Markdown source · exact text' : 'Edit directly in document';
-    heading.className = 'md-visual-label';
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'btn primary';
-    saveBtn.textContent = 'Save';
-    saveBtn.type = 'button';
-    saveBtn.addEventListener('click', () => { void save(true); });
-    const draftBtn = document.createElement('button');
-    draftBtn.className = 'btn';
-    draftBtn.textContent = 'Download draft';
-    draftBtn.type = 'button';
-    draftBtn.addEventListener('click', downloadDraft);
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'btn';
-    closeBtn.textContent = 'Back to preview';
-    closeBtn.type = 'button';
-    closeBtn.addEventListener('click', () => { void close(); });
-    const label = document.createElement('span');
-    label.className = 'md-visual-status';
-    label.setAttribute('role', 'status');
-    label.setAttribute('aria-live', 'polite');
-    tools.append(heading, saveBtn, draftBtn, closeBtn, label);
+    // Editing actions and status belong to the fixed page header.
     const editorHost = document.createElement('div');
     editorHost.className = 'md-visual-host';
     editorHost.id = 'md-visual-edit-' + escapeCss(path);
@@ -256,12 +244,12 @@
       editorHost.append(area);
       view.instance = { getMarkdown: () => area.value, focus: () => area.focus(), destroy: () => {} };
     }
-    shell.append(tools, editorHost);
+    shell.append(editorHost);
     preview.insertAdjacentElement('afterend', shell);
     view.host = shell;
-    view.status = label;
-    view.saveButton = saveBtn;
-    view.closeButton = closeBtn;
+    view.status = topStatus;
+    view.saveButton = saveHeader;
+    view.closeButton = backHeader;
     return editorHost;
   }
 
@@ -602,6 +590,9 @@
 
   // The browser blurs contenteditable on pointerdown. Capture the ProseMirror
   // selection BEFORE the toolbar button takes focus, not in its click handler.
+  saveHeader?.addEventListener('click', () => { void save(true); });
+  draftHeader?.addEventListener('click', downloadDraft);
+  backHeader?.addEventListener('click', () => { void close(); });
   for (const button of [trigger, sourceTrigger, previewTrigger])
     button.addEventListener('pointerdown', () => { pointerBookmark = capturePosition(); }, true);
   trigger.addEventListener('click', () => { void start('visual', takeBookmark()); });
