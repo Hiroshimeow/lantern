@@ -241,6 +241,45 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_repeated_mode_roundtrip_keeps_same_preview_anchor(self):
+        original = "# Roundtrip\n\n" + "\n\n".join(
+            f"Unique block {i} for repeated mode navigation." for i in range(180)) + "\n"
+        target = self.root / "repeated-mode-anchor.md"
+        target.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=repeated-mode-anchor.md",
+                      wait_until="domcontentloaded")
+            marker = page.locator(".md-preview p").nth(118)
+            marker.scroll_into_view_if_needed()
+            page.evaluate("getSelection().removeAllRanges()")
+            expected = page.evaluate(
+                "() => window.LanternAnchorBridge.capture('preview').line")
+            self.assertGreater(expected, 100)
+
+            for cycle in range(3):
+                page.get_by_role("button", name="Source", exact=True).click()
+                page.locator("textarea.md-source-area").wait_for(timeout=12000)
+                page.get_by_role("button", name="Preview", exact=True).click()
+                page.locator("article.md-preview").wait_for(state="visible", timeout=12000)
+                after_source = page.evaluate(
+                    "() => window.LanternAnchorBridge.capture('preview').line")
+                self.assertEqual(after_source, expected, f"Source roundtrip drifted on cycle {cycle}")
+
+                page.get_by_role("button", name="Edit visually", exact=True).click()
+                page.locator(".md-visual-host .ProseMirror").wait_for(timeout=24000)
+                page.get_by_role("button", name="Preview", exact=True).click()
+                page.locator("article.md-preview").wait_for(state="visible", timeout=12000)
+                after_visual = page.evaluate(
+                    "() => window.LanternAnchorBridge.capture('preview').line")
+                self.assertEqual(after_visual, expected, f"Visual roundtrip drifted on cycle {cycle}")
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_preview_long_table_continuation_is_structured_in_real_edge(self):
         # The 160-row Markdown Preview budget must not spill subsequent rows
         # into a paragraph. This fixture also exceeds the separate 64 KiB
