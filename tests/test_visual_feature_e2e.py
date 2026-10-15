@@ -97,17 +97,22 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
                     table.wait_for(timeout=35000)
                     metrics=page.evaluate('''() => {
                       const root=document.querySelector('.md-visual-host .milkdown-table-block');
+                      const scroller=root.querySelector('.table-wrapper');
                       const table=root.querySelector('table.children');
                       const last=table.querySelector('tr:nth-child(2) td:last-child');
-                      return {clientWidth:root.clientWidth,scrollWidth:root.scrollWidth,
+                      return {clientWidth:scroller.clientWidth,scrollWidth:scroller.scrollWidth,
                               minCellWidth:Math.round(last.getBoundingClientRect().width),
-                              overflowX:getComputedStyle(root).overflowX,
+                              rootOverflowX:getComputedStyle(root).overflowX,
+                              rootOverflowY:getComputedStyle(root).overflowY,
+                              scrollerOverflowX:getComputedStyle(scroller).overflowX,
                               rect:root.getBoundingClientRect().toJSON()};
                     }''')
                     self.assertGreater(metrics['scrollWidth'],metrics['clientWidth']+400,metrics)
                     self.assertGreater(metrics['minCellWidth'],45,metrics)
-                    self.assertEqual(metrics['overflowX'],'auto',metrics)
-                    page.evaluate('''() => {const x=document.querySelector('.md-visual-host .milkdown-table-block');x.scrollLeft=x.scrollWidth;}''')
+                    self.assertEqual(metrics['rootOverflowX'],'visible',metrics)
+                    self.assertEqual(metrics['rootOverflowY'],'visible',metrics)
+                    self.assertEqual(metrics['scrollerOverflowX'],'auto',metrics)
+                    page.evaluate('''() => {const x=document.querySelector('.md-visual-host .milkdown-table-block .table-wrapper');x.scrollLeft=x.scrollWidth;}''')
                     page.wait_for_timeout(300)
                     last=page.locator('.md-visual-host .milkdown-table-block tr:nth-child(2) td:last-child')
                     box=last.bounding_box();self.assertIsNotNone(box)

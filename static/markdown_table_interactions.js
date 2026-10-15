@@ -25,14 +25,16 @@
     const marker = document.createElement('div');
     marker.className = 'lantern-table-resize-marker';marker.hidden = true;
     overlay.append(marker);
-    const context = {port, table, overlay, style:null, widths:null, controller:new AbortController(), observer:null, updatePan:null};
+    const scroller = port.matches('.table-wrap') ? port : (port.querySelector('.table-wrapper') || port);
+    const context = {port, table, scroller, overlay, style:null, widths:null, controller:new AbortController(), observer:null, updatePan:null};
     contexts.set(port, context);
-    const updatePan = () => { drag.hidden = port.scrollWidth <= port.clientWidth + 3; };
+    const updatePan = () => { drag.hidden = scroller.scrollWidth <= scroller.clientWidth + 3; };
     context.updatePan = updatePan;
     if (typeof ResizeObserver !== 'undefined') {
       context.observer = new ResizeObserver(updatePan);
       context.observer.observe(table);
       context.observer.observe(port);
+      if (scroller !== port) context.observer.observe(scroller);
     }
     const headerCells = () => [...(table.rows[0]?.cells || [])];
     const minimum = 90, maximum = 900;
@@ -98,14 +100,14 @@
     let panning = null;
     drag.addEventListener('pointerdown', event => {
       if (event.button !== 0 || drag.hidden) return;
-      panning = {x: event.clientX, scroll: port.scrollLeft};
+      panning = {x: event.clientX, scroll: scroller.scrollLeft};
       drag.setPointerCapture(event.pointerId);
       drag.classList.add('lantern-panning');
       event.preventDefault();event.stopPropagation();
     }, {signal:context.controller.signal});
     drag.addEventListener('pointermove', event => {
       if (!panning) return;
-      port.scrollLeft = panning.scroll - (event.clientX - panning.x);
+      scroller.scrollLeft = panning.scroll - (event.clientX - panning.x);
       event.preventDefault();
     }, {signal:context.controller.signal});
     function endPan(event) {

@@ -204,6 +204,39 @@ class MarkdownModesE2E(unittest.TestCase):
             header = page.locator(".md-bar").bounding_box()
             self.assertGreater(rect["y"], header["height"] - 25)
             self.assertLess(rect["y"], 650)
+
+            # A stale DOM selection from an older Preview visit must not win
+            # over the block actually visible when switching modes again.
+            page.evaluate("""() => {
+                const stale = document.querySelector('.md-preview p:last-of-type');
+                const range = document.createRange();
+                range.selectNodeContents(stale);
+                const selection = getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.querySelectorAll('.md-preview p')[120].scrollIntoView({block:'center'});
+            }""")
+            self.assertLess(page.locator(".md-preview p").nth(120).bounding_box()["y"], 650)
+            expected_line = page.evaluate("""() => {
+                const toolbar = document.querySelector('.md-bar').getBoundingClientRect().bottom;
+                for (const el of document.querySelectorAll('.md-preview [data-l]')) {
+                    const r = el.getBoundingClientRect();
+                    if (r.bottom > toolbar && r.top < innerHeight) return Number(el.dataset.l);
+                }
+                return 1;
+            }""")
+            page.get_by_role("button", name="Source", exact=True).click()
+            area.wait_for(timeout=12000)
+            repeated = page.evaluate("""() => {
+                const el = document.querySelector('.md-source-area');
+                return el.value.slice(0, el.selectionStart).split('\\n').length;
+            }""")
+            self.assertEqual(repeated, expected_line)
+            page.get_by_role("button", name="Preview", exact=True).click()
+            marker.wait_for(state="visible", timeout=12000)
+            rect2 = marker.bounding_box()
+            self.assertGreater(rect2["y"], header["height"] - 25)
+            self.assertLess(rect2["y"], 650)
             self.assertEqual(errors, [])
         finally:
             context.close()

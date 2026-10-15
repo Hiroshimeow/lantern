@@ -62,13 +62,15 @@ class MarkdownInteractionsBrowser(unittest.TestCase):
     def test_preview_source_visual_location_without_file_write(self):
         source = '# Intro\n\n' + '\n\n'.join(f'Section {i} content.' for i in range(90)) + '\n'
         body = ''.join(f'<p data-l="{3+i*2}">Section {i} content.</p>' for i in range(90))
-        markup = ('<div class="content"><button data-action="mode-preview">Preview</button>'
+        markup = ('<div class="md-bar" style="position:fixed;top:0;left:0;right:0;z-index:20;height:52px">'
+                  '<button data-action="mode-preview">Preview</button>'
                   '<button data-action="mode-source">Source</button>'
-                  '<button data-action="visual-edit" data-path="sample.md">Edit visually</button>'
-                  '<article class="md-preview">' + body + '</article></div>')
+                  '<button data-action="visual-edit" data-path="sample.md">Edit visually</button></div>'
+                  '<div class="content" style="padding-top:60px"><article class="md-preview">' + body + '</article></div>')
         page = self.page(markup, source)
         try:
             page.evaluate('''() => {const p=document.querySelector('[data-l="107"]');
+              p.scrollIntoView({block:'center'});
               const r=document.createRange();r.selectNodeContents(p);getSelection().removeAllRanges();getSelection().addRange(r);
             }''')
             page.locator('[data-action="mode-source"]').click()

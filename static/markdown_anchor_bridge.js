@@ -88,11 +88,19 @@
     const node = selection?.anchorNode;
     const origin = node?.nodeType === 1 ? node : node?.parentElement;
     if (origin && preview.contains(origin)) {
-      const anchor = anchorFromElement(origin);
-      if (anchor) {
-        const selected = normalize(selection.toString());
-        if (selected && selected.length <= 512) anchor.selectedText = selected;
-        return anchor;
+      const block = origin.closest?.('[data-l]');
+      const box = block?.getBoundingClientRect();
+      const toolbarBottom = document.querySelector('.md-bar')?.getBoundingClientRect().bottom || 72;
+      // Browser selection survives when Preview is hidden and can point at a
+      // stale block from a previous visit. Only trust it while that block is
+      // actually visible; otherwise the viewport is the user's intent.
+      if (box && box.bottom > toolbarBottom && box.top < innerHeight) {
+        const anchor = anchorFromElement(origin);
+        if (anchor) {
+          const selected = normalize(selection.toString());
+          if (selected && selected.length <= 512) anchor.selectedText = selected;
+          return anchor;
+        }
       }
     }
     return captureViewport(preview);
