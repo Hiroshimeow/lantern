@@ -30,8 +30,8 @@ class MarkdownInteractionsBrowser(unittest.TestCase):
 
     def page(self, markup, source=''):
         page = self.browser.new_page(viewport={'width': 880, 'height': 700})
-        page.set_content('<html><head><style>' + (ROOT / 'static/markdown_table_interactions.css').read_text()
-                         + (ROOT / 'static/markdown_visual_shell.css').read_text()
+        page.set_content('<html><head><style>' + (ROOT / 'static/markdown_table_interactions.css').read_text(encoding='utf-8')
+                         + (ROOT / 'static/markdown_visual_shell.css').read_text(encoding='utf-8')
                          + '</style></head><body>' + markup + '</body></html>')
         page.evaluate('''source => {
           Object.defineProperty(window, 'sessionStorage', {configurable:true,value:{
@@ -56,7 +56,7 @@ class MarkdownInteractionsBrowser(unittest.TestCase):
           }};
         }''', source)
         for file in ('markdown_anchor_bridge.js', 'markdown_table_interactions.js', 'markdown_visual_shell.js'):
-            page.add_script_tag(content=(ROOT / 'static' / file).read_text())
+            page.add_script_tag(content=(ROOT / 'static' / file).read_text(encoding='utf-8'))
         return page
 
     def test_preview_source_visual_location_without_file_write(self):
@@ -121,6 +121,26 @@ class MarkdownInteractionsBrowser(unittest.TestCase):
             scrolled=page.locator('.table-wrap').evaluate('node=>node.scrollLeft')
             self.assertGreater(scrolled,40)
             self.assertEqual(page.locator('.table-wrap th').count(),30)
+        finally:
+            page.close()
+
+    def test_table_handle_appears_after_delayed_table_mount_and_overflow(self):
+        markup = ('<div class="content"><article class="md-preview">'
+                  '<div class="table-wrap" style="width:460px"></div>'
+                  '</article></div>')
+        page = self.page(markup)
+        try:
+            page.evaluate("""() => {
+                const wrapper = document.querySelector('.table-wrap');
+                wrapper.innerHTML='<table><thead><tr><th>Short</th></tr></thead></table>';
+            }""")
+            page.locator('.lantern-table-pan').wait_for(state='attached', timeout=3000)
+            self.assertTrue(page.locator('.lantern-table-pan').is_hidden())
+            page.evaluate("""() => {
+                document.querySelector('.table-wrap thead tr').innerHTML =
+                    Array.from({length:30},(_,i)=>'<th>Column '+i+'</th>').join('');
+            }""")
+            page.locator('.lantern-table-pan').wait_for(state='visible', timeout=3000)
         finally:
             page.close()
 

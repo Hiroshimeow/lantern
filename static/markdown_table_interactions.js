@@ -6,8 +6,10 @@
   const contexts = new Map();
   let counter = 0, scheduled = false;
   function attach(port) {
-    if (contexts.has(port)) return;
     const table = port.matches('.table-wrap') ? port.querySelector('table') : port.querySelector('table.children');
+    const previous = contexts.get(port);
+    if (previous?.table === table) return;
+    if (previous) { previous.observer?.disconnect(); previous.controller.abort(); previous.style?.remove(); previous.overlay.remove(); contexts.delete(port); }
     if (!table) return;
     const id = 'lantern-table-' + ++counter;
     port.classList.add('lantern-table-interactive', id);
@@ -23,9 +25,15 @@
     const marker = document.createElement('div');
     marker.className = 'lantern-table-resize-marker';marker.hidden = true;
     overlay.append(marker);
-    const context = {port, table, style:null, widths:null};
+    const context = {port, table, overlay, style:null, widths:null, controller:new AbortController(), observer:null, updatePan:null};
     contexts.set(port, context);
     const updatePan = () => { drag.hidden = port.scrollWidth <= port.clientWidth + 3; };
+    context.updatePan = updatePan;
+    if (typeof ResizeObserver !== 'undefined') {
+      context.observer = new ResizeObserver(updatePan);
+      context.observer.observe(table);
+      context.observer.observe(port);
+    }
     const headerCells = () => [...(table.rows[0]?.cells || [])];
     const minimum = 90, maximum = 900;
     // Rules live outside contenteditable; resizing must never mutate document
@@ -63,7 +71,7 @@
         marker.style.top = cell.getBoundingClientRect().top - port.getBoundingClientRect().top + 'px';
         marker.style.height = cell.getBoundingClientRect().height + 'px';
       }
-    });
+    }, {signal:context.controller.signal});
     port.addEventListener('pointerdown', event => {
       if (event.button !== 0 || event.target.closest?.('.lantern-table-overlay')) return;
       const cell = nearEdge(event);
@@ -76,7 +84,7 @@
       marker.hidden = true;
       port.setPointerCapture(event.pointerId);
       event.preventDefault();event.stopPropagation();
-    }, true);
+    }, {capture:true,signal:context.controller.signal});
     const endResize = event => {
       if (!resizing) return;
       resizing = null;
@@ -84,9 +92,9 @@
       if (port.hasPointerCapture(event.pointerId)) port.releasePointerCapture(event.pointerId);
       updatePan();
     };
-    port.addEventListener('pointerup', endResize);
-    port.addEventListener('pointercancel', endResize);
-    port.addEventListener('pointerleave', () => { if (!resizing) marker.hidden = true; });
+    port.addEventListener('pointerup', endResize, {signal:context.controller.signal});
+    port.addEventListener('pointercancel', endResize, {signal:context.controller.signal});
+    port.addEventListener('pointerleave', () => { if (!resizing) marker.hidden = true; }, {signal:context.controller.signal});
     let panning = null;
     drag.addEventListener('pointerdown', event => {
       if (event.button !== 0 || drag.hidden) return;
@@ -94,27 +102,27 @@
       drag.setPointerCapture(event.pointerId);
       drag.classList.add('lantern-panning');
       event.preventDefault();event.stopPropagation();
-    });
+    }, {signal:context.controller.signal});
     drag.addEventListener('pointermove', event => {
       if (!panning) return;
       port.scrollLeft = panning.scroll - (event.clientX - panning.x);
       event.preventDefault();
-    });
+    }, {signal:context.controller.signal});
     function endPan(event) {
       if (!panning) return;
       panning = null;drag.classList.remove('lantern-panning');
       if (drag.hasPointerCapture(event.pointerId)) drag.releasePointerCapture(event.pointerId);
     }
-    drag.addEventListener('pointerup', endPan);
-    drag.addEventListener('pointercancel', endPan);
-    port.addEventListener('pointerenter', updatePan);
+    drag.addEventListener('pointerup', endPan, {signal:context.controller.signal});
+    drag.addEventListener('pointercancel', endPan, {signal:context.controller.signal});
+    port.addEventListener('pointerenter', updatePan, {signal:context.controller.signal});
     requestAnimationFrame(updatePan);
   }
   function scan() {
     scheduled = false;
     for (const [port, context] of contexts) {
       if (port.isConnected) continue;
-      context.style?.remove();contexts.delete(port);
+      context.observer?.disconnect();context.controller.abort();context.style?.remove();contexts.delete(port);
     }
     document.querySelectorAll(PORTS).forEach(attach);
   }
@@ -126,12 +134,11 @@
     scan();
     const content = document.querySelector('.content');
     if (!content) return;
-    new MutationObserver(records => {
-      if (records.some(r => [...r.addedNodes, ...r.removedNodes].some(n =>
-        n.nodeType === 1 && (n.matches?.(PORTS) || n.querySelector?.(PORTS) || n.matches?.('.md-visual-shell'))))) schedule();
-    }).observe(content, {childList: true, subtree: true});
+    // Milkdown may populate or replace a table within an existing wrapper.
+    // Coalesce every subtree insertion/removal into one animation-frame scan.
+    new MutationObserver(schedule).observe(content, {childList: true, subtree: true});
     window.addEventListener('resize', () => {
-      for (const {port} of contexts.values()) port.dispatchEvent(new Event('pointerenter'));
+      for (const context of contexts.values()) context.updatePan();
     });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
