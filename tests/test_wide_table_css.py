@@ -51,7 +51,7 @@ class WideTableInteractionContractTests(unittest.TestCase):
             self.assertIn('/static/markdown_table_interactions.css',page)
 
     def test_drag_resizing_does_not_persist_into_gfm_source(self):
-        script=(ROOT/'static/markdown_table_interactions.js').read_text()
+        script=(ROOT/'static/markdown_table_interactions.js').read_text(encoding='utf-8')
         self.assertIn('pointerdown',script)
         self.assertIn('scrollLeft',script)
         self.assertIn('min-width:',script)
