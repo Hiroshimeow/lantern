@@ -466,7 +466,7 @@ def _hide_md_html_comments(text: str) -> str:
     return "".join(result)
 
 
-def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
+def _render_markdown(path: Path, root: Path, *, anchors: bool = False) -> Tuple[str, str]:
     data, truncated = _read_limited_bytes(path)
     text = _decode_text(data).replace("\x00", "")
     if len(text) > MAX_TEXT_CHARS:
@@ -476,12 +476,21 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
     lines = _hide_md_html_comments(text).splitlines()
     out: List[str] = []
     para: List[str] = []
+    para_start = 0
     list_type = ""
     in_quote = False
     mermaid_count = 0
 
+    def marker(line: int) -> str:
+        return f' data-l="{line}"' if anchors else ''
+
     def flush() -> None:
+        if not para:
+            return
+        before = len(out)
         _flush_md_paragraph(out, para, path, root)
+        if len(out) > before:
+            out[-1] = out[-1].replace("<p>", f'<p{marker(para_start + 1)}>', 1)
 
     def close_list() -> None:
         nonlocal list_type
@@ -502,6 +511,7 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
 
         opener = re.match(r"^ {0,3}([`~])\1{2,}(.*)$", line)
         if opener:
+            code_line = i + 1
             flush()
             close_list()
             close_quote()
@@ -517,13 +527,13 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             if end >= len(lines):
                 body = "\n".join(code_lines)
                 attr = f' data-language="{h(language)}"' if language else ""
-                out.append(f'<pre class="md-code"{attr}><code>{h(body)}</code></pre>')
+                out.append(f'<pre class="md-code"{marker(code_line)}{attr}><code>{h(body)}</code></pre>')
                 break
             body = "\n".join(code_lines)
             if language.lower() == "mermaid" and mermaid_count < 24:
                 mermaid_count += 1
                 out.append(
-                    f'<div class="mermaid-diagram" data-diagram-index="{mermaid_count}">'
+                    f'<div class="mermaid-diagram"{marker(code_line)} data-diagram-index="{mermaid_count}">'
                     f'<pre class="mermaid-source"><code>{h(body)}</code></pre>'
                     '<div class="mermaid-output"></div>'
                     f'<button class="btn" type="button" data-action="png" data-diagram-index="{mermaid_count}" hidden>PNG</button>'
@@ -531,7 +541,7 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
                 )
             else:
                 attr = f' data-language="{h(language)}"' if language else ""
-                out.append(f'<pre class="md-code"{attr}><code>{h(body)}</code></pre>')
+                out.append(f'<pre class="md-code"{marker(code_line)}{attr}><code>{h(body)}</code></pre>')
             i = end + 1
             continue
 
@@ -540,6 +550,7 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             close_list()
             close_quote()
             headers = _split_table_row(line)
+            table_header_line = i + 1
             head = "".join(f"<th>{_md_inline(cell, path, root)}</th>" for cell in headers)
             i += 2
             # Keep a bounded row batch for DOM/layout cost, but do not leave
@@ -547,22 +558,22 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             # heading row; all remaining rows stay structured HTML, not a
             # paragraph of literal Markdown pipes.
             while True:
-                rows: List[List[str]] = []
+                rows: List[Tuple[int, List[str]]] = []
                 while (i < len(lines) and "|" in lines[i] and lines[i].strip()
                        and len(rows) < MAX_TABLE_ROWS):
-                    rows.append(_split_table_row(lines[i]))
+                    rows.append((i + 1, _split_table_row(lines[i])))
                     i += 1
                 body_rows = []
-                for row in rows:
+                for source_line, row in rows:
                     cells = row + [""] * max(0, len(headers) - len(row))
                     body_rows.append(
-                        "<tr>" + "".join(
+                        f'<tr{marker(source_line)}>' + "".join(
                             f"<td>{_md_inline(cell, path, root)}</td>"
                             for cell in cells[:len(headers)]
                         ) + "</tr>"
                     )
                 out.append(
-                    '<div class="table-wrap"><table><thead><tr>'
+                    f'<div class="table-wrap"{marker(rows[0][0] if rows and rows[0][0] != table_header_line + 2 else table_header_line)}><table><thead><tr>'
                     + head
                     + "</tr></thead><tbody>"
                     + "".join(body_rows)
@@ -585,7 +596,7 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             close_list()
             close_quote()
             level = len(heading.group(1))
-            out.append(f"<h{level}>{_md_inline(heading.group(2), path, root)}</h{level}>")
+            out.append(f'<h{level}{marker(i+1)}>{_md_inline(heading.group(2), path, root)}</h{level}>')
             i += 1
             continue
 
@@ -593,7 +604,7 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             flush()
             close_list()
             close_quote()
-            out.append("<hr>")
+            out.append(f'<hr{marker(i+1)}>')
             i += 1
             continue
 
@@ -604,7 +615,7 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             if not in_quote:
                 out.append("<blockquote>")
                 in_quote = True
-            out.append(f"<p>{_md_inline(quote_match.group(1), path, root)}</p>")
+            out.append(f'<p{marker(i+1)}>{_md_inline(quote_match.group(1), path, root)}</p>')
             i += 1
             continue
 
@@ -623,18 +634,20 @@ def _render_markdown(path: Path, root: Path) -> Tuple[str, str]:
             if task:
                 checked = " checked" if task.group(1).lower() == "x" else ""
                 out.append(
-                    '<li class="task-item"><input type="checkbox" disabled aria-label="task"'
+                    f'<li class="task-item"{marker(i+1)}><input type="checkbox" disabled aria-label="task"'
                     + checked
                     + ">"
                     + _md_inline(task.group(2), path, root)
                     + "</li>"
                 )
             else:
-                out.append(f"<li>{_md_inline(item, path, root)}</li>")
+                out.append(f'<li{marker(i+1)}>{_md_inline(item, path, root)}</li>')
             i += 1
             continue
 
         close_list()
+        if not para:
+            para_start = i
         para.append(line)
         i += 1
 
@@ -1198,7 +1211,7 @@ def render_content(path: Path | str, config_path: Optional[Path | str] = None, r
     return _render_text(p)
 
 
-def render_preview_page(path: Path | str, root: Path | str, config_path: Optional[Path | str] = None, app_title: str = "LAN Drive", *, pdf_text: bool = False) -> bytes:
+def render_preview_page(path: Path | str, root: Path | str, config_path: Optional[Path | str] = None, app_title: str = "LAN Drive", *, pdf_text: bool = False, anchor_spike: bool = False) -> bytes:
     p = Path(path)
     rootp = Path(root)
     try:
@@ -1224,6 +1237,8 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         )
     else:
         title, body = render_content(p, config_path, rootp)
+        if visual_markdown and anchor_spike:
+            title, body = _render_markdown(p, rootp, anchors=True)
     nonce = secrets.token_urlsafe(24)
     csp = (
         "default-src 'none'; "
@@ -1246,6 +1261,8 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         if 'class="mermaid-diagram"' in body else ""
     )
     helper_script = f'<script nonce="{h(nonce)}" src="/static/markdown_preview.js" defer></script>'
+    if visual_markdown and anchor_spike:
+        helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_anchor_bridge.js" defer></script>'
     visual_script = (
         f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'
         if visual_markdown else ""

@@ -1535,6 +1535,7 @@ function setModalNavState(){
   const len=mediaState.items.length, idx=mediaState.index;
   const canStep=len>1||(mediaState.kind&&state.hasMore);
   const cropButton=$('#modalCropBtn');if(cropButton){cropButton.classList.toggle('hidden',mediaState.kind!=='image');cropButton.disabled=mediaState.cropActive;}
+  const overwriteButton=$('#modalCropOverwriteBtn');if(overwriteButton){const supported=mediaState.kind==='image'&&/\.(?:png|jpe?g|webp)$/i.test(mediaState.current?.rel||'');overwriteButton.classList.toggle('hidden',!supported);overwriteButton.disabled=mediaState.cropActive;}
   ['#modalPrevBtn','#modalNextBtn','#modalPrevFloat','#modalNextFloat'].forEach(sel=>{const b=$(sel);if(b)b.disabled=!canStep||mediaState.busy||mediaState.cropActive});
   const meta=$('#modalMeta');
   if(meta){
@@ -1617,17 +1618,48 @@ function openPreview(kind,url,name,rel=''){
   renderMediaItem(mediaState.items[mediaState.index]||fallback,mediaState.index,{autoplay:true});
   modal.classList.add('show');
 }
-async function cropViewedImage(){
+async function cropViewedImage(overwriteOriginal=false){
   const original=mediaState.current;
   if(mediaState.cropActive||original?.kind!=='image'||!original.rel)return;
   mediaState.cropActive=true;setModalNavState();
   try{
     const cropURL='/static/vendor/lantern-image-crop.min.js';
     const {openCrop}=await import(cropURL);
+    // Capture the original content hash BEFORE the dialog. Changes made by
+    // another tab during cropping must be refused instead of silently lost.
+    let originalVersion=null;
+    if(overwriteOriginal){
+      const check=await fetch('/api/image/version?p='+encodeURIComponent(original.rel),{cache:'no-store'});
+      const state=await check.json();
+      if(!check.ok||!state.version)throw Error(state.error||'Cannot inspect original image');
+      originalVersion=state.version;
+    }
     const result=await openCrop({src:mediaUrl(original),name:original.name||'Image'});
     if(!result)return;
-    // Save As only: use root-confined /api/upload with atomic rename, and
-    // never alter the original media file or delete another asset.
+    if(overwriteOriginal){
+      const originalExt=(original.rel.match(/\.([^.]+)$/)||[])[1]?.toLowerCase();
+      const validType={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp'}[originalExt];
+      if(validType!==result.blob.type)throw Error('Crop output format differs from original; use Crop (Save As)');
+      if(!confirm('Overwrite original image? All files using this image will change. This cannot be undone. EXIF/ICC metadata may be lost.'))return;
+      const response=await fetch('/api/image/overwrite?p='+encodeURIComponent(original.rel),{
+        method:'POST',credentials:'same-origin',cache:'no-store',
+        headers:{'Content-Type':result.blob.type,'If-Match':originalVersion},body:result.blob,
+      });
+      const update=await response.json();
+      if(!response.ok||update.error)throw Error(update.error||('Overwrite HTTP '+response.status));
+      toast('Original image overwritten');
+      clearFolderCache();
+      await loadMore(true).catch(error=>toast('Refresh failed: '+error.message));
+      mediaState.cropActive=false;
+      const refreshedUrl=fileUrl(original.rel)+'?v='+encodeURIComponent(update.version);
+      openPreview('image',refreshedUrl,original.name,original.rel);
+      // openPreview normally prefers a loaded list item; ensure the new image
+      // version wins even if the directory list/cache had the old URL.
+      const updated=mediaState.items[mediaState.index];
+      if(updated?.rel===original.rel){updated.url=refreshedUrl;renderMediaItem(updated,mediaState.index);}
+      return;
+    }
+    // Existing Crop action remains Save As; no original bytes are changed.
     const pieces=original.rel.split('/');
     const originalName=pieces.pop()||'image';
     const directory=pieces.join('/');
@@ -2210,6 +2242,59 @@ def list_entries_page(path: Path, offset: int, limit: int, sort_mode: str, query
 
 
 
+# Serialize content-hash comparisons with replacement so two crop requests
+# presenting the same original version cannot both clobber each other.
+_IMAGE_OVERWRITE_LOCK = threading.Lock()
+_IMAGE_CROP_MAX_BYTES = 20 * 1024 * 1024
+_IMAGE_CROP_MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+
+
+def _image_crop_mime(path: Path, data: bytes) -> str:
+    expected = _IMAGE_CROP_MIMES.get(path.suffix.lower())
+    if not expected:
+        raise BadRequest("overwrite is supported for PNG/JPEG/WebP only; use Save As")
+    if (data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 33
+            and data[12:16] == b"IHDR"):
+        detected = "image/png"
+    elif len(data) >= 8 and data[:3] == b"\xff\xd8\xff" and data[-2:] == b"\xff\xd9":
+        detected = "image/jpeg"
+    elif (len(data) >= 20 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+          and int.from_bytes(data[4:8], "little") + 8 == len(data)):
+        detected = "image/webp"
+    else:
+        raise BadRequest("invalid or unsupported image bytes")
+    if detected != expected:
+        raise BadRequest("cropped image type does not match original extension; use Save As")
+    return expected
+
+
+def _image_version(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _image_crop_target(rel: str) -> Path:
+    """Resolve a crop target without normalizing away '..' or following links.
+
+    Crop overwrite changes the identity of one file. A symlink or a hardlink
+    would silently affect a different filename (or detach other link names).
+    Existing generic browse routes keep their own path behavior.
+    """
+    parts = rel.replace("\\", "/").split("/")
+    if not rel or rel.startswith(("/", "\\")) or any(part in {".", ".."} for part in parts):
+        raise BadRequest("invalid image path")
+    root = CONFIG.root.resolve()
+    candidate = root
+    for part in parts:
+        if part:
+            candidate = candidate / part
+            if candidate.is_symlink():
+                raise BadRequest("crop overwrite does not follow symbolic links")
+    target = safe_join("/" + quote_path(rel))
+    if target.exists() and target.stat().st_nlink > 1:
+        raise BadRequest("crop overwrite does not replace hardlinked images")
+    return target
+
+
 WS_HUB = WebSocketHub()
 TERMINAL_ACCESS: Optional[TerminalAccess] = None
 TERM_MANAGER: Optional[TerminalManager] = None
@@ -2319,6 +2404,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_list(parsed.query)
             if parsed.path == "/api/upload/check":
                 return self.api_upload_check(parsed.query)
+            if parsed.path == "/api/image/version":
+                return self.api_image_version(parsed.query)
             if parsed.path == "/api/thumb":
                 return self.api_thumb(parsed.query)
             if parsed.path == "/api/folder_preview":
@@ -2366,6 +2453,7 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/terminal/login": return self.api_terminal_login()
             if route == "/api/terminal/logout": return self.api_terminal_logout()
             if route == "/api/upload": return self.api_upload(parsed.query)
+            if route == "/api/image/overwrite": return self.api_image_overwrite(parsed.query)
             if route == "/api/save": return self.api_save()
             if route == "/api/md/save": return self.api_md_save()
             if route == "/api/mkdir": return self.api_mkdir()
@@ -2506,7 +2594,12 @@ class Handler(SimpleHTTPRequestHandler):
             if pdf_text:
                 body = LAN_PLUGIN.render_preview_page(target, CONFIG.root, plugin_config_path(), CONFIG.title, pdf_text=True)
             else:
-                body = LAN_PLUGIN.render_preview_page(target, CONFIG.root, plugin_config_path(), CONFIG.title)
+                # Experimental source anchors opt-in per request; default unchanged.
+                include_anchors = (target.suffix.lower() in {".md", ".markdown"}
+                                   and qs.get("anchor_spike", [""])[0] == "1")
+                body = LAN_PLUGIN.render_preview_page(
+                    target, CONFIG.root, plugin_config_path(), CONFIG.title,
+                    anchor_spike=include_anchors)
         except Exception as e:
             self.send_error(500, f"preview error: {e}")
             return
@@ -2678,6 +2771,86 @@ class Handler(SimpleHTTPRequestHandler):
         dest = self.resolve_upload_target(qs.get("path", [""])[0], qs.get("name", [""])[0])
         self.send_json(200, {"exists": dest.exists()})
 
+    def api_image_version(self, query: str) -> None:
+        rel = urllib.parse.parse_qs(query).get("p", [""])[0]
+        target = _image_crop_target(rel)
+        if not target.is_file():
+            self.send_json(404, {"error": "image not found"}); return
+        if target.suffix.lower() not in _IMAGE_CROP_MIMES:
+            self.send_json(415, {"error": "overwrite unsupported for this image format"}); return
+        if target.stat().st_size > _IMAGE_CROP_MAX_BYTES:
+            self.send_json(413, {"error": "image is too large for overwrite"}); return
+        with _IMAGE_OVERWRITE_LOCK:
+            data = target.read_bytes()
+        self.send_json(200, {"version": _image_version(data), "bytes": len(data),
+                             "mime": _IMAGE_CROP_MIMES[target.suffix.lower()]})
+
+    def api_image_overwrite(self, query: str) -> None:
+        rel = urllib.parse.parse_qs(query).get("p", [""])[0]
+        target = _image_crop_target(rel)
+        if target.suffix.lower() not in _IMAGE_CROP_MIMES:
+            self.send_json(415, {"error": "unsupported image format; use Save As"}); return
+        expected = self.headers.get("If-Match", "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", expected):
+            self.send_json(428, {"error": "image content version required"}); return
+        n = self.content_length(max_bytes=_IMAGE_CROP_MAX_BYTES)
+        if n < 32:
+            raise BadRequest("invalid cropped image")
+        body = self.read_body_exact(n)
+        mime = _image_crop_mime(target, body)
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != mime:
+            self.send_json(415, {"error": "image MIME header does not match bytes"}); return
+        temp_path = None
+        with _IMAGE_OVERWRITE_LOCK:
+            if not target.is_file() or target.is_symlink():
+                self.send_json(404, {"error": "original image missing"}); return
+            if target.stat().st_nlink > 1:
+                self.send_json(409, {"error": "image has multiple hardlinks; Save As instead"}); return
+            old = target.read_bytes()
+            if _image_version(old) != expected:
+                self.send_json(409, {"error": "image changed; reload before overwriting"}); return
+            # The existing thumbnail may reuse the same stat-based cache key
+            # on coarse-timestamp filesystems. Invalidate it explicitly.
+            stale_thumb = thumb_cache_path(target, "image")
+            fd, tmp = tempfile.mkstemp(prefix=".lantern-uploading-", dir=str(target.parent))
+            temp_path = Path(tmp)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(body)
+                    f.flush()
+                    os.fsync(f.fileno())
+                # A replaced image remains the same logical filename; original
+                # Markdown references are never rewritten by this endpoint.
+                os.chmod(temp_path, target.stat().st_mode)
+                try:
+                    os.replace(temp_path, target)
+                except PermissionError:
+                    # Windows may lock an open image; keep original untouched.
+                    self.send_json(423, {"error": "image is locked by another application; close it and retry"})
+                    return
+                temp_path = None
+                # fsync of a directory is supported on POSIX, best effort on
+                # other platforms. A failure here must not misreport a commit.
+                if hasattr(os, "O_DIRECTORY"):
+                    directory_fd = None
+                    try:
+                        directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+                        os.fsync(directory_fd)
+                    except OSError:
+                        pass
+                    finally:
+                        if directory_fd is not None:
+                            os.close(directory_fd)
+                try:
+                    stale_thumb.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+        self.send_json(200, {"ok": True, "file": rel_url_for_path(target),
+                             "version": _image_version(body), "bytes": len(body)})
+
     def api_upload(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
         base_rel = qs.get("path", [""])[0]
@@ -2719,8 +2892,11 @@ class Handler(SimpleHTTPRequestHandler):
             if written != total or remaining != 0:
                 raise BadRequest(f"incomplete upload: got {written} of {total} bytes")
             if conflict == "overwrite":
-                # An explicit overwrite is the only policy allowed to replace.
-                os.replace(tmp, dest)
+                # Share the image content-version lock with Crop Overwrite.
+                # Otherwise a simultaneous ordinary upload could bypass the
+                # expected-version check before publishing an image.
+                with _IMAGE_OVERWRITE_LOCK:
+                    os.replace(tmp, dest)
                 tmp = None
             else:
                 # Atomic no-clobber publication: bytes are complete in a
@@ -3082,7 +3258,7 @@ class Handler(SimpleHTTPRequestHandler):
 </div>
 <input id="fileInput" class="hidden" type="file" multiple>
 <input id="folderInput" class="hidden" type="file" webkitdirectory directory multiple>
-<div id="modal" class="modal" onclick="if(event.target===this)closeModal()"><div class="modal-box"><div class="modal-head"><div class="modal-title-wrap"><div id="modalTitle" class="modal-title"></div><div id="modalMeta" class="modal-meta"></div></div><div class="actions"><button id="modalCropBtn" class="btn small hidden" onclick="cropViewedImage()" title="Crop into a new image">✂ Crop</button><button id="modalPrevBtn" class="btn small" onclick="stepMedia(-1,event)" title="Trước">←</button><button id="modalNextBtn" class="btn small" onclick="stepMedia(1,event)" title="Tiếp">→</button><button class="btn small" onclick="closeModal()">✕</button></div></div><div class="modal-stage"><button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Trước">‹</button><div id="modalBody" class="modal-body"></div><button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Tiếp">›</button></div></div></div>
+<div id="modal" class="modal" onclick="if(event.target===this)closeModal()"><div class="modal-box"><div class="modal-head"><div class="modal-title-wrap"><div id="modalTitle" class="modal-title"></div><div id="modalMeta" class="modal-meta"></div></div><div class="actions"><button id="modalCropBtn" class="btn small hidden" onclick="cropViewedImage()" title="Crop into a new image">✂ Crop</button><button id="modalCropOverwriteBtn" class="btn small hidden" onclick="cropViewedImage(true)" title="Crop and overwrite original (requires confirmation)">✂ Overwrite original</button><button id="modalPrevBtn" class="btn small" onclick="stepMedia(-1,event)" title="Trước">←</button><button id="modalNextBtn" class="btn small" onclick="stepMedia(1,event)" title="Tiếp">→</button><button class="btn small" onclick="closeModal()">✕</button></div></div><div class="modal-stage"><button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Trước">‹</button><div id="modalBody" class="modal-body"></div><button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Tiếp">›</button></div></div></div>
 <div id="uploadModal" class="upload-backdrop" onclick="if(event.target===this)closeUploadDialog()">
   <div class="upload-box">
     <div class="upload-head"><div><div class="upload-title">⬆️ Upload vào: /{html_escape(rel)}</div><div class="sub">Kéo file/folder vào vùng dấu +, hoặc bấm chọn file/folder. Folder drag/drop tốt nhất trên Chrome/Edge.</div></div><button class="btn small" onclick="closeUploadDialog()">✕</button></div>
