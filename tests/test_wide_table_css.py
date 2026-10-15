@@ -29,6 +29,16 @@ class WideTableStyleTests(unittest.TestCase):
         self.assertIn('min-width:10ch',css)
         self.assertIn('min-width:12ch',css)
 
+    def test_hidden_milkdown_table_handles_do_not_intercept_clicks(self):
+        css=(ROOT/'static/markdown_visual_shell.css').read_text(encoding='utf-8')
+        self.assertIn(
+            ".handle[data-show='false']:not(:has(.button-group[data-show='true'])){pointer-events:none}",
+            css)
+        self.assertIn(
+            ".cell-handle:has(.button-group[data-show='true']){opacity:1!important;pointer-events:auto!important;z-index:60!important}",
+            css)
+        self.assertIn('.md-table-tools{position:fixed', css)
+
     def test_gfm_renderer_keeps_30_columns(self):
         import plugin
         from tempfile import TemporaryDirectory

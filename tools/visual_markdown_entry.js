@@ -1,6 +1,10 @@
 // Self-contained browser editor. No CDN, remote fonts, telemetry or AI providers.
 import { Crepe } from '@milkdown/crepe';
-import { editorViewCtx } from '@milkdown/kit/core';
+import { commandsCtx, editorViewCtx } from '@milkdown/kit/core';
+import {
+  addColAfterCommand, addRowAfterCommand, deleteSelectedCellsCommand,
+  selectColCommand, selectRowCommand,
+} from '@milkdown/kit/preset/gfm';
 import { $remark } from '@milkdown/kit/utils';
 import { imageInlineComponent, inlineImageConfig } from '@milkdown/kit/component/image-inline';
 import { uploadConfig } from '@milkdown/kit/plugin/upload';
@@ -167,6 +171,85 @@ function mountImageCrop(root, crepe, documentPath, onStatus) {
   };
 }
 
+function mountTableToolbar(root, crepe, onStatus) {
+  const toolbar=document.createElement('div');
+  toolbar.className='md-table-tools';
+  toolbar.hidden=true;
+  const label=document.createElement('span');label.className='md-table-tools-label';label.textContent='Table';
+  const make=(text,title,kind,danger=false)=>{
+    const b=document.createElement('button');b.type='button';b.textContent=text;b.title=title;
+    b.className='btn'+(danger?' danger':'');b.dataset.tableAction=kind;toolbar.append(b);return b;
+  };
+  toolbar.append(label);
+  make('+ Row','Add row after selected row','add-row');
+  make('− Row','Delete selected row','delete-row',true);
+  make('+ Col','Add column after selected column','add-col');
+  make('− Col','Delete selected column','delete-col',true);
+  root.append(toolbar);
+
+  let selected=null,disposed=false;
+  const view=()=>crepe.editor.action(ctx=>ctx.get(editorViewCtx));
+  const hide=()=>{toolbar.hidden=true;selected=null;};
+  const locate=cell=>{
+    if(!cell||disposed)return null;
+    const table=cell.closest('table.children'),row=cell.closest('tr');
+    if(!table||!row||!root.contains(table))return null;
+    const rowIndex=[...table.rows].indexOf(row);
+    const colIndex=[...row.cells].indexOf(cell);
+    if(rowIndex<0||colIndex<0)return null;
+    const editor=view();
+    let pos;
+    try{pos=editor.posAtDOM(cell,0);}catch{return null;}
+    if(!Number.isInteger(pos))return null;
+    const $pos=editor.state.doc.resolve(pos);
+    let tableDepth=-1;
+    for(let depth=$pos.depth;depth>0;depth--){
+      if($pos.node(depth).type.name==='table'){tableDepth=depth;break;}
+    }
+    if(tableDepth<0)return null;
+    return {rowIndex,colIndex,tablePos:$pos.before(tableDepth)+1};
+  };
+  const choose=event=>{
+    if(toolbar.contains(event.target))return;
+    const cell=event.target.closest?.('.milkdown-table-block th,.milkdown-table-block td');
+    const next=locate(cell);
+    if(!next){hide();return;}
+    selected=next;toolbar.hidden=false;
+  };
+  root.addEventListener('click',choose);
+
+  const run=kind=>{
+    const target=selected;if(!target||disposed)return;
+    try{
+      const result=crepe.editor.action(ctx=>{
+        const commands=ctx.get(commandsCtx);
+        if(kind==='add-row'||kind==='delete-row'){
+          commands.call(selectRowCommand.key,{pos:target.tablePos,index:target.rowIndex});
+          return kind==='add-row'
+            ? commands.call(addRowAfterCommand.key)
+            : commands.call(deleteSelectedCellsCommand.key);
+        }
+        commands.call(selectColCommand.key,{pos:target.tablePos,index:target.colIndex});
+        return kind==='add-col'
+          ? commands.call(addColAfterCommand.key)
+          : commands.call(deleteSelectedCellsCommand.key);
+      });
+      if(result===false)throw Error('Table command was not applicable.');
+      onStatus?.(
+        kind==='add-row'?'Row added.':
+        kind==='delete-row'?'Row deleted.':
+        kind==='add-col'?'Column added.':'Column deleted.','info');
+      if(kind.startsWith('delete-'))hide();
+    }catch(error){onStatus?.('Table action failed: '+error.message,'error');}
+  };
+  toolbar.addEventListener('click',event=>{
+    const button=event.target.closest?.('[data-table-action]');
+    if(!button)return;
+    event.preventDefault();event.stopPropagation();run(button.dataset.tableAction);
+  });
+  return ()=>{disposed=true;root.removeEventListener('click',choose);toolbar.remove();};
+}
+
 async function createVisualMarkdown(root, content, onChange, documentPath, onUploadStatus) {
   const crepe = new Crepe({
     root,
@@ -233,9 +316,10 @@ async function createVisualMarkdown(root, content, onChange, documentPath, onUpl
   });
   await crepe.create();
   const unmountCrop = mountImageCrop(root, crepe, documentPath, onUploadStatus);
+  const unmountTableToolbar = mountTableToolbar(root, crepe, onUploadStatus);
   return {
     getMarkdown() { return crepe.getMarkdown(); },
-    destroy() { unmountCrop(); return crepe.destroy(); },
+    destroy() { unmountTableToolbar(); unmountCrop(); return crepe.destroy(); },
     focus() { root.querySelector('[contenteditable="true"]')?.focus(); },
   };
 }

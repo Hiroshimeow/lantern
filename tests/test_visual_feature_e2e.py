@@ -156,6 +156,46 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
                     page.locator('.md-visual-host [data-role="y-line-drag-handle"] .add-button').first.click(timeout=7000)
                     new_columns=page.locator('.md-visual-host .milkdown-table-block tr').first.locator('th,td').count()
                     self.assertEqual(new_columns,columns+1)
+
+                    # Adding at the right edge must keep the new last column visible
+                    # instead of resetting the nested table scroller to zero.
+                    scroll_after_add=page.evaluate("""() => {
+                      const x=document.querySelector('.md-visual-host .milkdown-table-block .table-wrapper');
+                      return {left:x.scrollLeft,max:x.scrollWidth-x.clientWidth};
+                    }""")
+                    self.assertLessEqual(abs(scroll_after_add['max']-scroll_after_add['left']),6,scroll_after_add)
+
+                    # Lantern exposes stable table actions instead of depending on
+                    # Milkdown's transient drag-handle popover, which is replaced
+                    # during wide-table re-renders.
+                    last_header=page.locator('.md-visual-host .milkdown-table-block th').last
+                    hbox=last_header.bounding_box();self.assertIsNotNone(hbox)
+                    page.mouse.click(hbox['x']+hbox['width']/2,hbox['y']+hbox['height']/2)
+                    tools=page.locator('.md-table-tools')
+                    tools.wait_for(state='visible',timeout=7000)
+                    self.assertTrue(tools.get_by_role('button',name='− Col',exact=True).is_visible())
+                    tools.get_by_role('button',name='− Col',exact=True).click(timeout=7000)
+                    page.wait_for_function(
+                        "n => document.querySelector('.md-visual-host .milkdown-table-block tr')?.children.length === n",
+                        arg=columns,timeout=7000)
+                    self.assertEqual(
+                        page.locator('.md-visual-host .milkdown-table-block tr').first.locator('th,td').count(),
+                        columns)
+
+                    body_cell=page.locator('.md-visual-host .milkdown-table-block tr:nth-child(2) td').first
+                    body_cell.click(timeout=7000)
+                    tools.wait_for(state='visible',timeout=7000)
+                    rows_before=page.locator('.md-visual-host .milkdown-table-block tr').count()
+                    tools.get_by_role('button',name='+ Row',exact=True).click(timeout=7000)
+                    page.wait_for_function(
+                        "n => document.querySelectorAll('.md-visual-host .milkdown-table-block tr').length === n+1",
+                        arg=rows_before,timeout=7000)
+                    body_cell=page.locator('.md-visual-host .milkdown-table-block tr:nth-child(2) td').first
+                    body_cell.click(timeout=7000)
+                    tools.get_by_role('button',name='− Row',exact=True).click(timeout=7000)
+                    page.wait_for_function(
+                        "n => document.querySelectorAll('.md-visual-host .milkdown-table-block tr').length === n",
+                        arg=rows_before,timeout=7000)
                     self.assertEqual(errors,[])
                 finally:context.close()
         # Changes above remain local drafts unless explicitly saved.

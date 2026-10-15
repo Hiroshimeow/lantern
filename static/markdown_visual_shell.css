@@ -29,6 +29,12 @@
   width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:auto;
   overscroll-behavior-x:contain;scrollbar-width:thin;
 }
+/* Crepe hides inactive table handles with opacity only. Invisible handles still
+   participate in hit testing unless pointer events are disabled explicitly. */
+.md-visual-host .milkdown .milkdown-table-block .handle[data-show='false']:not(:has(.button-group[data-show='true'])){pointer-events:none}
+/* Milkdown can keep a selected row/column menu open while its parent handle is
+   marked hidden. Keep that active menu visible/clickable above Lantern's pan overlay. */
+.md-visual-host .milkdown .milkdown-table-block .cell-handle:has(.button-group[data-show='true']){opacity:1!important;pointer-events:auto!important;z-index:60!important}
 .md-visual-host .milkdown .milkdown-table-block table.children{
   width:max-content;min-width:100%;table-layout:auto;border-collapse:collapse;
   font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -61,6 +67,14 @@
 .md-format-diff pre{max-height:24vh}
 }
 @media print{.md-visual-tools{display:none!important}.md-visual-shell{border:0}.md-visual-host{padding:0}}
+
+.md-table-tools{position:fixed;top:calc(var(--md-bar-height,82px) + 10px);right:14px;z-index:72;display:flex;align-items:center;gap:5px;padding:5px 6px;border:1px solid #46617b;border-radius:9px;background:rgba(16,23,34,.96);box-shadow:0 8px 24px rgba(0,0,0,.38);backdrop-filter:blur(8px)}
+.md-table-tools[hidden]{display:none}
+.md-table-tools-label{font-size:11px;font-weight:800;color:#a9c7dd;padding:0 3px}
+.md-table-tools .btn{height:27px;padding:0 7px;font-size:11px;border-radius:7px}
+.md-table-tools .btn.danger{border-color:#7d4650;color:#ffd7dc;background:#392027}
+@media(max-width:600px){.md-table-tools{right:6px;left:6px;top:auto;bottom:8px;justify-content:center;overflow-x:auto}.md-table-tools-label{display:none}}
+@media print{.md-table-tools{display:none!important}}
 
 .md-image-crop-toolbar{position:sticky;top:110px;z-index:16;display:flex;justify-content:flex-end;padding:5px 8px;background:#17283b;border:1px solid #46617b;border-radius:8px;margin-bottom:8px}
 .md-image-crop-toolbar[hidden]{display:none}

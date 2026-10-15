@@ -8,7 +8,7 @@
   function attach(port) {
     const table = port.matches('.table-wrap') ? port.querySelector('table') : port.querySelector('table.children');
     const previous = contexts.get(port);
-    if (previous?.table === table) return;
+    if (previous?.table === table) { previous.updatePan?.(); return; }
     if (previous) { previous.observer?.disconnect(); previous.controller.abort(); previous.style?.remove(); previous.overlay.remove(); contexts.delete(port); }
     if (!table) return;
     const id = 'lantern-table-' + ++counter;
@@ -25,17 +25,75 @@
     const marker = document.createElement('div');
     marker.className = 'lantern-table-resize-marker';marker.hidden = true;
     overlay.append(marker);
-    const scroller = port.matches('.table-wrap') ? port : (port.querySelector('.table-wrapper') || port);
-    const context = {port, table, scroller, overlay, style:null, widths:null, controller:new AbortController(), observer:null, updatePan:null};
+    const getScroller = () => port.matches('.table-wrap')
+      ? port : (port.querySelector('.table-wrapper') || port);
+    const context = {port, table, getScroller, overlay, style:null, widths:null,
+      controller:new AbortController(), observer:null, observedScroller:null, updatePan:null, handleScrollGuard:null};
     contexts.set(port, context);
-    const updatePan = () => { drag.hidden = scroller.scrollWidth <= scroller.clientWidth + 3; };
+    const updatePan = () => {
+      const scroller = getScroller();
+      drag.hidden = scroller.scrollWidth <= scroller.clientWidth + 3;
+      if (context.observer && context.observedScroller !== scroller) {
+        if (context.observedScroller && context.observedScroller !== port && context.observedScroller !== table)
+          context.observer.unobserve(context.observedScroller);
+        if (scroller !== port) context.observer.observe(scroller);
+        context.observedScroller = scroller;
+      }
+    };
     context.updatePan = updatePan;
     if (typeof ResizeObserver !== 'undefined') {
       context.observer = new ResizeObserver(updatePan);
       context.observer.observe(table);
       context.observer.observe(port);
-      if (scroller !== port) context.observer.observe(scroller);
     }
+    // Milkdown table operations select rows/columns before mutating them.
+    // ProseMirror scrolls that selection into view, which resets the inner
+    // horizontal scroller to zero on wide tables and sends the menu off-screen.
+    // Capture before the native handler and restore again after its click.
+    const protectHandleScroll = guard => {
+      if (!guard) return;
+      let frames = 30;
+      const restore = () => {
+        // Milkdown can replace the entire table block after add/delete. Resolve
+        // the logical table again from the still-mounted editor host + index.
+        let currentPort = port.isConnected ? port : null;
+        if (!currentPort && guard.host?.isConnected) {
+          currentPort = guard.host.querySelectorAll('.milkdown-table-block')[guard.index] || null;
+        }
+        if (currentPort) {
+          const scroller = currentPort.matches('.table-wrap')
+            ? currentPort : (currentPort.querySelector('.table-wrapper') || currentPort);
+          if (scroller?.isConnected) {
+            const maxLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+            const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+            scroller.scrollLeft = guard.stickRight ? maxLeft : Math.min(guard.left, maxLeft);
+            scroller.scrollTop = Math.min(guard.top, maxTop);
+          }
+        }
+        if (--frames > 0) requestAnimationFrame(restore);
+      };
+      requestAnimationFrame(restore);
+    };
+    port.addEventListener('pointerdown', event => {
+      if (!event.target.closest?.('.milkdown-table-block .handle')) return;
+      const scroller = getScroller();
+      if (scroller === port) return;
+      const host = port.closest('.md-visual-host');
+      const peers = host ? [...host.querySelectorAll('.milkdown-table-block')] : [];
+      const maxLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      context.handleScrollGuard = {
+        left:scroller.scrollLeft, top:scroller.scrollTop, host,
+        stickRight:maxLeft - scroller.scrollLeft <= 6,
+        index:Math.max(0, peers.indexOf(port)),
+      };
+      // Native table commands run on pointerdown/click and can replace DOM.
+      // Start restoration after the current event has completed.
+      protectHandleScroll(context.handleScrollGuard);
+    }, {capture:true,signal:context.controller.signal});
+    port.addEventListener('click', event => {
+      if (!event.target.closest?.('.milkdown-table-block .handle')) return;
+      protectHandleScroll(context.handleScrollGuard);
+    }, {signal:context.controller.signal});
     const headerCells = () => [...(table.rows[0]?.cells || [])];
     const minimum = 90, maximum = 900;
     // Rules live outside contenteditable; resizing must never mutate document
@@ -100,14 +158,15 @@
     let panning = null;
     drag.addEventListener('pointerdown', event => {
       if (event.button !== 0 || drag.hidden) return;
-      panning = {x: event.clientX, scroll: scroller.scrollLeft};
+      const scroller = getScroller();
+      panning = {x: event.clientX, scroll: scroller.scrollLeft, scroller};
       drag.setPointerCapture(event.pointerId);
       drag.classList.add('lantern-panning');
       event.preventDefault();event.stopPropagation();
     }, {signal:context.controller.signal});
     drag.addEventListener('pointermove', event => {
       if (!panning) return;
-      scroller.scrollLeft = panning.scroll - (event.clientX - panning.x);
+      panning.scroller.scrollLeft = panning.scroll - (event.clientX - panning.x);
       event.preventDefault();
     }, {signal:context.controller.signal});
     function endPan(event) {
