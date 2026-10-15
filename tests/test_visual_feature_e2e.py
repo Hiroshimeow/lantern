@@ -134,7 +134,7 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
         context=self.browser.new_context(viewport={'width':1000,'height':780});page=context.new_page()
         errors=[];page.on('pageerror',lambda err:errors.append(str(err)))
         try:
-            page.goto(self.base+'/api/plugin/preview?p=anchor-e2e.md&anchor_spike=1',wait_until='domcontentloaded')
+            page.goto(self.base+'/api/plugin/preview?p=anchor-e2e.md',wait_until='domcontentloaded')
             para=page.locator('article.md-preview p[data-l="7"]')
             para.wait_for(timeout=8000)
             self.assertIsNotNone(page.evaluate('window.LanternAnchorBridge'))
@@ -161,7 +161,7 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
             self.assertEqual(source[:state['start']].count('\n')+1,7)
             # A separate selection->Visual action must land in the chosen
             # unique block, never normalize or save the Markdown on toggle.
-            page.goto(self.base+'/api/plugin/preview?p=anchor-e2e.md&anchor_spike=1',wait_until='domcontentloaded')
+            page.goto(self.base+'/api/plugin/preview?p=anchor-e2e.md',wait_until='domcontentloaded')
             para=page.locator('article.md-preview p[data-l="7"]')
             para.wait_for(timeout=8000)
             page.evaluate('''() => {
@@ -170,7 +170,7 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
               const selection=getSelection();selection.removeAllRanges();selection.addRange(range);
               p.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:220,clientY:210}));
             }''')
-            page.get_by_role('button',name='Go to block in Visual (experimental)').click()
+            page.get_by_role('button',name='Edit selection in Visual').click()
             visual=page.locator('.md-visual-host .ProseMirror')
             visual.wait_for(timeout=35000)
             self.assertTrue(visual.get_by_text('Unique alpha section text.').is_visible())

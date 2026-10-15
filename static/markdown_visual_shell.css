@@ -18,7 +18,7 @@
 /* Give wide GFM tables their intrinsic width rather than squeezing 20-30
    columns into 1080px. Scroll inside the table block, not the whole page.
    Keep the wrapper's overflow visible for Crepe's floating row/column handles;
-   manual drag-to-resize is out of this scoped prototype. */
+   header-edge resize is now a display-only interaction. */
 .md-visual-host .milkdown .milkdown-table-block{
   max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;
   overscroll-behavior-x:contain;scrollbar-width:thin;

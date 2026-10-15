@@ -14,6 +14,24 @@
   // documents to cap ProseMirror work and preserve byte-exact page boundaries.
   const FULL_VISUAL_LIMIT_BYTES = 64 * 1024;
   const root = document.querySelector('.content');
+  const anchorBridge = globalThis.LanternAnchorBridge;
+  const anchorKey = 'lantern-md-anchor:' + path;
+  const capturePosition = () => anchorBridge?.capture(view.mode, preview) || null;
+  let pointerBookmark = null;
+  const takeBookmark = () => {
+    const selected = pointerBookmark || capturePosition();
+    pointerBookmark = null;
+    return selected;
+  };
+  async function restorePosition(mode, bookmark, y = null) {
+    // Position mapping is best effort. A stale or unresolvable bookmark must
+    // never tear down an otherwise valid editor, especially with unsaved work.
+    let matched = false;
+    try { matched = !!(bookmark && await anchorBridge?.restore(mode, bookmark, preview)); }
+    catch (error) { console.warn('Markdown location could not be restored:', error); }
+    if (!matched && y !== null) requestAnimationFrame(() => scrollTo(0, y));
+    return matched;
+  }
   // Exactly one authoritative mode. The legacy active getter remains for
   // browser tests and for the common save/draft path in either editor.
   const view = {
@@ -348,8 +366,9 @@
 
   // Swap editing surfaces without changing documents or making a second
   // controller for Source. Both editors share draft, version and save state.
-  async function switchEditor(kind) {
+  async function switchEditor(kind, requestedBookmark = null) {
     if (!view.active || view.loading || view.saving || kind === view.mode) return;
+    const bookmark = requestedBookmark || capturePosition();
     const contentNow = getEditorText();
     // Milkdown may emit a mount transaction without changing Markdown.
     // Compare content, not its transient dirty flag, before switching modes.
@@ -376,8 +395,7 @@
       view.mode = 'preview';
       preview.hidden = false;
       restoreButtons();
-      await start('visual');
-      requestAnimationFrame(() => scrollTo(0, y));
+      await start('visual', bookmark);
       return;
     }
     if (wasDirty && !(await saveDraft())) return;
@@ -418,7 +436,7 @@
         'Ready. Edit directly in the document.',
         view.conflict ? 'error' : view.dirty || !view.roundtripSafe ? 'warn' : 'info');
       view.instance.focus();
-      requestAnimationFrame(() => scrollTo(0, y));
+      await restorePosition(kind, bookmark, y);
     } catch (error) {
       // Never discard the draft written above on a failed mode transition.
       view.instance?.destroy?.();
@@ -434,8 +452,9 @@
     }
   }
 
-  async function close() {
+  async function close(requestedBookmark = null) {
     if (!view.active || view.saving || view.loading) return;
+    const bookmark = requestedBookmark || capturePosition();
     const unsaved = !matchesLastSaved(getEditorText());
     if (unsaved && !confirm('Discard unsaved changes and return to Preview?')) return;
     clearTimeout(view.saveTimer);
@@ -468,15 +487,17 @@
     // clean toggles simply switch surfaces without a navigation or refetch.
     if (view.savedSincePreview) {
       sessionStorage.setItem('lantern-md-scroll:' + path, String(y));
+      if (bookmark) sessionStorage.setItem(anchorKey, JSON.stringify(bookmark));
       location.reload();
     } else {
-      requestAnimationFrame(() => scrollTo(0, y));
+      await restorePosition('preview', bookmark, y);
     }
   }
 
-  async function start(kind = 'visual') {
-    if (view.active) return switchEditor(kind);
+  async function start(kind = 'visual', requestedBookmark = null) {
+    if (view.active) return switchEditor(kind, requestedBookmark);
     if (view.loading) return;
+    const bookmark = requestedBookmark || capturePosition();
     const pagedNow = window.__lanternMdPaged;
     if (pagedNow?.active) {
       view.switchingFromPaged = true;
@@ -513,6 +534,7 @@
         });
         view.mode = 'paged';
         restoreButtons();
+        await restorePosition('visual', bookmark);
         return;
       }
       const engine = kind === 'visual' ? await loadBundle() : null;
@@ -561,6 +583,7 @@
         view.conflict ? 'error' : view.roundtripSafe ? 'info' : 'warn');
       restoreButtons();
       view.instance.focus();
+      await restorePosition(kind, bookmark);
       window.__lanternMdMetrics = { loadMs: Math.round(performance.now() - start), editorBytes: doc.bytes };
     } catch (error) {
       if (view.instance) view.instance.destroy();
@@ -577,11 +600,25 @@
     }
   }
 
-  trigger.addEventListener('click', () => { void start('visual'); });
-  sourceTrigger.addEventListener('click', () => { void start('source'); });
+  // The browser blurs contenteditable on pointerdown. Capture the ProseMirror
+  // selection BEFORE the toolbar button takes focus, not in its click handler.
+  for (const button of [trigger, sourceTrigger, previewTrigger])
+    button.addEventListener('pointerdown', () => { pointerBookmark = capturePosition(); }, true);
+  trigger.addEventListener('click', () => { void start('visual', takeBookmark()); });
+  sourceTrigger.addEventListener('click', () => { void start('source', takeBookmark()); });
   previewTrigger.addEventListener('click', () => {
-    if (window.__lanternMdPaged?.active) { void window.__lanternMdPaged.close(); return; }
-    if (view.active) void close();
+    const bookmark = takeBookmark();
+    if (window.__lanternMdPaged?.active) {
+      if (bookmark) sessionStorage.setItem(anchorKey, JSON.stringify(bookmark));
+      void window.__lanternMdPaged.close().then(() => {
+        if (!preview.hidden) {
+          void restorePosition('preview', bookmark);
+          sessionStorage.removeItem(anchorKey);
+        }
+      });
+      return;
+    }
+    if (view.active) void close(bookmark);
   });
   document.addEventListener('keydown', e => {
     if (!view.active || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;
@@ -598,9 +635,13 @@
   });
   const scrollKey = 'lantern-md-scroll:' + path;
   const priorScroll = sessionStorage.getItem(scrollKey);
-  if (priorScroll) {
+  const priorAnchor = sessionStorage.getItem(anchorKey);
+  if (priorAnchor || priorScroll) {
     sessionStorage.removeItem(scrollKey);
-    requestAnimationFrame(() => scrollTo(0, Number(priorScroll) || 0));
+    sessionStorage.removeItem(anchorKey);
+    let bookmark = null;
+    try { if (priorAnchor) bookmark = JSON.parse(priorAnchor); } catch { /* obsolete entry */ }
+    requestAnimationFrame(() => { void restorePosition('preview', bookmark, Number(priorScroll) || 0); });
   }
   window.__lanternMdVisual = { get state() { return view; }, open: start,
     show: start, save: () => save(true), preview: close };

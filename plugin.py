@@ -1235,10 +1235,11 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
             f'<a href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open PDF in a new tab</a>'
             ' or download the original.</div>'
         )
+    elif visual_markdown and anchor_spike:
+        # Render once. Source-line metadata is required by normal mode switching.
+        title, body = _render_markdown(p, rootp, anchors=True)
     else:
         title, body = render_content(p, config_path, rootp)
-        if visual_markdown and anchor_spike:
-            title, body = _render_markdown(p, rootp, anchors=True)
     nonce = secrets.token_urlsafe(24)
     csp = (
         "default-src 'none'; "
@@ -1263,6 +1264,8 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
     helper_script = f'<script nonce="{h(nonce)}" src="/static/markdown_preview.js" defer></script>'
     if visual_markdown and anchor_spike:
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_anchor_bridge.js" defer></script>'
+    if visual_markdown:
+        helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_table_interactions.js" defer></script>'
     visual_script = (
         f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'
         if visual_markdown else ""
@@ -1288,9 +1291,11 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
     print_button = '' if is_pdf and not pdf_text else (
         '<button class="btn" type="button" data-action="print">Print / Save as PDF</button>'
     )
+    table_style = ('<link rel="stylesheet" href="/static/markdown_table_interactions.css">'
+                   if visual_markdown else '')
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
-{mermaid_script}{helper_script}{visual_script}</head>
+{mermaid_script}{table_style}{helper_script}{visual_script}</head>
 <body>
 <div class="bar"><button class="btn" type="button" data-action="back">↩ Back</button><div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div>{print_button}{mode_controls}{pdf_action}{'' if visual_markdown else f'<a class="btn" href="{h(raw_url)}?edit=1">Edit</a>'}<a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a><a class="btn primary" href="{h(raw_url)}?download=1">Download</a></div>
 <div class="content" data-doc-name="{h(p.stem)}"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>

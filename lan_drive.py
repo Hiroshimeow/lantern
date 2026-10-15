@@ -2594,9 +2594,10 @@ class Handler(SimpleHTTPRequestHandler):
             if pdf_text:
                 body = LAN_PLUGIN.render_preview_page(target, CONFIG.root, plugin_config_path(), CONFIG.title, pdf_text=True)
             else:
-                # Experimental source anchors opt-in per request; default unchanged.
+                # Source-line anchors enable normal Preview / Visual / Source navigation.
+                # Explicit anchor_spike=0 retains the legacy output for diagnostics.
                 include_anchors = (target.suffix.lower() in {".md", ".markdown"}
-                                   and qs.get("anchor_spike", [""])[0] == "1")
+                                   and qs.get("anchor_spike", ["1"])[0] != "0")
                 body = LAN_PLUGIN.render_preview_page(
                     target, CONFIG.root, plugin_config_path(), CONFIG.title,
                     anchor_spike=include_anchors)

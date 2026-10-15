@@ -449,20 +449,21 @@ class MarkdownPreviewTests(unittest.TestCase):
             "head": set(),
             "meta": {"charset", "name", "content", "http-equiv"},
             "title": set(),
+            "link": {"rel", "href"},
             "style": set(),
             "body": set(),
-            "div": {"class", "data-diagram-index", "data-doc-name", "role", "aria-label"},
+            "div": {"class", "data-diagram-index", "data-doc-name", "role", "aria-label", "data-l"},
             "button": {"class", "type", "data-action", "data-diagram-index", "data-path", "hidden", "aria-pressed"},
             "a": {"class", "href", "target", "rel"},
             "article": {"class"},
-            "p": set(),
-            "h1": set(), "h2": set(), "h3": set(), "h4": set(), "h5": set(), "h6": set(),
-            "hr": set(),
+            "p": {"data-l"},
+            "h1": {"data-l"}, "h2": {"data-l"}, "h3": {"data-l"}, "h4": {"data-l"}, "h5": {"data-l"}, "h6": {"data-l"},
+            "hr": {"data-l"},
             "blockquote": set(),
-            "ul": {"class"}, "ol": {"class"}, "li": {"class"},
-            "pre": {"class", "data-language"},
+            "ul": {"class"}, "ol": {"class"}, "li": {"class", "data-l"},
+            "pre": {"class", "data-language", "data-l"},
             "code": set(),
-            "table": set(), "thead": set(), "tbody": set(), "tr": set(), "th": set(), "td": set(),
+            "table": set(), "thead": set(), "tbody": set(), "tr": {"data-l"}, "th": set(), "td": set(),
             "img": {"src", "alt", "title"},
             "input": {"type", "disabled", "checked", "aria-label"},
             "script": {"src", "nonce", "defer"},
@@ -476,7 +477,7 @@ class MarkdownPreviewTests(unittest.TestCase):
                 if not value:
                     continue
                 if tag == "script":
-                    self.assertIn(value, {"/static/markdown_preview.js", "/static/vendor/mermaid-11.17.2.min.js", "/static/markdown_visual_shell.js"})
+                    self.assertIn(value, {"/static/markdown_preview.js", "/static/vendor/mermaid-11.17.2.min.js", "/static/markdown_table_interactions.js", "/static/markdown_visual_shell.js"})
                 elif tag == "img":
                     self.assertTrue(value.startswith("/"), value)
                 else:
@@ -516,7 +517,7 @@ class MarkdownPreviewTests(unittest.TestCase):
         page = self.render_markdown("<script src='/uploads/owned.js'></script>")
         self.assertIn("&lt;script", page)
         scripts = [attrs for tag, attrs in self.audit(page).tags if tag == "script"]
-        self.assertEqual({attrs.get("src") for attrs in scripts}, {"/static/markdown_preview.js", "/static/markdown_visual_shell.js"})
+        self.assertEqual({attrs.get("src") for attrs in scripts}, {"/static/markdown_preview.js", "/static/markdown_table_interactions.js", "/static/markdown_visual_shell.js"})
 
     def test_mermaid_bundle_is_parser_discovered_only_on_mermaid_pages(self) -> None:
         mermaid_page = self.render_markdown("```mermaid\nflowchart TD\nA-->B\n```\n")
@@ -533,7 +534,7 @@ class MarkdownPreviewTests(unittest.TestCase):
         mermaid_scripts = [attrs for tag, attrs in self.audit(mermaid_page).tags if tag == "script"]
         self.assertEqual(
             [attrs.get("src") for attrs in mermaid_scripts],
-            ["/static/vendor/mermaid-11.17.2.min.js", "/static/markdown_preview.js", "/static/markdown_visual_shell.js"],
+            ["/static/vendor/mermaid-11.17.2.min.js", "/static/markdown_preview.js", "/static/markdown_table_interactions.js", "/static/markdown_visual_shell.js"],
         )
         self.assertEqual(
             sum(attrs.get("src") == "/static/vendor/mermaid-11.17.2.min.js" for attrs in mermaid_scripts),
@@ -543,7 +544,7 @@ class MarkdownPreviewTests(unittest.TestCase):
         self.assertTrue(all("defer" in attrs for attrs in mermaid_scripts))
 
         plain_scripts = [attrs for tag, attrs in self.audit(plain_page).tags if tag == "script"]
-        self.assertEqual([attrs.get("src") for attrs in plain_scripts], ["/static/markdown_preview.js", "/static/markdown_visual_shell.js"])
+        self.assertEqual([attrs.get("src") for attrs in plain_scripts], ["/static/markdown_preview.js", "/static/markdown_table_interactions.js", "/static/markdown_visual_shell.js"])
         self.assertTrue(plain_scripts[0].get("nonce"))
         self.assertIn("defer", plain_scripts[0])
         self.assertLess(plain_page.index('/static/markdown_preview.js'), plain_page.index("</head>"))

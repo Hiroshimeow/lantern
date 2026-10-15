@@ -38,3 +38,21 @@ class WideTableStyleTests(unittest.TestCase):
             self.assertIn('class="table-wrap"',html)
 
 if __name__=='__main__': unittest.main()
+
+class WideTableInteractionContractTests(unittest.TestCase):
+    def test_drag_scroller_is_loaded_in_markdown_preview(self):
+        import plugin
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            p=Path(folder)/'table.md'
+            p.write_text('| A | B |\n|---|---|\n| 1 | 2 |\n')
+            page=plugin.render_preview_page(p, Path(folder)).decode()
+            self.assertIn('/static/markdown_table_interactions.js',page)
+            self.assertIn('/static/markdown_table_interactions.css',page)
+
+    def test_drag_resizing_does_not_persist_into_gfm_source(self):
+        script=(ROOT/'static/markdown_table_interactions.js').read_text()
+        self.assertIn('pointerdown',script)
+        self.assertIn('scrollLeft',script)
+        self.assertIn('min-width:',script)
+        self.assertNotIn('/api/md/save',script)
