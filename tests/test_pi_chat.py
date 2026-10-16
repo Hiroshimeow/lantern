@@ -4,20 +4,25 @@ import json
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 
-from lantern.md_editor import read_document
 from lantern.pi_chat import PiChatManager
+from lantern.working_copy import WorkingCopyStore
 
 
 class PiChatManagerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name) / "root"
+        self.root.mkdir()
         self.events = []
         self.settled = threading.Event()
+        self.work = WorkingCopyStore(
+            self.root,
+            Path(self.tmp.name) / "work",
+            {".md", ".markdown"},
+        )
         fake = Path(__file__).with_name("fake_pi_rpc.py")
 
         def emit(event):
@@ -29,8 +34,8 @@ class PiChatManagerTests(unittest.TestCase):
         self.manager = PiChatManager(
             self.root,
             emit,
-            session_dir=self.root / "sessions",
-            draft_storage_dir=self.root / "drafts",
+            work_store=self.work,
+            session_dir=Path(self.tmp.name) / "sessions",
             argv_override=[sys.executable, "-u", str(fake)],
             request_timeout=3,
         )
@@ -43,7 +48,10 @@ class PiChatManagerTests(unittest.TestCase):
         state = self.manager.get_state()
         self.assertEqual(state["sessionId"], "fake-session-1")
         self.assertTrue(self.manager.summary()["running"])
-        saved = json.loads((self.root / "sessions" / "lantern-active.json").read_text(encoding="utf-8"))
+        saved = json.loads(
+            (Path(self.tmp.name) / "sessions" / "lantern-active.json")
+            .read_text(encoding="utf-8")
+        )
         self.assertEqual(saved["sessionId"], "fake-session-1")
 
     def test_model_inventory_is_bounded_to_five_priorities(self):
@@ -67,80 +75,106 @@ class PiChatManagerTests(unittest.TestCase):
         self.assertEqual(after["sessionId"], before)
         self.assertEqual(after["model"]["id"], "claude-opus-5-5-high")
 
-    def test_new_session_changes_session_without_restarting_process(self):
+    def test_new_session_changes_pi_session_but_keeps_working_copy(self):
+        target = self.root / "draft.md"
+        target.write_text("saved\n", encoding="utf-8")
+        state = self.work.get("draft.md")
+        pending = self.work.write(
+            "draft.md",
+            "pending\n",
+            expect_hash=None,
+            base_version=state["saved"]["version"],
+        )
+
         before = self.manager.get_state()
         proc = self.manager.proc
         after = self.manager.new_session()
+
         self.assertNotEqual(after["sessionId"], before["sessionId"])
         self.assertIs(self.manager.proc, proc)
         self.assertTrue(self.manager.summary()["running"])
+        self.assertEqual(self.work.get("draft.md")["work"]["hash"], pending["hash"])
 
-    def test_prompt_wraps_latest_lantern_context_and_streams_events(self):
+    def test_prompt_wraps_logical_and_working_paths_and_streams_events(self):
         target = self.root / "docs" / "spec.md"
         target.parent.mkdir(parents=True)
         target.write_text("# Spec\n\nold text\n", encoding="utf-8")
-        version = read_document(target)["version"]
+        state = self.work.get("docs/spec.md")
+        pending = self.work.write(
+            "docs/spec.md",
+            "# Spec\n\nunsaved working copy\n",
+            expect_hash=None,
+            base_version=state["saved"]["version"],
+        )
+
         self.manager.prompt(
             "Fix this paragraph",
             {
                 "kind": "markdown",
-                "path": str(target.relative_to(self.root)),
+                "path": "docs/spec.md",
                 "folder": "docs",
                 "markdownMode": "source",
                 "line": 243,
                 "selectedText": "old text",
             },
-            draft={
-                "promptId": "prompt-1",
-                "baseVersion": version,
-                "draftRevision": 7,
-                "text": "# Spec\n\nunsaved browser draft\n",
-            },
+            work_hash=pending["hash"],
         )
         self.assertTrue(self.settled.wait(2))
+
         messages = self.manager.get_messages()
         prompt = messages[0]["content"]
+        working = self.work.working_path("docs/spec.md")
+        self.assertIsNotNone(working)
         self.assertIn("<lantern_context>", prompt)
         self.assertIn("path: " + str(target.resolve()), prompt)
         self.assertIn("folder: " + str((self.root / "docs").resolve()), prompt)
+        self.assertIn("logicalPath: docs/spec.md", prompt)
+        self.assertIn("workingPath: " + str(working), prompt)
         self.assertIn("markdownMode: source", prompt)
         self.assertIn("line: 243", prompt)
         self.assertIn("selectedText:\nold text", prompt)
-        self.assertIn("promptId: prompt-1", prompt)
-        self.assertIn("draftRevision: 7", prompt)
-        self.assertIn("savedPath: " + str(target.resolve()), prompt)
-        self.assertIn("draftPath: ", prompt)
+        self.assertNotIn("draftPath:", prompt)
+        self.assertNotIn("savedPath:", prompt)
         self.assertIn("<user_request>\nFix this paragraph", prompt)
         self.assertEqual(target.read_text(encoding="utf-8"), "# Spec\n\nold text\n")
-        active = self.manager.drafts.active
-        self.assertIsNotNone(active)
-        self.assertEqual(active.shadow_path.read_text(encoding="utf-8"),
-                         "# Spec\n\nunsaved browser draft\n")
+        self.assertEqual(
+            self.work.get("docs/spec.md")["work"]["content"],
+            "# Spec\n\nunsaved working copy\n",
+        )
+        work_events = [item for item in self.events if item.get("type") == "chat_work_changed"]
+        self.assertTrue(work_events)
+        self.assertTrue(work_events[-1]["final"])
         pi_events = [item["event"] for item in self.events if item.get("type") == "chat_pi_event"]
         self.assertTrue(any(item.get("type") == "message_update" for item in pi_events))
         self.assertTrue(any(item.get("type") == "agent_settled" for item in pi_events))
 
-    def test_fake_pi_shadow_edit_emits_draft_update_without_touching_real_file(self):
-        target = self.root / "docs" / "shadow.md"
+    def test_fake_pi_edits_working_copy_without_touching_real_file(self):
+        target = self.root / "docs" / "work.md"
         target.parent.mkdir(parents=True)
-        target.write_text("# Shadow\n\nreal saved text\n", encoding="utf-8")
-        version = read_document(target)["version"]
+        target.write_text("# Work\n\nreal saved text\n", encoding="utf-8")
+        state = self.work.get("docs/work.md")
+        pending = self.work.write(
+            "docs/work.md",
+            "# Work\n\nunsaved working copy\n",
+            expect_hash=None,
+            base_version=state["saved"]["version"],
+        )
+
         self.manager.prompt(
-            "FAKE_EDIT_SHADOW",
-            {"kind": "markdown", "path": "docs/shadow.md", "markdownMode": "source"},
-            draft={
-                "promptId": "shadow-1",
-                "baseVersion": version,
-                "draftRevision": 3,
-                "text": "# Shadow\n\nunsaved browser draft\n",
-            },
+            "FAKE_EDIT_WORK",
+            {"kind": "markdown", "path": "docs/work.md", "markdownMode": "source"},
+            work_hash=pending["hash"],
         )
         self.assertTrue(self.settled.wait(2))
-        updates = [item for item in self.events if item.get("type") == "chat_draft_update"]
-        self.assertTrue(updates)
-        self.assertEqual(updates[-1]["text"], "# Shadow\n\nfake Pi shadow edit\n")
+
+        updates = [item for item in self.events if item.get("type") == "chat_work_changed"]
+        self.assertTrue(any(not item["final"] for item in updates))
         self.assertTrue(updates[-1]["final"])
-        self.assertEqual(target.read_text(encoding="utf-8"), "# Shadow\n\nreal saved text\n")
+        self.assertEqual(
+            self.work.get("docs/work.md")["work"]["content"],
+            "# Work\n\nfake Pi working edit\n",
+        )
+        self.assertEqual(target.read_text(encoding="utf-8"), "# Work\n\nreal saved text\n")
 
     def test_empty_message_is_rejected_before_start(self):
         with self.assertRaisesRegex(ValueError, "empty"):
@@ -156,10 +190,20 @@ class PiChatManagerTests(unittest.TestCase):
             self.manager.normalize_context({"kind": "file", "path": "../outside.txt"})
 
     def test_persisted_session_file_is_used_for_restart(self):
-        saved = self.root / "sessions" / "saved.jsonl"
+        saved = Path(self.tmp.name) / "sessions2" / "saved.jsonl"
         saved.parent.mkdir(parents=True, exist_ok=True)
         saved.write_text('{"type":"session"}\n', encoding="utf-8")
-        manager = PiChatManager(self.root, lambda _event: None, session_dir=saved.parent)
+        store = WorkingCopyStore(
+            self.root,
+            Path(self.tmp.name) / "work2",
+            {".md", ".markdown"},
+        )
+        manager = PiChatManager(
+            self.root,
+            lambda _event: None,
+            work_store=store,
+            session_dir=saved.parent,
+        )
         manager._persist_state({
             "sessionId": "session-persisted",
             "sessionFile": str(saved),
@@ -172,9 +216,11 @@ class PiChatManagerTests(unittest.TestCase):
         self.assertIn("read,edit,write,grep,find,ls", command)
         self.assertNotIn("powershell", command)
         self.assertNotIn("bash", command)
+        self.assertIn("pi_working_copy_guard.ts", " ".join(command))
         self.assertEqual(command[command.index("--session") + 1], str(saved.resolve()))
         state = json.loads(manager.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["sessionFile"], str(saved))
+        manager.close()
 
 
 if __name__ == "__main__":

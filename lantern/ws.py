@@ -374,8 +374,12 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
         return
     if typ == "chat_prompt":
         context = msg.get("context") if isinstance(msg.get("context"), dict) else {}
-        draft = msg.get("draft") if isinstance(msg.get("draft"), dict) else None
-        chat.prompt(str(msg.get("message") or ""), context, draft=draft)
+        work_hash = msg.get("workHash")
+        chat.prompt(
+            str(msg.get("message") or ""),
+            context,
+            work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
+        )
         peer.send({"type": "chat_prompt_accepted", "reqId": msg.get("reqId")})
         return
     if typ == "chat_abort":

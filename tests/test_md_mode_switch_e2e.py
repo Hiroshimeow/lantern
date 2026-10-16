@@ -28,10 +28,12 @@ class MarkdownModesE2E(unittest.TestCase):
             sock.bind(("127.0.0.1", 0))
             cls.port = sock.getsockname()[1]
         cls.base = f"http://127.0.0.1:{cls.port}"
+        env = dict(os.environ)
+        env["LANTERN_WORK_DIR"] = str(cls.root / ".lantern-work")
         cls.proc = subprocess.Popen(
             [sys.executable, str(ROOT / "lan_drive.py"),
              "--root", str(cls.root), "--host", "127.0.0.1", "--port", str(cls.port)],
-            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(130):
             try:
@@ -813,72 +815,84 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
-    def test_pi_shadow_merges_into_pending_source_draft_without_touching_disk(self):
+    def test_pi_working_copy_merges_with_human_typing_without_touching_disk(self):
         initial = "# Pi merge\nalpha\nbeta\ngamma\nomega\n"
-        path = self.root / "pi-shadow-merge.md"
+        path = self.root / "pi-working-merge.md"
         path.write_text(initial, encoding="utf-8")
         context = self.browser.new_context(viewport={"width": 1180, "height": 850})
         page = context.new_page()
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         try:
-            page.goto(self.base + "/api/plugin/preview?p=pi-shadow-merge.md",
+            page.goto(self.base + "/api/plugin/preview?p=pi-working-merge.md",
                       wait_until="domcontentloaded")
             page.get_by_role("button", name="Source", exact=True).click()
             source = page.get_by_role("textbox", name="Markdown source")
             source.wait_for(state="visible")
 
-            # Pi starts from this browser draft.
-            page.evaluate(
-                "(base) => window.__lanternMdVisual.beginPiDraft('p-merge', base)",
-                initial,
-            )
-            # Human changes beta while Pi is working.
+            async_write = """async ({text}) => {
+              const state=await (await fetch('/api/work?p='+encodeURIComponent('pi-working-merge.md'),
+                {cache:'no-store'})).json();
+              const response=await fetch('/api/work/write',{
+                method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({
+                  path:'pi-working-merge.md',
+                  content:text,
+                  expectHash:state.work?.hash ?? null,
+                  baseVersion:state.saved.version,
+                })
+              });
+              const data=await response.json();
+              if(!response.ok)throw new Error(data.error||'work write failed');
+              return data;
+            }"""
+
+            # Pi turn starts from exactly the flushed editor state.
+            work_hash = page.evaluate("() => window.__lanternMdVisual.beginPiTurn()")
+            self.assertIsNone(work_hash)
             human = "# Pi merge\nalpha\nHUMAN BETA\ngamma\nomega\n"
             source.fill(human)
-            page.wait_for_function("() => window.__lanternMdVisual.state.dirty")
 
-            # Pi independently changes omega. Non-overlap must merge into the same draft.
-            pi_shadow = "# Pi merge\nalpha\nbeta\ngamma\nPI OMEGA\n"
-            result = page.evaluate(
-                """async ({id,text}) => await window.__lanternMdVisual.applyPiDraft(id,text,true)""",
-                {"id": "p-merge", "text": pi_shadow},
+            # Pi changes a non-overlapping line in the same working copy.
+            pi_work = "# Pi merge\nalpha\nbeta\ngamma\nPI OMEGA\n"
+            update = page.evaluate(async_write, {"text": pi_work})
+            page.evaluate(
+                """async ({hash}) => await window.__lanternMdVisual.onWorkChanged(
+                     'pi-working-merge.md',hash,true)""",
+                {"hash": update["hash"]},
             )
             merged = "# Pi merge\nalpha\nHUMAN BETA\ngamma\nPI OMEGA\n"
             self.assertEqual(source.input_value(), merged)
-            self.assertEqual(result["conflicts"], [])
-            self.assertEqual(result["appliedPiHunks"], 1)
             self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            working = page.evaluate("""async () =>
+              await (await fetch('/api/work?p='+encodeURIComponent('pi-working-merge.md'),
+                {cache:'no-store'})).json()""")
+            self.assertEqual(working["work"]["content"], merged)
 
-            # New turn: human and Pi touch the same line. Human draft must win.
-            page.evaluate(
-                "(base) => window.__lanternMdVisual.beginPiDraft('p-conflict', base)",
-                merged,
-            )
+            # New turn: human and Pi modify the same line. Human text wins.
+            page.evaluate("() => window.__lanternMdVisual.beginPiTurn()")
             human2 = "# Pi merge\nalpha\nHUMAN BETA\nHUMAN GAMMA\nPI OMEGA\n"
             source.fill(human2)
-            page.wait_for_timeout(350)
             pi2 = "# Pi merge\nalpha\nHUMAN BETA\nPI GAMMA\nPI OMEGA\n"
-            conflict = page.evaluate(
-                """async ({id,text}) => await window.__lanternMdVisual.applyPiDraft(id,text,true)""",
-                {"id": "p-conflict", "text": pi2},
+            update2 = page.evaluate(async_write, {"text": pi2})
+            page.evaluate(
+                """async ({hash}) => await window.__lanternMdVisual.onWorkChanged(
+                     'pi-working-merge.md',hash,true)""",
+                {"hash": update2["hash"]},
             )
             self.assertEqual(source.input_value(), human2)
-            self.assertEqual(len(conflict["conflicts"]), 1)
+            self.assertIn("overlapping hunk", page.locator(".md-visual-status").inner_text())
             self.assertEqual(path.read_text(encoding="utf-8"), initial)
 
-            # Explicit user Save is still the only real-file commit.
             page.keyboard.press("Control+S")
             page.wait_for_function(
                 "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty; }",
-                timeout=8000,
+                timeout=10000,
             )
             self.assertEqual(path.read_text(encoding="utf-8"), human2)
             self.assertEqual(errors, [])
         finally:
             context.close()
-
-
     def test_dirty_source_can_switch_to_visual_without_saving_real_file(self):
         initial = "# Draft mode switch\n\nOriginal paragraph.\n"
         draft = "# Draft mode switch\n\nPending paragraph.\n"

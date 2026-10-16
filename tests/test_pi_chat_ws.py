@@ -36,8 +36,8 @@ class FakeChat:
     def get_messages(self):
         return [{"role": "assistant", "content": "hello"}]
 
-    def prompt(self, message, context, draft=None):
-        self.prompts.append((message, context, draft))
+    def prompt(self, message, context, work_hash=None):
+        self.prompts.append((message, context, work_hash))
         return {"success": True}
 
     def new_session(self):
@@ -112,23 +112,18 @@ class PiChatWebSocketTests(unittest.TestCase):
         self.assertEqual(peer.messages[-1]["type"], "chat_state")
         self.assertEqual(peer.messages[-1]["state"]["sessionId"], "session-new")
 
-    def test_chat_prompt_forwards_markdown_draft_payload(self):
+    def test_chat_prompt_forwards_markdown_work_hash_only(self):
         peer = Peer()
         chat = FakeChat()
-        draft = {
-            "promptId": "chat-1",
-            "baseVersion": "a" * 64,
-            "draftRevision": 4,
-            "text": "# Draft\n",
-        }
+        work_hash = "a" * 64
         context = {"kind": "markdown", "path": "doc.md", "markdownMode": "source"}
         dispatch(
             peer,
             {"type": "chat_prompt", "reqId": "chat-1", "message": "edit",
-             "context": context, "draft": draft},
+             "context": context, "workHash": work_hash},
             object(), None, chat=chat,
         )
-        self.assertEqual(chat.prompts, [("edit", context, draft)])
+        self.assertEqual(chat.prompts, [("edit", context, work_hash)])
         self.assertEqual(peer.messages[-1],
                          {"type": "chat_prompt_accepted", "reqId": "chat-1"})
 

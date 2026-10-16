@@ -47,11 +47,10 @@
     draftTimer: 0, diffTimer: 0, checkTimer: 0, host: null, status: null,
     saveButton: null, closeButton: null, details: null,
     sourceArea: null, sourceBackdrop: null, sourceDeletions: null, hunks: [],
-    workHash: null, workState: 'clean', ackedText: '',
+    workHash: null, workState: 'clean', ackedText: '', piTurn: null, applyingPi: false,
     savedSincePreview: false, switchingFromPaged: false,
   };
   const key = location.origin + ':' + path;
-  const piTurns = new Map();
   const escapeCss = s => s.replace(/[^A-Za-z0-9_-]/g, '-');
   const cleanLineEndings = text => String(text || '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const status = (message, kind = 'info') => {
@@ -186,64 +185,148 @@
     clearTimeout(view.diffTimer);
     view.diffTimer = setTimeout(renderDraftDiff, 120);
   };
-  const getDraftSnapshot = () => {
-    if (view.conflict) throw new Error('Markdown draft conflicts with disk; resolve it before asking Pi.');
-    if (globalThis.__lanternMdPaged?.active) {
-      throw new Error('Pi draft editing is not enabled for the section editor yet. Save or switch to Source first.');
-    }
-    if (!view.active || !view.instance) return null;
-    return {
-      text: getEditorText(),
-      baseVersion: view.version,
-      draftRevision: view.revision,
-      mode: view.mode,
-    };
-  };
-  const beginPiDraft = (promptId, text) => {
-    const id = String(promptId || '');
-    if (!id) throw new Error('Pi draft prompt id is required');
-    piTurns.set(id, {base: String(text ?? ''), revision: view.revision});
-    while (piTurns.size > 6) piTurns.delete(piTurns.keys().next().value);
-  };
-  const applyPiDraft = async (promptId, shadowText, final = false) => {
-    const id = String(promptId || '');
-    const turn = piTurns.get(id);
-    if (!turn) throw new Error('Pi draft update does not match an active prompt');
-    if (globalThis.__lanternMdPaged?.active) {
-      throw new Error('Pi draft update cannot be merged while the section editor is active');
-    }
-    if (!view.active) await start('source');
-    else if (view.mode !== 'source') await switchEditor('source');
-    if (view.mode !== 'source' || !view.sourceArea || !view.instance) {
-      throw new Error('Source editor is unavailable for Pi draft merge');
-    }
-    if (view.conflict) throw new Error('Markdown changed on disk; Pi draft was not merged');
+  const fetchWorkState = () => api('/api/work?p=' + encodeURIComponent(path));
 
+  const beginPiTurn = async () => {
+    if (globalThis.__lanternMdPaged?.active) {
+      throw new Error('Pi editing is not enabled while the section editor is active. Save or return to Source first.');
+    }
+    if (view.piTurn) throw new Error('A Pi Markdown turn is already active');
+
+    let base;
+    if (view.active && view.instance) {
+      if (!(await saveDraft())) throw new Error('Unable to flush the current Markdown working copy');
+      base = getEditorText();
+    } else {
+      const state = await fetchWorkState();
+      if (!state.saved) throw new Error('Saved Markdown file is unavailable');
+      base = state.work?.content ?? state.saved.content;
+      view.version = state.saved.version;
+      view.baseline = state.saved.content;
+      view.lastSaved = state.saved.content;
+      view.workHash = state.work?.hash || null;
+      view.workState = state.state || (view.workHash ? 'pending' : 'clean');
+      view.ackedText = base;
+      view.conflict = state.state === 'external' || state.state === 'missing';
+      if (view.conflict) throw new Error('Markdown saved file changed outside this working copy');
+    }
+    clearTimeout(view.draftTimer);
+    view.piTurn = {
+      base: String(base ?? ''),
+      expectedRevision: view.revision,
+    };
+    status('Pi is editing the working copy. You may keep typing; overlapping changes keep your text.', 'info');
+    return view.workHash || null;
+  };
+
+  const cancelPiTurn = () => {
+    view.piTurn = null;
+  };
+
+  const replaceTextareaText = (area, nextText) => {
+    const current = area.value;
+    if (current === nextText) return false;
+    let startAt = 0;
+    const common = Math.min(current.length, nextText.length);
+    while (startAt < common && current.charCodeAt(startAt) === nextText.charCodeAt(startAt)) startAt++;
+    let oldEnd = current.length;
+    let newEnd = nextText.length;
+    while (oldEnd > startAt && newEnd > startAt &&
+           current.charCodeAt(oldEnd - 1) === nextText.charCodeAt(newEnd - 1)) {
+      oldEnd--; newEnd--;
+    }
+    area.setRangeText(nextText.slice(startAt, newEnd), startAt, oldEnd, 'preserve');
+    return true;
+  };
+
+  const applyWorkingText = async (text, hash, { backed = true } = {}) => {
+    const next = String(text ?? '');
+    const bookmark = capturePosition();
+    const y = scrollY;
+    if (!view.active || view.mode === 'preview') {
+      await renderDraftPreview(next);
+      preview.hidden = false;
+    } else if (view.mode === 'source' && view.sourceArea) {
+      if (replaceTextareaText(view.sourceArea, next)) view.revision += 1;
+    } else if (view.mode === 'visual') {
+      const engine = await loadBundle();
+      const host = view.host?.querySelector('.md-visual-host');
+      if (!host) throw new Error('Visual editor host is unavailable');
+      view.applyingPi = true;
+      try {
+        await view.instance?.destroy?.();
+        host.textContent = '';
+        view.instance = await engine.createVisualMarkdown(host, next, changed, path, status);
+      } finally {
+        view.applyingPi = false;
+      }
+      view.revision += 1;
+      await restorePosition('visual', bookmark, y);
+    }
+    view.workHash = hash || null;
+    view.workState = view.workHash ? 'pending' : 'clean';
+    if (backed) view.ackedText = next;
+    view.dirty = cleanLineEndings(next) !== cleanLineEndings(view.baseline);
+    renderDraftDiff();
+  };
+
+  const onWorkChanged = async (eventPath, eventHash, final = false) => {
+    if (String(eventPath || '').replace(/\\/g, '/') !== String(path || '').replace(/\\/g, '/')) return;
+    const turn = view.piTurn;
+    if (!turn) return;
+    const state = await fetchWorkState();
+    if (!state.saved) throw new Error('Saved Markdown file is unavailable');
+    const piText = state.work?.content ?? state.saved.content;
+    const serverHash = state.work?.hash || null;
+    const humanText = view.active && view.instance ? getEditorText() : turn.base;
+    const humanChanged = view.active && view.revision !== turn.expectedRevision;
+
+    if (!final) {
+      view.workHash = serverHash;
+      view.workState = state.state || (serverHash ? 'pending' : 'clean');
+      if (!humanChanged && view.mode !== 'visual') {
+        await applyWorkingText(piText, serverHash, { backed: true });
+        turn.expectedRevision = view.revision;
+      }
+      return;
+    }
+
+    clearTimeout(view.draftTimer);
+    view.piTurn = null;
+    if (!humanChanged) {
+      await applyWorkingText(piText, serverHash, { backed: true });
+      status('Pi changes are pending review. Press Ctrl+S or Save to commit.', 'info');
+      return;
+    }
+
+    view.workHash = serverHash;
+    view.workState = state.state || (serverHash ? 'pending' : 'clean');
+    view.ackedText = piText;
     const diff = diffApi();
     if (!diff) throw new Error('Markdown diff engine is unavailable');
-    const current = getEditorText();
-    const result = diff.merge3(turn.base, current, String(shadowText ?? ''));
-    if (result.text !== current) {
-      const area = view.sourceArea;
-      const startAt = area.selectionStart;
-      const endAt = area.selectionEnd;
-      area.value = result.text;
-      area.setSelectionRange(Math.min(startAt, area.value.length), Math.min(endAt, area.value.length));
-      view.revision += 1;
-      view.dirty = !matchesLastSaved(result.text);
-      if (view.dirty) queueDraft();
-      else await drafts.clear().catch(() => {});
-      renderDraftDiff();
+    let merged = humanText;
+    let conflicts = [];
+    let appliedPiHunks = 0;
+    if (piText !== turn.base) {
+      const result = diff.merge3(turn.base, humanText, piText);
+      merged = result.text;
+      conflicts = result.conflicts || [];
+      appliedPiHunks = Number(result.appliedPiHunks || 0);
     }
-    if (result.conflicts.length) {
-      status('Pi changed the draft, but ' + result.conflicts.length +
-        ' overlapping hunk(s) were skipped because your newer edits win.', 'warn');
-    } else if (result.appliedPiHunks) {
-      status('Pi changes are pending review. Press Ctrl+S or Save to commit.', 'info');
+    if (merged !== humanText) await applyWorkingText(merged, serverHash, { backed: false });
+    if (!(await flushWorkingCopy(merged))) {
+      throw new Error('Unable to reconcile your typing with Pi working-copy changes');
     }
-    if (final) piTurns.delete(id);
-    return result;
+    if (conflicts.length) {
+      status('Pi finished; ' + conflicts.length +
+        ' overlapping hunk(s) were skipped because your newer text wins.', 'warn');
+    } else if (appliedPiHunks) {
+      status('Pi changes merged with your typing and remain pending Save.', 'info');
+    } else {
+      status('Your newer typing is preserved; Pi made no additional non-overlapping changes.', 'info');
+    }
   };
+
   const flushWorkingCopy = async (text = getEditorText()) => {
     if (!view.version) return false;
     try {
@@ -296,7 +379,7 @@
     view.draftTimer = setTimeout(saveDraft, 900);
   };
   const changed = () => {
-    if (!view.active) return;
+    if (!view.active || view.applyingPi) return;
     view.dirty = true;
     view.revision += 1;
     status(view.conflict ? 'Conflict: your draft is preserved; do not overwrite another client.' :
@@ -839,5 +922,5 @@
   }
   window.__lanternMdVisual = { get state() { return view; }, open: start,
     show: start, save: () => save(true), preview: close, flushNow: saveDraft,
-    getDraftSnapshot, beginPiDraft, applyPiDraft };
+    beginPiTurn, cancelPiTurn, onWorkChanged };
 })();

@@ -3053,9 +3053,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Markdown path required"}); return
         target = safe_join("/" + quote_path(rel))
         try:
+            work_state = self._work_store().get(rel)
+            if work_state.get("state") != "clean" or work_state.get("turnActive"):
+                self.send_json(409, {
+                    "error": "Markdown has a pending working copy; Save or Discard it before section-based save.",
+                    "reason": "working_copy_pending",
+                })
+                return
             result = save_markdown_document(target, data.get("content"), data.get("version"))
             self.send_json(200, {"ok": True, **result})
-        except MarkdownEditorError as exc:
+        except (MarkdownEditorError, WorkingCopyError) as exc:
             self.send_json(exc.status, {"error": str(exc), **exc.details})
 
     def api_save(self) -> None:
@@ -3630,7 +3637,7 @@ def main() -> None:
     TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
     work_dir = Path(os.environ.get("LANTERN_WORK_DIR") or (Path.home() / ".lantern" / "work"))
     WORK_STORE = WorkingCopyStore(CONFIG.root, work_dir, {".md", ".markdown"})
-    CHAT_MANAGER = PiChatManager(CONFIG.root, WS_HUB.broadcast)
+    CHAT_MANAGER = PiChatManager(CONFIG.root, WS_HUB.broadcast, work_store=WORK_STORE)
     SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():
         print(f"Root does not exist: {CONFIG.root}", file=sys.stderr)

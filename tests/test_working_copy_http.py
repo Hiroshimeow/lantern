@@ -32,6 +32,7 @@ class WorkingCopyHttpTests(unittest.TestCase):
         cls.root.mkdir()
         cls.work = base / "work"
         (cls.root / "doc.md").write_text("# Saved\n\nold\n", encoding="utf-8")
+        (cls.root / "paged.md").write_text("# Paged\n\nreal\n", encoding="utf-8")
         (cls.root / "notes.txt").write_text("text\n", encoding="utf-8")
         cls.port = free_port()
         cls.base = f"http://127.0.0.1:{cls.port}"
@@ -174,6 +175,35 @@ class WorkingCopyHttpTests(unittest.TestCase):
         )
         self.assertEqual(real.read_text(encoding="utf-8"), "# Saved\n\nfirst draft\n")
         self.assertEqual(self.get_work("doc.md")["state"], "clean")
+
+    def test_legacy_markdown_save_refuses_pending_working_copy(self):
+        real = self.root / "paged.md"
+        original = real.read_text(encoding="utf-8")
+        clean = self.get_work("paged.md")
+        pending = self.post(
+            "/api/work/write",
+            {
+                "path": "paged.md",
+                "content": "# Paged\n\npending\n",
+                "expectHash": None,
+                "baseVersion": clean["saved"]["version"],
+            },
+        )
+        code, payload = self.error(
+            "/api/md/save",
+            {
+                "path": "paged.md",
+                "content": "# Paged\n\nsection editor overwrite\n",
+                "version": clean["saved"]["version"],
+            },
+        )
+        self.assertEqual(code, 409)
+        self.assertEqual(payload["reason"], "working_copy_pending")
+        self.assertEqual(real.read_text(encoding="utf-8"), original)
+        self.post(
+            "/api/work/discard",
+            {"path": "paged.md", "expectHash": pending["hash"]},
+        )
 
     def test_runtime_allowlist_is_markdown_only_for_now(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:

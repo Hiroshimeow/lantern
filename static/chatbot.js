@@ -465,44 +465,37 @@
       onPiEvent(message.event || {});
       return;
     }
-    if (typ === 'chat_draft_update') {
+    if (typ === 'chat_work_changed') {
       const editor = globalThis.__lanternMdVisual;
-      if (!editor?.applyPiDraft) {
-        setStatus('Markdown draft controller is unavailable for Pi updates.', 'error');
+      if (!editor?.onWorkChanged) {
+        setStatus('Markdown working-copy controller is unavailable for Pi updates.', 'error');
         return;
       }
-      void Promise.resolve(editor.applyPiDraft(
-        message.promptId,
-        String(message.text || ''),
+      void Promise.resolve(editor.onWorkChanged(
+        String(message.path || ''),
+        message.hash || null,
         Boolean(message.final),
-      )).then(result => {
-        const conflicts = Number(result?.conflicts?.length || 0);
-        const applied = Number(result?.appliedPiHunks || 0);
-        if (conflicts) {
-          setStatus('Pi draft merged; ' + conflicts + ' overlapping hunk(s) skipped because your edits win.', 'warn');
-          if (message.final) appendSystem(
-            'Pi finished with ' + conflicts + ' overlapping draft hunk(s) skipped. Your newer text was kept.',
-          );
-        } else if (applied) {
-          setStatus('Pi changes are pending review. Save to commit them.');
-        } else if (message.final) {
-          setStatus('Pi finished. No additional Markdown draft changes.');
-        }
+      )).then(() => {
+        setStatus(message.final
+          ? 'Pi changes are pending review. Save to commit them.'
+          : 'Pi updated the working copy.');
         refreshContextLabel();
       }).catch(error => {
-        setStatus('Pi draft merge failed: ' + String(error?.message || error), 'error');
-        appendSystem('Pi draft merge failed: ' + String(error?.message || error), 'error');
+        setStatus('Pi working-copy merge failed: ' + String(error?.message || error), 'error');
+        appendSystem('Pi working-copy merge failed: ' + String(error?.message || error), 'error');
       });
       return;
     }
-    if (typ === 'chat_draft_error') {
-      setStatus(String(message.error || 'Pi Markdown draft failed'), 'error');
-      appendSystem('Pi Markdown draft error: ' + String(message.error || 'unknown error'), 'error');
+    if (typ === 'chat_work_error') {
+      globalThis.__lanternMdVisual?.cancelPiTurn?.();
+      setStatus(String(message.error || 'Pi working-copy update failed'), 'error');
+      appendSystem('Pi working-copy error: ' + String(message.error || 'unknown error'), 'error');
       return;
     }
     if (typ === 'chat_real_file_touched') {
-      setStatus('Saved Markdown changed outside the pending draft. Save is blocked until you reconcile.', 'error');
-      appendSystem('Saved Markdown changed while Pi was working. The pending browser draft was kept; reload/reconcile before Save.', 'error');
+      globalThis.__lanternMdVisual?.cancelPiTurn?.();
+      setStatus('Saved Markdown changed outside the pending working copy. Save is blocked until you reconcile.', 'error');
+      appendSystem('Saved Markdown changed while Pi was working. The working copy was kept; reconcile before Save.', 'error');
       return;
     }
     if (typ === 'chat_prompt_accepted') {
@@ -530,6 +523,7 @@
       return;
     }
     if (typ === 'chat_error') {
+      globalThis.__lanternMdVisual?.cancelPiTurn?.();
       setStreaming(false);
       const locked = message.code === 'terminal_auth_required';
       if (locked) setAccess(false);
@@ -538,46 +532,14 @@
     }
   }
 
-  async function captureMarkdownDraft(context, promptId) {
+  async function prepareMarkdownTurn(context) {
     if (context?.kind !== 'markdown') return null;
     if (globalThis.__lanternMdPaged?.active) {
-      throw new Error('Pi draft editing is not enabled for the section editor yet. Save or switch to Source first.');
+      throw new Error('Pi editing is not enabled for the section editor yet. Save or switch to Source first.');
     }
     const editor = globalThis.__lanternMdVisual;
-    if (!editor?.beginPiDraft) throw new Error('Markdown draft controller is unavailable');
-
-    let snapshot = editor.getDraftSnapshot?.() || null;
-    if (!snapshot) {
-      const response = await fetch('/api/work?p=' + encodeURIComponent(context.path), {
-        cache: 'no-store',
-        credentials: 'same-origin',
-      });
-      let state = null;
-      try { state = await response.json(); } catch {}
-      const saved = state?.saved;
-      const current = state?.work?.content ?? saved?.content;
-      if (!response.ok || !saved || typeof current !== 'string' || !saved.version) {
-        throw new Error(state?.error || 'Unable to load the current Markdown working copy');
-      }
-      snapshot = {
-        text: current,
-        baseVersion: saved.version,
-        draftRevision: 0,
-        mode: 'preview',
-      };
-    }
-    const bytes = new TextEncoder().encode(String(snapshot.text || '')).length;
-    if (bytes > 1024 * 1024) {
-      throw new Error('Markdown draft is too large for Pi staging (1 MiB limit).');
-    }
-    if (!snapshot.baseVersion) throw new Error('Markdown baseline version is unavailable');
-    editor.beginPiDraft(promptId, snapshot.text);
-    return {
-      promptId,
-      baseVersion: snapshot.baseVersion,
-      draftRevision: Number(snapshot.draftRevision || 0),
-      text: String(snapshot.text || ''),
-    };
+    if (!editor?.beginPiTurn) throw new Error('Markdown working-copy controller is unavailable');
+    return await editor.beginPiTurn();
   }
 
   async function sendPrompt() {
@@ -589,7 +551,7 @@
       input.disabled = true;
       const context = captureContext();
       const promptId = 'chat-' + Date.now().toString(36);
-      const draft = await captureMarkdownDraft(context, promptId);
+      const workHash = await prepareMarkdownTurn(context);
       refreshContextLabel();
       appendMessage('user', message);
       sendRaw({
@@ -597,13 +559,14 @@
         reqId: promptId,
         message,
         context,
-        draft,
+        workHash,
       });
       input.value = '';
       S.assistant = null;
       setStreaming(true);
       setStatus('Sending to Pi…');
     } catch (error) {
+      globalThis.__lanternMdVisual?.cancelPiTurn?.();
       setStreaming(false);
       appendSystem(String(error?.message || error), 'error');
       setStatus(String(error?.message || error), 'error');
@@ -653,7 +616,7 @@
       open: () => setOpen(true),
       close: () => setOpen(false),
       captureContext,
-      captureMarkdownDraft,
+      prepareMarkdownTurn,
       refreshContext: refreshContextLabel,
     };
   }

@@ -13,16 +13,16 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
-from .pi_draft import MarkdownDraftShadow
+from .working_copy import WorkingCopyError, WorkingCopyStore
 
 SYSTEM_PROMPT = """You are embedded in Lantern's chatbot.
 The newest <lantern_context> block is authoritative for the user's current location.
 When the user says this file, here, or this markdown, use that newest context.
-Read only what is needed. For an active Markdown document, draftPath is the only
-editable copy of that document. savedPath is read-only reference state: never edit or
-write savedPath. Use native edit/write on draftPath so Lantern can merge the result into
-the user's pending draft. Other project files may be edited normally. Preserve unrelated
-content and existing formatting. Do not claim tests passed unless you actually ran them."""
+For an active document with workingPath, read and edit only workingPath. logicalPath
+is the saved project location and must not be read, edited, or written directly;
+Lantern commits it only when the user explicitly chooses Save. Other project files
+may be edited normally. Prefer native edit/write for mutations, preserve unrelated
+content and formatting, and never claim tests passed unless you actually ran them."""
 
 DEFAULT_MODEL_PRIORITY = (
     "gpt-6.1-sol",
@@ -54,8 +54,8 @@ class PiChatManager:
         root: Path,
         emit: Callable[[dict[str, Any]], None],
         *,
+        work_store: WorkingCopyStore,
         session_dir: Optional[Path] = None,
-        draft_storage_dir: Optional[Path] = None,
         argv_override: Optional[list[str]] = None,
         request_timeout: float = 15.0,
         max_models: int = 5,
@@ -65,13 +65,16 @@ class PiChatManager:
         self.session_dir = (Path(session_dir) if session_dir else
                             Path.home() / ".lantern" / "pi-sessions").resolve()
         self.state_path = self.session_dir / "lantern-active.json"
-        self.drafts = MarkdownDraftShadow(self.root, storage_dir=draft_storage_dir)
-        self.guard_extension = Path(__file__).with_name("pi_markdown_guard.ts").resolve()
+        self.work_store = work_store
+        self.guard_extension = Path(__file__).with_name("pi_working_copy_guard.ts").resolve()
         self.argv_override = list(argv_override) if argv_override else None
         self.request_timeout = max(1.0, float(request_timeout))
         self.max_models = max(1, min(int(max_models), 8))
         self.lock = threading.RLock()
         self.write_lock = threading.Lock()
+        self.turn_lock = threading.RLock()
+        self.turn_rel: Optional[str] = None
+        self.turn_last_hash: Optional[str] = None
         self.proc: Optional[subprocess.Popen[str]] = None
         self.reader: Optional[threading.Thread] = None
         self.stderr_reader: Optional[threading.Thread] = None
@@ -142,7 +145,7 @@ class PiChatManager:
             if node and cli.is_file():
                 prefix = [node, str(cli)]
         if not self.guard_extension.is_file():
-            raise RuntimeError("Lantern Pi Markdown guard extension is missing")
+            raise RuntimeError("Lantern Pi working-copy guard extension is missing")
         args = prefix + [
             "--mode", "rpc",
             "--session-dir", str(self.session_dir),
@@ -170,7 +173,7 @@ class PiChatManager:
             self.session_dir.mkdir(parents=True, exist_ok=True)
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             child_env = dict(os.environ)
-            child_env["LANTERN_PI_GUARD_STATE"] = str(self.drafts.guard_path)
+            child_env["LANTERN_PI_GUARD_STATE"] = str(self.work_store.guard_path)
             self.proc = subprocess.Popen(
                 self._command(),
                 cwd=str(self.root),
@@ -232,14 +235,12 @@ class PiChatManager:
                 elif typ == "agent_settled":
                     self.streaming = False
                 if typ == "tool_execution_end":
-                    self._emit_draft_update(final=False)
+                    self._emit_work_update(final=False)
                 elif typ == "agent_settled":
-                    self._emit_draft_update(final=True)
-                    touched = self.drafts.real_file_changed()
-                    if touched:
-                        self.emit(touched)
+                    self._emit_work_update(final=True)
                 self.emit({"type": "chat_pi_event", "event": event})
         finally:
+            self._emit_work_update(final=True)
             code = proc.poll()
             if code is None:
                 try:
@@ -292,13 +293,50 @@ class PiChatManager:
             raise RuntimeError(str(response.get("error") or f"Pi RPC failed: {payload.get('type')}"))
         return response
 
-    def _emit_draft_update(self, *, final: bool) -> None:
-        try:
-            update = self.drafts.read_update(final=final)
-        except Exception as exc:
-            update = {"type": "chat_draft_error", "error": str(exc), "final": bool(final)}
-        if update:
-            self.emit(update)
+    def _emit_work_update(self, *, final: bool) -> None:
+        with self.turn_lock:
+            rel = self.turn_rel
+            if not rel:
+                return
+            if not final:
+                try:
+                    current_hash = self.work_store.peek_hash(rel)
+                except Exception as exc:
+                    self.emit({"type": "chat_work_error", "path": rel, "error": str(exc), "final": False})
+                    return
+                if current_hash == self.turn_last_hash:
+                    return
+                self.turn_last_hash = current_hash
+                self.emit({
+                    "type": "chat_work_changed",
+                    "path": rel,
+                    "hash": current_hash,
+                    "final": False,
+                })
+                return
+
+            try:
+                result = self.work_store.end_turn(rel)
+            except Exception as exc:
+                self.emit({"type": "chat_work_error", "path": rel, "error": str(exc), "final": True})
+                self.turn_rel = None
+                self.turn_last_hash = None
+                return
+
+            self.turn_rel = None
+            self.turn_last_hash = None
+            self.emit({
+                "type": "chat_work_changed",
+                "path": rel,
+                "hash": result.get("hash"),
+                "final": True,
+            })
+            if result.get("realTouched"):
+                self.emit({
+                    "type": "chat_real_file_touched",
+                    "path": rel,
+                    "error": "Saved project file changed while Pi was editing the working copy.",
+                })
 
     def get_state(self) -> dict[str, Any]:
         response = self.request({"type": "get_state"})
@@ -366,7 +404,6 @@ class PiChatManager:
         return response
 
     def new_session(self) -> dict[str, Any]:
-        self.drafts.clear()
         response = self.request({"type": "new_session"})
         state = self.get_state()
         self.emit({"type": "chat_session_changed", "state": state})
@@ -422,8 +459,8 @@ class PiChatManager:
             raise ValueError("Chat message is too large")
         context = context if isinstance(context, dict) else {}
         fields = []
-        for key in ("kind", "folder", "path", "markdownMode", "line",
-                    "promptId", "draftPath", "savedPath", "baseVersion", "draftRevision"):
+        for key in ("kind", "folder", "path", "logicalPath", "workingPath",
+                    "markdownMode", "line"):
             value = context.get(key)
             if value is not None and value != "":
                 fields.append(f"{key}: {value}")
@@ -437,32 +474,42 @@ class PiChatManager:
         self,
         message: str,
         context: Optional[dict[str, Any]] = None,
-        draft: Optional[dict[str, Any]] = None,
+        work_hash: Optional[str] = None,
     ) -> dict[str, Any]:
         normalized = self.normalize_context(context)
         if normalized.get("kind") == "markdown":
-            if not isinstance(draft, dict):
-                raise ValueError("Markdown chat requires the current browser draft")
             real_path = normalized.get("path")
             if not real_path:
                 raise ValueError("Markdown chat context is missing its path")
-            active = self.drafts.prepare(
-                Path(str(real_path)),
-                str(draft.get("text") or ""),
-                prompt_id=str(draft.get("promptId") or ""),
-                base_version=str(draft.get("baseVersion") or ""),
-                draft_revision=int(draft.get("draftRevision") or 0),
-            )
-            normalized.update(self.drafts.context_fields())
-            normalized["path"] = str(active.real_path)
-        else:
-            self.drafts.clear()
+            real = Path(str(real_path)).resolve()
+            try:
+                rel = real.relative_to(self.root).as_posix()
+            except ValueError as exc:
+                raise ValueError("Markdown chat path must stay inside the configured root") from exc
+            with self.turn_lock:
+                if self.turn_rel:
+                    raise RuntimeError("A Pi working-copy turn is already active")
+                try:
+                    turn = self.work_store.begin_turn(rel, work_hash)
+                except WorkingCopyError as exc:
+                    raise RuntimeError(str(exc)) from exc
+                self.turn_rel = rel
+                self.turn_last_hash = str(turn.get("hash") or "") or None
+            normalized["logicalPath"] = rel
+            normalized["workingPath"] = str(turn["workingPath"])
+        elif self.turn_rel:
+            raise RuntimeError("A Pi working-copy turn is already active")
+
         wrapped = self.build_prompt(message, normalized)
-        return self.request({"type": "prompt", "message": wrapped})
+        try:
+            return self.request({"type": "prompt", "message": wrapped})
+        except Exception:
+            self._emit_work_update(final=True)
+            raise
 
     def abort(self) -> dict[str, Any]:
         response = self.request({"type": "abort"}, timeout=5.0)
-        self._emit_draft_update(final=True)
+        self._emit_work_update(final=True)
         return response
 
     def summary(self) -> dict[str, Any]:
@@ -479,10 +526,7 @@ class PiChatManager:
         }
 
     def close(self) -> None:
-        try:
-            self.drafts.clear()
-        except Exception:
-            pass
+        self._emit_work_update(final=True)
         with self.lock:
             self.closed = True
             proc = self.proc

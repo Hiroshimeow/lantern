@@ -51,15 +51,18 @@ for raw in sys.stdin:
         text = str(req.get("message") or "")
         messages.append({"role": "user", "content": text})
         send({"id": rid, "type": "response", "command": typ, "success": True})
-        if "<user_request>\nFAKE_EDIT_SHADOW\n</user_request>" in text:
-            match = re.search(r"^draftPath: (.+)$", text, re.MULTILINE)
+        if "<user_request>\nFAKE_EDIT_WORK\n</user_request>" in text:
+            match = re.search(r"^workingPath: (.+)$", text, re.MULTILINE)
             if match:
-                shadow = Path(match.group(1).strip())
-                content = shadow.read_text(encoding="utf-8")
-                shadow.write_text(content.replace("unsaved browser draft", "fake Pi shadow edit"),
-                                  encoding="utf-8", newline="")
+                working = Path(match.group(1).strip())
+                content = working.read_text(encoding="utf-8")
+                working.write_text(
+                    content.replace("unsaved working copy", "fake Pi working edit"),
+                    encoding="utf-8",
+                    newline="",
+                )
                 send({"type": "tool_execution_start", "toolCallId": "fake-edit",
-                      "toolName": "edit", "args": {"path": str(shadow)}})
+                      "toolName": "edit", "args": {"path": str(working)}})
                 send({"type": "tool_execution_end", "toolCallId": "fake-edit",
                       "toolName": "edit", "isError": False})
         send({"type": "message_update", "delta": "FAKE_OK"})
@@ -67,6 +70,7 @@ for raw in sys.stdin:
         send({"type": "agent_settled"})
     elif typ == "abort":
         send({"id": rid, "type": "response", "command": typ, "success": True})
+        send({"type": "agent_settled"})
     else:
         send({"id": rid, "type": "response", "command": typ, "success": False,
               "error": "unsupported fake command"})
