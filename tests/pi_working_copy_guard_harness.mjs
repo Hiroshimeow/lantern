@@ -25,5 +25,8 @@ const result = {
   privateWrite: await call("write", privatePath),
   otherRead: await call("read", otherPath),
   otherEdit: await call("edit", otherPath),
+  powershell: await call("powershell", otherPath),
+  bash: await call("bash", otherPath),
+  extensionTool: await call("custom-extension-tool", otherPath),
 };
 process.stdout.write(JSON.stringify(result));

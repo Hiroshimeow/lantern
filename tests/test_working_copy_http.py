@@ -130,7 +130,7 @@ class WorkingCopyHttpTests(unittest.TestCase):
                 "baseVersion": clean["saved"]["version"],
             },
         )
-        self.assertEqual(real.read_text(encoding="utf-8"), original)
+        self.assertEqual(real.read_text(encoding="utf-8"), "# Saved\n\nfirst draft\n")
         pending = self.get_work("doc.md")
         self.assertEqual(pending["state"], "pending")
         self.assertEqual(pending["work"]["hash"], write["hash"])
@@ -169,6 +169,7 @@ class WorkingCopyHttpTests(unittest.TestCase):
                 "baseVersion": base,
             },
         )
+        self.assertEqual(real.read_text(encoding="utf-8"), "# Saved\n\nsecond draft\n")
         self.post(
             "/api/work/discard",
             {"path": "doc.md", "expectHash": second["hash"]},
@@ -176,7 +177,7 @@ class WorkingCopyHttpTests(unittest.TestCase):
         self.assertEqual(real.read_text(encoding="utf-8"), "# Saved\n\nfirst draft\n")
         self.assertEqual(self.get_work("doc.md")["state"], "clean")
 
-    def test_legacy_markdown_save_refuses_pending_working_copy(self):
+    def test_section_editor_can_edit_real_while_diff_is_pending(self):
         real = self.root / "paged.md"
         original = real.read_text(encoding="utf-8")
         clean = self.get_work("paged.md")
@@ -198,12 +199,18 @@ class WorkingCopyHttpTests(unittest.TestCase):
             },
         )
         self.assertEqual(code, 409)
-        self.assertEqual(payload["reason"], "working_copy_pending")
-        self.assertEqual(real.read_text(encoding="utf-8"), original)
-        self.post(
-            "/api/work/discard",
-            {"path": "paged.md", "expectHash": pending["hash"]},
-        )
+        # The outdated version is rejected by CAS, not by the pending diff.
+        self.assertNotEqual(payload.get("reason"), "working_copy_pending")
+        self.assertEqual(real.read_text(encoding="utf-8"), "# Paged\n\npending\n")
+        current = self.get_work("paged.md")
+        self.assertEqual(current["state"], "pending")
+        updated = self.post("/api/md/save", {
+            "path": "paged.md", "content": "# Paged\n\nsection editor overwrite\n",
+            "version": current["currentVersion"],
+        })
+        self.assertTrue(updated["ok"])
+        self.assertIn("section editor overwrite", real.read_text(encoding="utf-8"))
+        self.assertEqual(self.get_work("paged.md")["state"], "pending")
 
     def test_runtime_allowlist_is_markdown_only_for_now(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:

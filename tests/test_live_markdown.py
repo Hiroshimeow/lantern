@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from lantern.live_markdown import LiveMarkdownStore
+from lantern.working_copy import WorkingCopyError
+
+
+class LiveMarkdownTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.files = root / "docs"
+        self.files.mkdir()
+        self.target = self.files / "report.md"
+        self.target.write_text("# Report\n\nOriginal\n", encoding="utf-8")
+        self.store = LiveMarkdownStore(self.files, root / "work", {".md", ".markdown"})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_browser_writes_real_immediately_and_accept_only_changes_md_temp(self):
+        initial = self.store.get("report.md")
+        self.assertEqual(initial["state"], "clean")
+        self.assertEqual(initial["saved"]["content"].replace("\r\n", "\n"), "# Report\n\nOriginal\n")
+        temp = Path(initial["tempPath"])
+        original_temp = temp.read_bytes()
+
+        changed = self.store.write("report.md", "# Report\n\nEdited\n",
+                                   expect_hash=None, base_version=initial["saved"]["version"])
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# Report\n\nEdited\n")
+        self.assertEqual(temp.read_bytes(), original_temp)
+        self.assertEqual(self.store.get("report.md")["work"]["hash"], changed["hash"])
+
+        accepted = self.store.save("report.md", expect_hash=changed["hash"],
+                                   expect_saved_version=initial["saved"]["version"])
+        self.assertEqual(accepted["state"], "clean")
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# Report\n\nEdited\n")
+        self.assertEqual(temp.read_bytes(), self.target.read_bytes())
+        self.assertIsNone(self.store.get("report.md")["work"])
+
+    def test_vscode_change_is_detected_without_lantern_save(self):
+        initial = self.store.get("report.md")
+        self.target.write_text("# Report\n\nVS Code edit\n", encoding="utf-8")
+        new = self.store.get("report.md")
+        self.assertEqual(new["state"], "pending")
+        self.assertEqual(new["work"]["content"].replace("\r\n", "\n"), "# Report\n\nVS Code edit\n")
+        self.assertEqual(new["saved"], initial["saved"])
+        with self.assertRaises(WorkingCopyError) as ctx:
+            self.store.write("report.md", "stale Lantern", expect_hash=None,
+                             base_version=initial["saved"]["version"])
+        self.assertEqual(ctx.exception.details["reason"], "stale")
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# Report\n\nVS Code edit\n")
+
+    def test_restore_all_requires_exact_real_version(self):
+        initial = self.store.get("report.md")
+        change = self.store.write("report.md", "Changed\n", expect_hash=None,
+                                  base_version=initial["saved"]["version"])
+        with self.assertRaises(WorkingCopyError):
+            self.store.discard("report.md", expect_hash="f" * 64)
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "Changed\n")
+        self.store.discard("report.md", expect_hash=change["hash"])
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# Report\n\nOriginal\n")
+
+    def test_pi_edits_same_real_path_with_no_private_copy(self):
+        state = self.store.get("report.md")
+        turn = self.store.begin_turn("report.md", None)
+        self.assertTrue(Path(turn["workingPath"]).samefile(self.target))
+        self.assertTrue(self.store.get("report.md")["turnActive"])
+        self.target.write_text("Edited by LanternBot\n", encoding="utf-8")
+        self.assertNotEqual(self.store.peek_hash("report.md"), state["currentVersion"])
+        ended = self.store.end_turn("report.md")
+        self.assertTrue(ended["realTouched"])
+        self.assertEqual(self.store.get("report.md")["work"]["content"].replace("\r\n", "\n"),
+                         "Edited by LanternBot\n")
+
+    def test_does_not_silently_lose_legacy_pending_draft(self):
+        logical, real, identifier, temp = self.store._resolve("report.md")
+        legacy_dir = self.store.legacy_dir / identifier
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        legacy = legacy_dir / real.name
+        legacy.write_text("old unsaved edit\n", encoding="utf-8")
+        (legacy_dir / "meta.json").write_text('{"v":1}', encoding="utf-8")
+        with self.assertRaises(WorkingCopyError) as ctx:
+            self.store.get("report.md")
+        self.assertEqual(ctx.exception.details["reason"], "legacy_pending")
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# Report\n\nOriginal\n")
+        self.assertTrue(legacy.exists())
+
+    def test_fake_lanternbot_edits_real_path_and_md_temp_stays_old(self):
+        import json
+        import sys
+        import threading
+        from lantern.pi_chat import LanternBotManager
+        from lantern.bot_config import LanternBotConfig
+
+        original = "# Real\n\nunsaved working copy\n"
+        self.target.write_text(original, encoding="utf-8", newline="")
+        initial = self.store.get("report.md")
+        events = []
+        settled = threading.Event()
+
+        def emit(event):
+            events.append(event)
+            if event.get("type") == "chat_bot_event" and (
+                event.get("event", {}).get("type") == "agent_settled"
+            ):
+                settled.set()
+
+        fake = Path(__file__).with_name("fake_pi_rpc.py")
+        manager = LanternBotManager(
+            self.files, emit, work_store=self.store,
+            session_dir=Path(self.tmp.name) / "sessions",
+            argv_override=[sys.executable, "-u", str(fake)],
+            bot_config=LanternBotConfig.from_mapping({"access": {
+                "localhost": {"tools": ["*"], "extensions": True},
+                "lan": {"tools": ["read", "grep", "find", "ls"]},
+            }}),
+            request_timeout=3,
+            usage_path=Path(self.tmp.name) / "usage.json",
+        )
+        try:
+            manager.prompt("FAKE_EDIT_WORK", {"kind": "markdown", "path": "report.md"},
+                           work_hash=None, scope="local")
+            self.assertTrue(settled.wait(4))
+            self.assertIn("fake Pi working edit",
+                          self.target.read_text(encoding="utf-8"))
+            state = self.store.get("report.md")
+            self.assertEqual(state["saved"]["content"].replace("\r\n", "\n"), original)
+            self.assertIn("fake Pi working edit", state["work"]["content"])
+            guard = json.loads(self.store.guard_path.read_text(encoding="utf-8"))
+            self.assertEqual(guard["activeScope"], "lan")
+            self.assertEqual(guard["allowedTools"], ["read", "grep", "find", "ls"])
+            self.assertTrue(any(e.get("type") == "chat_work_changed" for e in events))
+        finally:
+            manager.close()
+
+    def test_newline_and_bom_are_preserved_on_browser_write_and_accept(self):
+        self.target.write_bytes(b"\\xef\\xbb\\xbf# Title\\r\\n\\r\\nBefore\\r\\n".decode("unicode_escape").encode("latin1"))
+        state = self.store.get("report.md")
+        result = self.store.write("report.md", "# Title\n\nAfter\n",
+                                  expect_hash=None, base_version=state["saved"]["version"])
+        self.assertEqual(self.target.read_bytes(), b"\\xef\\xbb\\xbf# Title\\r\\n\\r\\nAfter\\r\\n".decode("unicode_escape").encode("latin1"))
+        self.store.save("report.md", expect_hash=result["hash"],
+                        expect_saved_version=state["saved"]["version"])
+        self.assertEqual(Path(state["tempPath"]).read_bytes(), self.target.read_bytes())
+
+
+if __name__ == "__main__":
+    unittest.main()

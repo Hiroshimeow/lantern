@@ -72,6 +72,14 @@ class LanternBotManager:
         self.last_state: dict[str, Any] = {}
         self.streaming = False
         self.closed = False
+        self._turn_in_progress = False
+
+    def _reset_tool_scope(self) -> None:
+        with self.turn_lock:
+            self._turn_in_progress = False
+            setter = getattr(self.work_store, 'set_runtime_scope', None)
+            if callable(setter):
+                setter('lan', self.bot_config.lan_access.tools)
 
     def rebind_emit(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self.emit = emit
@@ -135,16 +143,21 @@ class LanternBotManager:
                 prefix = [node, str(cli)]
         if not self.guard_extension.is_file():
             raise RuntimeError("LanternBot working-copy guard extension is missing")
+        local = self.bot_config.local_access
         args = prefix + [
             "--mode", "rpc",
             "--session-dir", str(self.session_dir),
             "--name", "LanternBot",
             "--append-system-prompt", self.bot_config.system_prompt,
-            "--tools", "read,edit,write,grep,find,ls",
-            "--no-extensions",
-            "--extension", str(self.guard_extension),
-            "--no-mcp",
+            "--tools", ",".join(local.tools),
         ]
+        # The guard is always explicitly loaded, including when automatic
+        # discovery is disabled. Localhost may use installed Pi extensions.
+        if not local.extensions:
+            args.append("--no-extensions")
+        args.extend(["--extension", str(self.guard_extension)])
+        if not local.mcp:
+            args.append("--no-mcp")
         session_file = self._saved_session_file()
         if session_file:
             args.extend(["--session", session_file])
@@ -229,9 +242,11 @@ class LanternBotManager:
                     self._emit_work_update(final=False)
                 elif typ == "agent_settled":
                     self._emit_work_update(final=True)
+                    self._reset_tool_scope()
                 self.emit({"type": "chat_bot_event", "event": event})
         finally:
             self._emit_work_update(final=True)
+            self._reset_tool_scope()
             code = proc.poll()
             if code is None:
                 try:
@@ -335,7 +350,7 @@ class LanternBotManager:
                 "hash": result.get("hash"),
                 "final": True,
             })
-            if result.get("realTouched"):
+            if result.get("realTouched") and not getattr(self.work_store, "live", False):
                 self.emit({
                     "type": "chat_real_file_touched",
                     "path": rel,
@@ -585,6 +600,9 @@ class LanternBotManager:
             max_tokens=self.bot_config.max_tokens_per_day,
         )
         normalized = self.normalize_context(context)
+        with self.turn_lock:
+            if self._turn_in_progress or self.streaming:
+                raise RuntimeError("LanternBot is already completing a turn")
         if normalized.get("kind") == "markdown":
             real_path = normalized.get("path")
             if not real_path:
@@ -609,17 +627,31 @@ class LanternBotManager:
             raise RuntimeError("A LanternBot working-copy turn is already active")
 
         wrapped = self.build_prompt(message, normalized)
+        with self.turn_lock:
+            if self._turn_in_progress:
+                raise RuntimeError("LanternBot is already completing a turn")
+            self._turn_in_progress = True
+            setter = getattr(self.work_store, "set_runtime_scope", None)
+            try:
+                if callable(setter):
+                    setter(scope, self.bot_config.access_policy(scope).tools)
+            except Exception:
+                self._turn_in_progress = False
+                self._emit_work_update(final=True)
+                raise
         try:
             response = self.request({"type": "prompt", "message": wrapped})
             self.usage.record_prompt()
             return response
         except Exception:
             self._emit_work_update(final=True)
+            self._reset_tool_scope()
             raise
 
     def abort(self) -> dict[str, Any]:
         response = self.request({"type": "abort"}, timeout=5.0)
         self._emit_work_update(final=True)
+        self._reset_tool_scope()
         return response
 
     def summary(self, scope: str = "local") -> dict[str, Any]:

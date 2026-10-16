@@ -108,6 +108,50 @@ class PiWorkingCopyGuardTests(unittest.TestCase):
             for key, value in result.items():
                 self.assertTrue(value["block"], key)
 
+    def test_live_scope_allows_local_shell_and_blocks_lan_shell_or_extensions(self):
+        from lantern.live_markdown import LiveMarkdownStore
+        from lantern.bot_config import LanternBotConfig
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            project = base / "project"
+            project.mkdir()
+            real = project / "doc.md"
+            real.write_text("# Test\n", encoding="utf-8")
+            private = base / "work"
+            store = LiveMarkdownStore(project, private, {".md"})
+            store.get("doc.md")
+            cfg = LanternBotConfig.from_mapping({"access": {
+                "localhost": {"tools": ["*"], "extensions": True},
+                "lan": {"tools": ["read", "grep", "find", "ls"], "extensions": False},
+            }})
+            self.assertEqual(cfg.local_access.tools, ("*",))
+            self.assertEqual(cfg.lan_access.tools, ("read", "grep", "find", "ls"))
+
+            def run(scope, tools):
+                store.set_runtime_scope(scope, tools)
+                result = subprocess.run([
+                    shutil.which("node"), "--experimental-strip-types", str(HARNESS),
+                    str(EXTENSION), str(store.guard_path), str(real), str(real),
+                    str(store.guard_path), str(real),
+                ], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            local = run("local", cfg.local_access.tools)
+            self.assertIsNone(local["powershell"])
+            self.assertIsNone(local["bash"])
+            self.assertIsNone(local["extensionTool"])
+            self.assertIsNone(local["realEdit"])
+            self.assertTrue(local["privateWrite"]["block"])
+
+            lan = run("lan", cfg.lan_access.tools)
+            self.assertTrue(lan["powershell"]["block"])
+            self.assertTrue(lan["bash"]["block"])
+            self.assertTrue(lan["extensionTool"]["block"])
+            self.assertTrue(lan["realEdit"]["block"])
+            self.assertIsNone(lan["realRead"])
+            self.assertTrue(lan["privateWrite"]["block"])
+
 
 if __name__ == "__main__":
     unittest.main()

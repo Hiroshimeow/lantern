@@ -79,6 +79,7 @@ from lantern.md_editor import (MarkdownEditorError, read_document as read_markdo
                                save_document as save_markdown_document,
                                MAX_MARKDOWN_EDITOR_BYTES)
 from lantern.working_copy import WorkingCopyError, WorkingCopyStore
+from lantern.live_markdown import LiveMarkdownStore
 from lantern.bot_config import LanternBotConfig
 import yaml
 
@@ -2355,7 +2356,7 @@ TERMINAL_ACCESS: Optional[TerminalAccess] = None
 TERM_MANAGER: Optional[TerminalManager] = None
 CHAT_MANAGER: Optional[LanternBotManager] = None
 SCM_SERVICE: Optional[ScmService] = None
-WORK_STORE: Optional[WorkingCopyStore] = None
+WORK_STORE: Optional[LiveMarkdownStore] = None
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -2516,6 +2517,7 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/save": return self.api_save()
             if route == "/api/work/write": return self.api_work_write()
             if route == "/api/work/save": return self.api_work_save()
+            if route == "/api/work/accept-hunk": return self.api_work_accept_hunk()
             if route == "/api/work/discard": return self.api_work_discard()
             if route == "/api/md/render": return self.api_md_render()
             if route == "/api/md/save": return self.api_md_save()
@@ -2994,7 +2996,7 @@ class Handler(SimpleHTTPRequestHandler):
                     pass
         self.send_json(200, {"ok": True, "file": rel_url_for_path(dest), "bytes": written})
 
-    def _work_store(self) -> WorkingCopyStore:
+    def _work_store(self) -> LiveMarkdownStore:
         if WORK_STORE is None:
             raise WorkingCopyError(503, "Working-copy store is not initialized")
         return WORK_STORE
@@ -3027,6 +3029,18 @@ class Handler(SimpleHTTPRequestHandler):
                 data.get("path"),
                 expect_hash=data.get("expectHash"),
                 expect_saved_version=data.get("expectSavedVersion"),
+            )
+            self.send_json(200, {"ok": True, **result})
+        except WorkingCopyError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
+
+    def api_work_accept_hunk(self) -> None:
+        data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 5)
+        try:
+            result = self._work_store().accept_partial(
+                data.get("path"), data.get("content"),
+                expect_saved_version=data.get("expectSavedVersion"),
+                expect_current_version=data.get("expectCurrentVersion"),
             )
             self.send_json(200, {"ok": True, **result})
         except WorkingCopyError as exc:
@@ -3081,13 +3095,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Markdown path required"}); return
         target = safe_join("/" + quote_path(rel))
         try:
-            work_state = self._work_store().get(rel)
-            if work_state.get("state") != "clean" or work_state.get("turnActive"):
-                self.send_json(409, {
-                    "error": "Markdown has a pending working copy; Save or Discard it before section-based save.",
-                    "reason": "working_copy_pending",
-                })
-                return
+            # Section editing also changes the real .md. Pending diff merely
+            # means the accepted md_temp snapshot differs; it is not a lock.
+            self._work_store().get(rel)
             result = save_markdown_document(target, data.get("content"), data.get("version"))
             self.send_json(200, {"ok": True, **result})
         except (MarkdownEditorError, WorkingCopyError) as exc:
@@ -3665,7 +3675,7 @@ def main() -> None:
     TERMINAL_ACCESS = TerminalAccess(effective_hash, local_bypass=CONFIG.terminal_local_bypass)
     TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
     work_dir = Path(os.environ.get("LANTERN_WORK_DIR") or (Path.home() / ".lantern" / "work"))
-    WORK_STORE = WorkingCopyStore(CONFIG.root, work_dir, {".md", ".markdown"})
+    WORK_STORE = LiveMarkdownStore(CONFIG.root, work_dir, {".md", ".markdown"})
     CHAT_MANAGER = LanternBotManager(CONFIG.root, WS_HUB.broadcast, work_store=WORK_STORE, bot_config=CONFIG.lantern_bot)
     SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():

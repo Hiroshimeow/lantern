@@ -7,6 +7,8 @@ type GuardState = {
   staged?: Mapping[];
   turnWritable?: string[];
   protectedDir?: string;
+  activeScope?: string;
+  allowedTools?: string[];
 };
 
 type Loaded = { state: GuardState | null; error: string | null };
@@ -63,9 +65,18 @@ function requestPath(event: { input?: unknown }): string {
   return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
 }
 
+function toolAllowed(name: string, patterns: string[]): boolean {
+  return patterns.some(pattern => {
+    if (pattern === "*") return true;
+    if (!pattern.includes("*")) return name === pattern;
+    const expression = "^" + pattern.split("*").map(part =>
+      part.replace(/[\\^$+.?()|{}\[\]]/g, "\\$&")).join(".*") + "$";
+    return new RegExp(expression).test(name);
+  });
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event) => {
-    if (!["read", "edit", "write"].includes(event.toolName)) return;
 
     const loaded = loadState();
     if (!loaded.state) {
@@ -75,6 +86,19 @@ export default function (pi: ExtensionAPI) {
       };
     }
     const state = loaded.state;
+    // The server derives origin from the socket peer, never from the
+    // user prompt or client JSON. Apply the allowlist to *all* tools,
+    // including registered extension tools and bash/powershell.
+    if (state.activeScope) {
+      const allowed = Array.isArray(state.allowedTools)
+        ? state.allowedTools.filter((v): v is string => typeof v === "string")
+        : [];
+      if (!toolAllowed(event.toolName, allowed)) {
+        return { block: true, reason: "This LanternBot tool is not permitted for "
+          + state.activeScope + ": " + event.toolName };
+      }
+    }
+    if (!["read", "edit", "write"].includes(event.toolName)) return;
     const candidate = requestPath(event);
     if (!candidate) {
       return { block: true, reason: "Lantern blocked a file tool call with no path." };

@@ -13,11 +13,12 @@ DEFAULT_GREETING = (
 DEFAULT_SYSTEM_PROMPT = """You are LanternBot, the assistant embedded in Lantern.
 The newest <lantern_context> block is authoritative for the user's current location.
 When the user says this file, here, or this markdown, use that newest context.
-For an active document with workingPath, read and edit only workingPath. logicalPath
-is the saved project location and must not be read, edited, or written directly;
-Lantern commits it only when the user explicitly chooses Save. Other project files
-may be edited normally. Prefer native edit/write for mutations, preserve unrelated
-content and formatting, and never claim tests passed unless you actually ran them.
+For an active Markdown document, workingPath identifies the real project .md.
+Read and edit that file directly using native edit/write tools. Lantern shows
+the difference against an accepted md_temp snapshot. Ctrl+S accepts the current
+project file as the new comparison baseline; it does not write your changes.
+Never edit Lantern's private md_temp snapshot. Preserve unrelated formatting
+and content; do not claim tests passed unless you actually ran them.
 Paths listed under attachments are user-selected context. Read them only when useful."""
 
 _MODE_ALIASES = {
@@ -90,6 +91,10 @@ class LanternBotAccessPolicy:
     model: str = ""
     lock_provider: bool = False
     lock_model: bool = False
+    # Tool names / globs are checked by the Pi tool-call guard per turn.
+    tools: tuple[str, ...] = ("*",)
+    extensions: bool = True
+    mcp: bool = False
 
     @classmethod
     def from_mapping(
@@ -141,7 +146,14 @@ class LanternBotAccessPolicy:
             raw["bypass_models"] if "bypass_models" in raw else fallback_bypass
         )
 
+        default_tools = ("read", "grep", "find", "ls") if raw.get("_scope") == "lan" else ("*",)
+        tools = _as_list(raw.get("tools", default_tools))
+        if not tools:
+            raise ValueError("lantern_bot.access tools must contain at least one allowed tool")
         return cls(
+            tools=tools,
+            extensions=bool(raw.get("extensions", raw.get("_scope") != "lan")),
+            mcp=bool(raw.get("mcp", False)),
             provider_mode=provider_mode,
             providers=providers,
             model_mode=model_mode,
@@ -198,6 +210,9 @@ class LanternBotAccessPolicy:
             "lockModel": self.lock_model,
             "configuredProvider": self.provider or None,
             "configuredModel": self.model or None,
+            "tools": list(self.tools),
+            "extensions": self.extensions,
+            "mcp": self.mcp,
         }
 
 
@@ -205,7 +220,8 @@ class LanternBotAccessPolicy:
 class LanternBotConfig:
     enabled: bool = True
     local_access: LanternBotAccessPolicy = field(default_factory=LanternBotAccessPolicy)
-    lan_access: LanternBotAccessPolicy = field(default_factory=LanternBotAccessPolicy)
+    lan_access: LanternBotAccessPolicy = field(default_factory=lambda: LanternBotAccessPolicy(
+        tools=("read", "grep", "find", "ls"), extensions=False, mcp=False))
     max_prompts_per_day: int | None = None
     max_tokens_per_day: int | None = None
     greeting: str = DEFAULT_GREETING
@@ -230,7 +246,7 @@ class LanternBotConfig:
         legacy_model_mode = "whitelist" if _as_list(legacy_models) else "all"
 
         local_access = LanternBotAccessPolicy.from_mapping(
-            access.get("localhost"),
+            {**(access.get("localhost") if isinstance(access.get("localhost"), dict) else {}), "_scope": "local"},
             fallback_selection=selection,
             fallback_provider_mode="all",
             fallback_providers=(),
@@ -239,7 +255,7 @@ class LanternBotConfig:
             fallback_bypass=legacy_bypass,
         )
         lan_access = LanternBotAccessPolicy.from_mapping(
-            access.get("lan"),
+            {**(access.get("lan") if isinstance(access.get("lan"), dict) else {}), "_scope": "lan"},
             fallback_selection=selection,
             fallback_provider_mode=legacy_provider_mode,
             fallback_providers=legacy_providers,

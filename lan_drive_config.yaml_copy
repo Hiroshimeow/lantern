@@ -44,6 +44,11 @@ lantern_bot:
   enabled: true
   access:
     localhost:
+      # Full local Pi tools, including powershell/bash and installed extensions.
+      # Restrict this list to e.g. [read, edit, write, powershell] if preferred.
+      tools: ["*"]
+      extensions: true
+      mcp: false                # set true to load configured Pi MCP servers
       provider_mode: "all"       # all | whitelist | blacklist
       providers: []
       model_mode: "all"          # all | whitelist | blacklist
@@ -55,6 +60,11 @@ lantern_bot:
         lock_provider: false
         lock_model: false
     lan:
+      # Strict per-tool enforcement, not merely a system-prompt instruction.
+      # Add 'edit'/'write' deliberately if LAN should modify project files.
+      tools: [read, grep, find, ls]
+      extensions: false         # extension tool calls denied unless listed above
+      mcp: false
       provider_mode: "all"       # switch to whitelist/blacklist as needed
       providers: []
       model_mode: "all"
@@ -77,5 +87,7 @@ lantern_bot:
   lantern_context: |-
     You are LanternBot, the assistant embedded in Lantern.
     The newest <lantern_context> block is authoritative for the user's current location.
-    For an active document with workingPath, read and edit only workingPath.
-    logicalPath is the saved project location and must not be written directly.
+    For an active Markdown document, workingPath is the real project .md.
+    Read and edit the real file directly; md_temp is only a read-only diff
+    checkpoint. Ctrl+S accepts current real-file contents into md_temp.
+    Do not modify the private md_temp directory yourself.
