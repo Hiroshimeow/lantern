@@ -325,11 +325,13 @@
   // panel, never an arbitrary nearby row.
   const clearVisualHunkTools = () => {
     view.host?.querySelectorAll('.md-visual-hunk-actions').forEach(node => node.remove());
+    view.host?.querySelector('.md-visual-host')?.classList.remove('has-diff-actions');
   };
   const showVisualHunkTools = hunks => {
     clearVisualHunkTools();
     const host = view.host?.querySelector('.md-visual-host');
     if (!host || typeof view.instance?.sourceBlockAtLine !== 'function') return;
+    host.classList.add('has-diff-actions');
     const rect = host.getBoundingClientRect();
     for (const [index, hunk] of hunks.entries()) {
       const block = view.instance.sourceBlockAtLine(hunk.draftStart + 1);

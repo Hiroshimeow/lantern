@@ -1315,6 +1315,12 @@ class MarkdownModesE2E(unittest.TestCase):
             )
             current = page.evaluate("() => window.__lanternMdVisual.state.instance.getMarkdown()")
             self.assertNotIn("Editable paragraph. NEW", current)
+            # The diff draws from the local transaction immediately; the real
+            # file write is async and must be confirmed by the server first.
+            page.wait_for_function(
+                "() => !window.__lanternMdVisual.state.ackedText.includes('Editable paragraph. NEW')",
+                timeout=12000,
+            )
             self.assertNotIn("Editable paragraph. NEW", path.read_text(encoding="utf-8"))
             self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
             self.assertEqual(errors, [])

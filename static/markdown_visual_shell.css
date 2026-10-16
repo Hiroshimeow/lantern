@@ -6,9 +6,13 @@
 .md-visual-status[data-kind=warn]{color:#e9cb85}
 .md-visual-status[data-kind=error]{color:#ff9b9b}
 .md-visual-host{position:relative;min-height:340px;padding:10px 18px 32px}
-.md-visual-hunk-actions{position:absolute;right:10px;z-index:6;padding:3px 5px;
+/* Reserve a small action rail: hunk controls must never cover editable cells. */
+.md-visual-host.has-diff-actions{padding-left:98px}
+.md-visual-hunk-actions{position:absolute;left:6px;right:auto;z-index:6;padding:3px 5px;
   border:1px solid rgba(91,146,115,.48);border-radius:8px;background:rgba(10,22,20,.96);
   box-shadow:0 3px 9px rgba(0,0,0,.32);pointer-events:auto}
+.md-visual-hunk-actions .md-hunk-actions{display:flex;flex-direction:column;align-items:stretch}
+@media(max-width:600px){.md-visual-host.has-diff-actions{padding-left:85px}}
 .md-source-diff-wrap{position:relative;border-radius:10px;background:#070c14;overflow:hidden}
 .md-source-diff-backdrop{position:absolute;inset:0;pointer-events:none;overflow:hidden;border:1px solid transparent;border-radius:10px}
 .md-source-diff-backdrop-content{position:absolute;left:0;top:0;min-width:100%;padding:16px 18px;font:13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre;color:transparent;will-change:transform}

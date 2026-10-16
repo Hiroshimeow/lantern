@@ -169,9 +169,12 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
         source+='|'+'|'.join('A_%02d'%i for i in range(columns))+'|\n'
         source+='|'+'|'.join('B_%02d'%i for i in range(columns))+'|\n'
         source+='\nNo data should change merely from opening the visual editor.\n'
-        target=self.root/'wide-table-e2e.md';target.write_bytes(source.encode())
+        target=self.root/'wide-table-e2e.md'
         for width in (1080,390):
             with self.subTest(width=width):
+                # Previous viewport performs real edits; each width must start
+                # from identical disk bytes and an independent source snapshot.
+                target.write_bytes(source.encode())
                 context=self.browser.new_context(viewport={'width':width,'height':900})
                 page=context.new_page();errors=[];page.on('pageerror',lambda err:errors.append(str(err)))
                 try:
