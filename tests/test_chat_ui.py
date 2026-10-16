@@ -56,12 +56,21 @@ class ChatUiTests(unittest.TestCase):
             "prepareMarkdownTurn",
             "chat_work_changed",
             "workHash",
-            "beginPiTurn",
+            "beginBotTurn",
             "onWorkChanged",
+            "lanternChatProvider",
+            "lanternChatModel",
+            "lanternChatAttachments",
+            "attachmentPaths",
+            "greeting",
+            "event.key !== 'Enter'",
+            "event.shiftKey || event.ctrlKey",
             "New chat",
             "Stop",
         ):
             self.assertIn(token, script)
+        for old_label in ("Pi Chat", "Ask Pi", "Pi is working", "Starting a new Pi session"):
+            self.assertNotIn(old_label, script)
 
     def test_chat_drawer_is_side_panel_not_full_screen_modal(self):
         css = (Path(__file__).parents[1] / "static" / "chatbot.css").read_text(encoding="utf-8")

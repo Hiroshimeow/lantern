@@ -848,7 +848,7 @@ class MarkdownModesE2E(unittest.TestCase):
             }"""
 
             # Pi turn starts from exactly the flushed editor state.
-            work_hash = page.evaluate("() => window.__lanternMdVisual.beginPiTurn()")
+            work_hash = page.evaluate("() => window.__lanternMdVisual.beginBotTurn()")
             self.assertIsNone(work_hash)
             human = "# Pi merge\nalpha\nHUMAN BETA\ngamma\nomega\n"
             source.fill(human)
@@ -870,7 +870,7 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertEqual(working["work"]["content"], merged)
 
             # New turn: human and Pi modify the same line. Human text wins.
-            page.evaluate("() => window.__lanternMdVisual.beginPiTurn()")
+            page.evaluate("() => window.__lanternMdVisual.beginBotTurn()")
             human2 = "# Pi merge\nalpha\nHUMAN BETA\nHUMAN GAMMA\nPI OMEGA\n"
             source.fill(human2)
             pi2 = "# Pi merge\nalpha\nHUMAN BETA\nPI GAMMA\nPI OMEGA\n"

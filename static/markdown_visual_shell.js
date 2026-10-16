@@ -187,11 +187,11 @@
   };
   const fetchWorkState = () => api('/api/work?p=' + encodeURIComponent(path));
 
-  const beginPiTurn = async () => {
+  const beginBotTurn = async () => {
     if (globalThis.__lanternMdPaged?.active) {
-      throw new Error('Pi editing is not enabled while the section editor is active. Save or return to Source first.');
+      throw new Error('LanternBot editing is not enabled while the section editor is active. Save or return to Source first.');
     }
-    if (view.piTurn) throw new Error('A Pi Markdown turn is already active');
+    if (view.piTurn) throw new Error('A LanternBot Markdown turn is already active');
 
     let base;
     if (view.active && view.instance) {
@@ -215,11 +215,11 @@
       base: String(base ?? ''),
       expectedRevision: view.revision,
     };
-    status('Pi is editing the working copy. You may keep typing; overlapping changes keep your text.', 'info');
+    status('LanternBot is editing the working copy. You may keep typing; overlapping changes keep your text.', 'info');
     return view.workHash || null;
   };
 
-  const cancelPiTurn = () => {
+  const cancelBotTurn = () => {
     view.piTurn = null;
   };
 
@@ -295,7 +295,7 @@
     view.piTurn = null;
     if (!humanChanged) {
       await applyWorkingText(piText, serverHash, { backed: true });
-      status('Pi changes are pending review. Press Ctrl+S or Save to commit.', 'info');
+      status('LanternBot changes are pending review. Press Ctrl+S or Save to commit.', 'info');
       return;
     }
 
@@ -315,15 +315,15 @@
     }
     if (merged !== humanText) await applyWorkingText(merged, serverHash, { backed: false });
     if (!(await flushWorkingCopy(merged))) {
-      throw new Error('Unable to reconcile your typing with Pi working-copy changes');
+      throw new Error('Unable to reconcile your typing with LanternBot working-copy changes');
     }
     if (conflicts.length) {
-      status('Pi finished; ' + conflicts.length +
+      status('LanternBot finished; ' + conflicts.length +
         ' overlapping hunk(s) were skipped because your newer text wins.', 'warn');
     } else if (appliedPiHunks) {
-      status('Pi changes merged with your typing and remain pending Save.', 'info');
+      status('LanternBot changes merged with your typing and remain pending Save.', 'info');
     } else {
-      status('Your newer typing is preserved; Pi made no additional non-overlapping changes.', 'info');
+      status('Your newer typing is preserved; LanternBot made no additional non-overlapping changes.', 'info');
     }
   };
 
@@ -349,7 +349,7 @@
       await drafts.write(text).catch(() => {});
       if (error.status === 409) {
         if (error.data?.reason === 'pi_turn') {
-          status('Pi is editing this draft. Your newer typing is held locally and will flush after it finishes.', 'warn');
+          status('LanternBot is editing this draft. Your newer typing is held locally and will flush after it finishes.', 'warn');
         } else {
           view.conflict = true;
           status('Conflict: draft or saved file changed elsewhere. Your newer typing is kept locally; reconcile before Save.', 'error');
@@ -922,5 +922,5 @@
   }
   window.__lanternMdVisual = { get state() { return view; }, open: start,
     show: start, save: () => save(true), preview: close, flushNow: saveDraft,
-    beginPiTurn, cancelPiTurn, onWorkChanged };
+    beginBotTurn, cancelBotTurn, onWorkChanged };
 })();
