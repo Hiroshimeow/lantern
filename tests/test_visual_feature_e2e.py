@@ -142,6 +142,21 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
             after = first.bounding_box()
             self.assertIsNotNone(after)
             self.assertGreater(after['width'], before['width'] + 30)
+            # A successful first drag must not leave pointer capture, overlays,
+            # or stale widths that prevent a second independent resize.
+            second = page.locator('.md-visual-host .milkdown-table-block th').nth(1)
+            second_before = second.bounding_box()
+            self.assertIsNotNone(second_before)
+            x = second_before['x'] + second_before['width'] - 13
+            y = second_before['y'] + second_before['height'] / 2
+            page.mouse.move(x, y)
+            marker_node.wait_for(state='visible', timeout=5000)
+            page.mouse.down()
+            page.mouse.move(x + 37, y, steps=5)
+            page.mouse.up()
+            second_after = second.bounding_box()
+            self.assertIsNotNone(second_after)
+            self.assertGreater(second_after['width'], second_before['width'] + 25)
             self.assertEqual(target.read_text(encoding='utf-8'), source)
             self.assertEqual(errors, [])
         finally:
