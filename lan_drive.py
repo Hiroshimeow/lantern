@@ -2328,6 +2328,29 @@ def _image_version(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _replace_crop_with_retry(temp_path: Path, target: Path, expected: str) -> str:
+    """Bound transient Windows image locks; never retry against changed bytes."""
+    for attempt in range(6):
+        try:
+            if _image_version(target.read_bytes()) != expected:
+                return "stale"
+        except FileNotFoundError:
+            return "stale"
+        except PermissionError:
+            if attempt == 5:
+                return "locked"
+            time.sleep(.03)
+            continue
+        try:
+            os.replace(temp_path, target)
+            return "ok"
+        except PermissionError:
+            if attempt == 5:
+                return "locked"
+            time.sleep(.03)
+    return "locked"
+
+
 def _image_crop_target(rel: str) -> Path:
     """Resolve a crop target without normalizing away '..' or following links.
 
@@ -2888,10 +2911,11 @@ class Handler(SimpleHTTPRequestHandler):
                 # A replaced image remains the same logical filename; original
                 # Markdown references are never rewritten by this endpoint.
                 os.chmod(temp_path, target.stat().st_mode)
-                try:
-                    os.replace(temp_path, target)
-                except PermissionError:
-                    # Windows may lock an open image; keep original untouched.
+                outcome = _replace_crop_with_retry(temp_path, target, expected)
+                if outcome == "stale":
+                    self.send_json(409, {"error": "image changed during overwrite; reload before retrying"})
+                    return
+                if outcome == "locked":
                     self.send_json(423, {"error": "image is locked by another application; close it and retry"})
                     return
                 temp_path = None

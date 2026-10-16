@@ -195,4 +195,43 @@ class CropOverwriteTests(unittest.TestCase):
         self.assertNotEqual(code,200)
         self.assertEqual((self.root/'photo.png').read_bytes(),self.orig)
 
+
+class CropReplaceRetryTests(unittest.TestCase):
+    def test_transient_windows_file_lock_retries(self):
+        import os
+        from unittest.mock import patch
+        import lan_drive
+        with tempfile.TemporaryDirectory() as td:
+            target=Path(td)/"original.png"
+            temporary=Path(td)/"new.png"
+            target.write_bytes(b"original");temporary.write_bytes(b"edited")
+            real_replace=os.replace
+            attempts=[0]
+            def flaky(src,dst):
+                attempts[0]+=1
+                if attempts[0]<=2:raise PermissionError("sharing violation")
+                return real_replace(src,dst)
+            with patch.object(lan_drive.os,"replace",side_effect=flaky):
+                result=lan_drive._replace_crop_with_retry(
+                    temporary,target,lan_drive._image_version(b"original"))
+            self.assertEqual(result,"ok")
+            self.assertEqual(attempts[0],3)
+            self.assertEqual(target.read_bytes(),b"edited")
+
+    def test_retry_never_overwrites_new_external_version(self):
+        from unittest.mock import patch
+        import lan_drive
+        with tempfile.TemporaryDirectory() as td:
+            target=Path(td)/"original.png"
+            temporary=Path(td)/"new.png"
+            target.write_bytes(b"original");temporary.write_bytes(b"edited")
+            def external_edit(src,dst):
+                target.write_bytes(b"external edit")
+                raise PermissionError("locked by external writer")
+            with patch.object(lan_drive.os,"replace",side_effect=external_edit):
+                result=lan_drive._replace_crop_with_retry(
+                    temporary,target,lan_drive._image_version(b"original"))
+            self.assertEqual(result,"stale")
+            self.assertEqual(target.read_bytes(),b"external edit")
+
 if __name__ == '__main__':unittest.main()
