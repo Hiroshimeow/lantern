@@ -78,6 +78,7 @@ from lantern.ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
 from lantern.md_editor import (MarkdownEditorError, read_document as read_markdown_document,
                                save_document as save_markdown_document,
                                MAX_MARKDOWN_EDITOR_BYTES)
+from lantern.working_copy import WorkingCopyError, WorkingCopyStore
 
 try:
     from PIL import Image, ImageOps  # type: ignore
@@ -2326,6 +2327,7 @@ TERMINAL_ACCESS: Optional[TerminalAccess] = None
 TERM_MANAGER: Optional[TerminalManager] = None
 CHAT_MANAGER: Optional[PiChatManager] = None
 SCM_SERVICE: Optional[ScmService] = None
+WORK_STORE: Optional[WorkingCopyStore] = None
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -2441,6 +2443,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_video_info(parsed.query)
             if parsed.path == "/api/subtitle":
                 return self.api_subtitle(parsed.query)
+            if parsed.path == "/api/work":
+                return self.api_work_get(parsed.query)
             if parsed.path == "/api/md/document":
                 return self.api_md_document(parsed.query)
             if parsed.path == "/api/plugin/info":
@@ -2482,6 +2486,9 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/upload": return self.api_upload(parsed.query)
             if route == "/api/image/overwrite": return self.api_image_overwrite(parsed.query)
             if route == "/api/save": return self.api_save()
+            if route == "/api/work/write": return self.api_work_write()
+            if route == "/api/work/save": return self.api_work_save()
+            if route == "/api/work/discard": return self.api_work_discard()
             if route == "/api/md/render": return self.api_md_render()
             if route == "/api/md/save": return self.api_md_save()
             if route == "/api/mkdir": return self.api_mkdir()
@@ -2958,6 +2965,55 @@ class Handler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass
         self.send_json(200, {"ok": True, "file": rel_url_for_path(dest), "bytes": written})
+
+    def _work_store(self) -> WorkingCopyStore:
+        if WORK_STORE is None:
+            raise WorkingCopyError(503, "Working-copy store is not initialized")
+        return WORK_STORE
+
+    def api_work_get(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        rel = qs.get("p", [""])[0]
+        try:
+            self.send_json(200, {"ok": True, **self._work_store().get(rel)})
+        except WorkingCopyError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
+
+    def api_work_write(self) -> None:
+        data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 5)
+        try:
+            result = self._work_store().write(
+                data.get("path"),
+                data.get("content"),
+                expect_hash=data.get("expectHash"),
+                base_version=data.get("baseVersion"),
+            )
+            self.send_json(200, {"ok": True, **result})
+        except WorkingCopyError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
+
+    def api_work_save(self) -> None:
+        data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 2)
+        try:
+            result = self._work_store().save(
+                data.get("path"),
+                expect_hash=data.get("expectHash"),
+                expect_saved_version=data.get("expectSavedVersion"),
+            )
+            self.send_json(200, {"ok": True, **result})
+        except WorkingCopyError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
+
+    def api_work_discard(self) -> None:
+        data = self.read_json(max_bytes=64 * 1024)
+        try:
+            result = self._work_store().discard(
+                data.get("path"),
+                expect_hash=data.get("expectHash"),
+            )
+            self.send_json(200, {"ok": True, **result})
+        except WorkingCopyError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
 
     def api_md_document(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
@@ -3552,7 +3608,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
 
 
 def main() -> None:
-    global CONFIG, TERMINAL_ACCESS, TERM_MANAGER, CHAT_MANAGER, SCM_SERVICE
+    global CONFIG, TERMINAL_ACCESS, TERM_MANAGER, CHAT_MANAGER, SCM_SERVICE, WORK_STORE
     args = parse_args()
     if args.set_terminal_password:
         # No password on argv, stdout, process metadata, or in shell history.
@@ -3572,6 +3628,8 @@ def main() -> None:
     effective_hash = "" if args.no_password else CONFIG.terminal_password_hash
     TERMINAL_ACCESS = TerminalAccess(effective_hash, local_bypass=CONFIG.terminal_local_bypass)
     TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
+    work_dir = Path(os.environ.get("LANTERN_WORK_DIR") or (Path.home() / ".lantern" / "work"))
+    WORK_STORE = WorkingCopyStore(CONFIG.root, work_dir, {".md", ".markdown"})
     CHAT_MANAGER = PiChatManager(CONFIG.root, WS_HUB.broadcast)
     SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():
