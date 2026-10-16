@@ -926,6 +926,95 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_preview_pending_diff_survives_reload_and_clears_after_save(self):
+        baseline = (
+            "# Preview diff\n\n"
+            "Keep block.\n\n"
+            "Old value.\n\n"
+            "Stable block.\n\n"
+            "Delete me.\n\n"
+            "Tail block.\n"
+        )
+        draft = (
+            "# Preview diff\n\n"
+            "Keep block.\n\n"
+            "New value.\n\n"
+            "Stable block.\n\n"
+            "Tail block.\n\n"
+            "Added end.\n"
+        )
+        path = self.root / "preview-pending-diff.md"
+        path.write_text(baseline, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=preview-pending-diff.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(timeout=12000)
+            source.fill(draft)
+            page.wait_for_function(
+                "() => !!window.__lanternMdVisual?.state?.workHash",
+                timeout=10000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+
+            page.get_by_role("button", name="Preview", exact=True).click()
+            article = page.locator("article.md-preview")
+            article.wait_for(state="visible", timeout=12000)
+            article.get_by_text("New value.", exact=True).wait_for(timeout=12000)
+            mod = page.locator("article.md-preview .md-preview-diff-mod")
+            added = page.locator("article.md-preview .md-preview-diff-add")
+            ghost = page.locator("article.md-preview .md-preview-deletion")
+            self.assertGreater(mod.count(), 0)
+            self.assertIn("New value.", mod.all_inner_texts())
+            self.assertGreater(added.count(), 0)
+            self.assertTrue(any("Added end." in text for text in added.all_inner_texts()))
+            ghost_text = "\n".join(ghost.all_inner_texts())
+            self.assertIn("Old value.", ghost_text)
+            self.assertIn("Delete me.", ghost_text)
+            self.assertEqual(ghost.locator("[data-l]").count(), 0)
+            self.assertGreater(
+                int(page.evaluate("() => document.documentElement.dataset.mdPendingHunks || '0'")),
+                0,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+
+            page.reload(wait_until="domcontentloaded")
+            article = page.locator("article.md-preview")
+            article.wait_for(state="visible", timeout=12000)
+            article.get_by_text("New value.", exact=True).wait_for(timeout=12000)
+            self.assertGreater(page.locator("article.md-preview .md-preview-diff-mod").count(), 0)
+            self.assertIn(
+                "Delete me.",
+                "\n".join(page.locator("article.md-preview .md-preview-deletion").all_inner_texts()),
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(timeout=12000)
+            self.assertEqual(source.input_value(), draft)
+            page.keyboard.press("Control+S")
+            page.wait_for_function(
+                "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty && !s.workHash; }",
+                timeout=12000,
+            )
+            page.get_by_role("button", name="Preview", exact=True).click()
+            article = page.locator("article.md-preview")
+            article.wait_for(state="visible", timeout=12000)
+            article.get_by_text("New value.", exact=True).wait_for(timeout=12000)
+            self.assertEqual(page.locator("article.md-preview .md-preview-deletion").count(), 0)
+            self.assertEqual(page.locator("article.md-preview .md-preview-diff-add").count(), 0)
+            self.assertEqual(page.locator("article.md-preview .md-preview-diff-mod").count(), 0)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_working_copy_survives_preview_and_only_save_changes_real_file(self):
         initial = "# Working copy\n\nSaved body\n"
         draft = "# Working copy changed\n\nPending body\n"

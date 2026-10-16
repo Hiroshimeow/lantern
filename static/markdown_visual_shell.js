@@ -171,6 +171,63 @@
     view.sourceDeletions.hidden = !deletions.length;
     syncSourceBackdrop();
   };
+  const clearPreviewDiff = () => {
+    for (const node of preview.querySelectorAll('.md-preview-diff-add,.md-preview-diff-mod')) {
+      node.classList.remove('md-preview-diff-add', 'md-preview-diff-mod');
+    }
+    for (const ghost of preview.querySelectorAll('.md-preview-deletion')) ghost.remove();
+  };
+
+  const renderPreviewDiff = (hunks, draftText) => {
+    ensureShellStyle();
+    clearPreviewDiff();
+    const lineCount = String(draftText || '').replace(/\r\n?/g, '\n').split('\n').length;
+    const blocks = [...preview.querySelectorAll('[data-l]')]
+      .filter(node => !node.closest('.md-preview-deletion'))
+      .map(node => ({node, line: Math.max(0, Number(node.getAttribute('data-l')) - 1)}))
+      .filter(item => Number.isSafeInteger(item.line))
+      .sort((a, b) => a.line - b.line);
+
+    for (let i = 0; i < blocks.length; i++) {
+      blocks[i].end = i + 1 < blocks.length ? blocks[i + 1].line : lineCount;
+    }
+
+    for (const hunk of hunks) {
+      if ((hunk.kind === 'add' || hunk.kind === 'mod') && hunk.draftEnd > hunk.draftStart) {
+        let painted = false;
+        for (const block of blocks) {
+          if (block.line < hunk.draftEnd && block.end > hunk.draftStart) {
+            block.node.classList.add(
+              hunk.kind === 'add' ? 'md-preview-diff-add' : 'md-preview-diff-mod'
+            );
+            painted = true;
+          }
+        }
+        if (!painted && blocks.length) {
+          const fallback = blocks.find(block => block.line >= hunk.draftStart) || blocks[blocks.length - 1];
+          fallback.node.classList.add(
+            hunk.kind === 'add' ? 'md-preview-diff-add' : 'md-preview-diff-mod'
+          );
+        }
+      }
+
+      if (Array.isArray(hunk.baseText) && hunk.baseText.length) {
+        const ghost = document.createElement('div');
+        ghost.className = 'md-preview-deletion';
+        ghost.setAttribute('data-md-diff-ghost', 'true');
+        const label = document.createElement('div');
+        label.className = 'md-preview-deletion-label';
+        label.textContent = hunk.kind === 'mod' ? 'Replaced saved text' : 'Removed saved text';
+        const old = document.createElement('pre');
+        old.textContent = hunk.baseText.join('\n');
+        ghost.append(label, old);
+        const anchor = blocks.find(block => block.line >= hunk.draftStart)?.node || null;
+        if (anchor) anchor.insertAdjacentElement('beforebegin', ghost);
+        else preview.append(ghost);
+      }
+    }
+  };
+
   const renderDraftDiff = () => {
     const diff = diffApi();
     if (!diff || !view.instance) return [];
@@ -718,6 +775,38 @@
     if (!article) throw new Error('Draft preview response did not contain an article');
     preview.innerHTML = article.innerHTML;
     await globalThis.__lanternMarkdownPreview?.refresh?.(preview);
+    const diff = diffApi();
+    const hunks = diff ? diff.diffLines(String(view.baseline || ''), text) : [];
+    view.hunks = hunks;
+    renderPreviewDiff(hunks, text);
+    document.documentElement.dataset.mdPendingHunks = String(hunks.length);
+  }
+
+  async function hydratePendingPreview() {
+    if (view.active || view.loading) return;
+    try {
+      const state = await fetchWorkState();
+      if (view.active || view.loading) return;
+      if (!state.saved) return;
+      view.version = state.saved.version;
+      view.baseline = state.saved.content;
+      view.lastSaved = state.saved.content;
+      view.workHash = state.work?.hash || null;
+      view.workState = state.state || (view.workHash ? 'pending' : 'clean');
+      view.ackedText = state.work?.content ?? state.saved.content;
+      view.conflict = state.state === 'external' || state.state === 'missing';
+      view.dirty = !!state.work &&
+        cleanLineEndings(state.work.content) !== cleanLineEndings(state.saved.content);
+      if (state.work) {
+        await renderDraftPreview(state.work.content);
+      } else {
+        clearPreviewDiff();
+        view.hunks = [];
+        document.documentElement.dataset.mdPendingHunks = '0';
+      }
+    } catch (error) {
+      console.warn('Unable to hydrate Markdown working copy:', error);
+    }
   }
 
   async function close(requestedBookmark = null) {
@@ -913,13 +1002,19 @@
   const scrollKey = 'lantern-md-scroll:' + path;
   const priorScroll = sessionStorage.getItem(scrollKey);
   const priorAnchor = sessionStorage.getItem(anchorKey);
+  let initialBookmark = null;
   if (priorAnchor || priorScroll) {
     sessionStorage.removeItem(scrollKey);
     sessionStorage.removeItem(anchorKey);
-    let bookmark = null;
-    try { if (priorAnchor) bookmark = JSON.parse(priorAnchor); } catch { /* obsolete entry */ }
-    requestAnimationFrame(() => { void restorePosition('preview', bookmark, Number(priorScroll) || 0); });
+    try { if (priorAnchor) initialBookmark = JSON.parse(priorAnchor); } catch { /* obsolete entry */ }
   }
+  void hydratePendingPreview().finally(() => {
+    if (initialBookmark || priorScroll) {
+      requestAnimationFrame(() => {
+        void restorePosition('preview', initialBookmark, Number(priorScroll) || 0);
+      });
+    }
+  });
   window.__lanternMdVisual = { get state() { return view; }, open: start,
     show: start, save: () => save(true), preview: close, flushNow: saveDraft,
     beginBotTurn, cancelBotTurn, onWorkChanged };

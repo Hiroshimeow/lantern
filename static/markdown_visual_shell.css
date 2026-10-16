@@ -21,6 +21,11 @@
 .md-source-deletion{border:1px solid rgba(232,87,95,.40);border-left:3px solid #e8575f;border-radius:8px;padding:6px 8px;background:rgba(137,38,45,.12)}
 .md-source-deletion-label{font-size:11px;color:#ff9aa0;font-weight:750}
 .md-source-deletion pre{margin:4px 0 0;white-space:pre-wrap;color:#d77d83;text-decoration:line-through;opacity:.82;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
+.md-preview .md-preview-diff-add{background:rgba(61,173,92,.16);box-shadow:inset 3px 0 rgba(78,205,112,.82)}
+.md-preview .md-preview-diff-mod{background:rgba(210,166,54,.16);box-shadow:inset 3px 0 rgba(235,187,64,.86)}
+.md-preview-deletion{margin:7px 0;padding:7px 10px;border:1px solid rgba(232,87,95,.36);border-left:3px solid #e8575f;border-radius:8px;background:rgba(137,38,45,.11);pointer-events:none}
+.md-preview-deletion-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#ff9aa0}
+.md-preview-deletion pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#d77d83;text-decoration:line-through;opacity:.82;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
 .md-visual-host .milkdown .ProseMirror[contenteditable="true"]{cursor:text}
 .md-visual-host .milkdown .ProseMirror[contenteditable="true"]:focus{box-shadow:inset 3px 0 #65d79d}
 .md-visual-host .milkdown{min-height:310px;color:#ebf1fa;background:#0b1018!important;border:0;box-shadow:none}
