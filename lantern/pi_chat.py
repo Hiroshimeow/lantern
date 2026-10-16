@@ -14,24 +14,8 @@ from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from .working_copy import WorkingCopyError, WorkingCopyStore
-
-SYSTEM_PROMPT = """You are embedded in Lantern's chatbot.
-The newest <lantern_context> block is authoritative for the user's current location.
-When the user says this file, here, or this markdown, use that newest context.
-For an active document with workingPath, read and edit only workingPath. logicalPath
-is the saved project location and must not be read, edited, or written directly;
-Lantern commits it only when the user explicitly chooses Save. Other project files
-may be edited normally. Prefer native edit/write for mutations, preserve unrelated
-content and formatting, and never claim tests passed unless you actually ran them."""
-
-DEFAULT_MODEL_PRIORITY = (
-    "gpt-6.1-sol",
-    "gpt-6-astra",
-    "claude-opus-5-5-high",
-    "claude-sonnet-5-5-high",
-    "gemini-3.1-pro-low",
-)
-PREFERRED_PROVIDER = "cliproxy-2080"
+from .bot_config import LanternBotConfig
+from .bot_usage import LanternBotUsage
 
 
 @dataclass
@@ -41,12 +25,12 @@ class _Pending:
     error: Optional[BaseException] = None
 
 
-class PiChatManager:
-    """One persistent native Pi RPC session for Lantern.
+class LanternBotManager:
+    """One persistent native Pi runtime session for LanternBot.
 
-    The process uses pipes because Pi's rpc mode is JSONL, while Lantern's normal
+    The process uses pipes because the native agent RPC mode is JSONL, while Lantern's normal
     terminals stay on PTY/ConPTY. The browser transport and access gate are shared
-    with Terminal; this class only owns the Pi child/session protocol.
+    with Terminal; this class only owns the runtime child/session protocol.
     """
 
     def __init__(
@@ -58,7 +42,8 @@ class PiChatManager:
         session_dir: Optional[Path] = None,
         argv_override: Optional[list[str]] = None,
         request_timeout: float = 15.0,
-        max_models: int = 5,
+        bot_config: Optional[LanternBotConfig] = None,
+        usage_path: Optional[Path] = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.emit = emit
@@ -69,7 +54,11 @@ class PiChatManager:
         self.guard_extension = Path(__file__).with_name("pi_working_copy_guard.ts").resolve()
         self.argv_override = list(argv_override) if argv_override else None
         self.request_timeout = max(1.0, float(request_timeout))
-        self.max_models = max(1, min(int(max_models), 8))
+        self.bot_config = bot_config or LanternBotConfig()
+        self.usage = LanternBotUsage(
+            usage_path or (Path.home() / ".lantern" / "lanternbot-usage.json")
+        )
+        self.selection_applied = False
         self.lock = threading.RLock()
         self.write_lock = threading.Lock()
         self.turn_lock = threading.RLock()
@@ -145,12 +134,12 @@ class PiChatManager:
             if node and cli.is_file():
                 prefix = [node, str(cli)]
         if not self.guard_extension.is_file():
-            raise RuntimeError("Lantern Pi working-copy guard extension is missing")
+            raise RuntimeError("LanternBot working-copy guard extension is missing")
         args = prefix + [
             "--mode", "rpc",
             "--session-dir", str(self.session_dir),
-            "--name", "LanternChat",
-            "--append-system-prompt", SYSTEM_PROMPT,
+            "--name", "LanternBot",
+            "--append-system-prompt", self.bot_config.system_prompt,
             "--tools", "read,edit,write,grep,find,ls",
             "--no-extensions",
             "--extension", str(self.guard_extension),
@@ -167,7 +156,7 @@ class PiChatManager:
     def ensure_started(self) -> None:
         with self.lock:
             if self.closed:
-                raise RuntimeError("Pi chat manager is closed")
+                raise RuntimeError("LanternBot manager is closed")
             if self.proc is not None and self.proc.poll() is None:
                 return
             self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -187,8 +176,8 @@ class PiChatManager:
                 creationflags=creationflags,
                 env=child_env,
             )
-            self.reader = threading.Thread(target=self._reader_loop, name="lantern-pi-rpc", daemon=True)
-            self.stderr_reader = threading.Thread(target=self._stderr_loop, name="lantern-pi-stderr", daemon=True)
+            self.reader = threading.Thread(target=self._reader_loop, name="lanternbot-rpc", daemon=True)
+            self.stderr_reader = threading.Thread(target=self._stderr_loop, name="lanternbot-stderr", daemon=True)
             self.reader.start()
             self.stderr_reader.start()
 
@@ -234,11 +223,13 @@ class PiChatManager:
                     self.streaming = True
                 elif typ == "agent_settled":
                     self.streaming = False
+                elif typ == "message_end":
+                    self._record_event_usage(event)
                 if typ == "tool_execution_end":
                     self._emit_work_update(final=False)
                 elif typ == "agent_settled":
                     self._emit_work_update(final=True)
-                self.emit({"type": "chat_pi_event", "event": event})
+                self.emit({"type": "chat_bot_event", "event": event})
         finally:
             self._emit_work_update(final=True)
             code = proc.poll()
@@ -247,7 +238,7 @@ class PiChatManager:
                     code = proc.wait(timeout=0.5)
                 except Exception:
                     code = None
-            error = RuntimeError(f"Pi RPC exited ({code})")
+            error = RuntimeError(f"LanternBot runtime exited ({code})")
             with self.lock:
                 waiting = list(self.pending.values())
                 self.pending.clear()
@@ -271,7 +262,7 @@ class PiChatManager:
         if not proc or not proc.stdin:
             with self.lock:
                 self.pending.pop(req_id, None)
-            raise RuntimeError("Pi RPC stdin unavailable")
+            raise RuntimeError("LanternBot runtime stdin unavailable")
         try:
             raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
             with self.write_lock:
@@ -285,13 +276,26 @@ class PiChatManager:
         if not pending.event.wait(wait):
             with self.lock:
                 self.pending.pop(req_id, None)
-            raise TimeoutError(f"Pi RPC request timed out: {payload.get('type')}")
+            raise TimeoutError(f"LanternBot runtime request timed out: {payload.get('type')}")
         if pending.error:
             raise pending.error
         response = pending.response or {}
         if response.get("success") is False:
-            raise RuntimeError(str(response.get("error") or f"Pi RPC failed: {payload.get('type')}"))
+            raise RuntimeError(str(response.get("error") or f"LanternBot runtime failed: {payload.get('type')}"))
         return response
+
+    def _record_event_usage(self, event: dict[str, Any]) -> None:
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+        raw = usage.get("totalTokens", usage.get("total_tokens"))
+        if raw in (None, ""):
+            return
+        try:
+            tokens = int(raw)
+        except (TypeError, ValueError):
+            return
+        if tokens > 0:
+            self.usage.record_tokens(tokens)
 
     def _emit_work_update(self, *, final: bool) -> None:
         with self.turn_lock:
@@ -335,7 +339,7 @@ class PiChatManager:
                 self.emit({
                     "type": "chat_real_file_touched",
                     "path": rel,
-                    "error": "Saved project file changed while Pi was editing the working copy.",
+                    "error": "Saved project file changed while LanternBot was editing the working copy.",
                 })
 
     def get_state(self) -> dict[str, Any]:
@@ -358,29 +362,26 @@ class PiChatManager:
         response = self.request({"type": "get_available_models"})
         data = response.get("data") if isinstance(response.get("data"), dict) else {}
         raw = data.get("models") if isinstance(data.get("models"), list) else []
-        models = [m for m in raw if isinstance(m, dict) and m.get("id") and m.get("provider")]
         selected: list[dict[str, Any]] = []
-        used: set[tuple[str, str]] = set()
-        for wanted in DEFAULT_MODEL_PRIORITY:
-            candidates = [m for m in models if str(m.get("id")) == wanted]
-            candidates.sort(key=lambda m: 0 if str(m.get("provider")) == PREFERRED_PROVIDER else 1)
-            if candidates:
-                item = candidates[0]
-                key = (str(item.get("provider")), str(item.get("id")))
-                if key not in used:
-                    selected.append(self._model_public(item))
-                    used.add(key)
-            if len(selected) >= self.max_models:
-                break
-        if len(selected) < self.max_models:
-            for item in models:
-                key = (str(item.get("provider")), str(item.get("id")))
-                if key in used:
-                    continue
-                selected.append(self._model_public(item))
-                used.add(key)
-                if len(selected) >= self.max_models:
-                    break
+        seen: set[tuple[str, str]] = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider") or "")
+            model_id = str(item.get("id") or "")
+            if not provider or not model_id:
+                continue
+            if not self.bot_config.allows_model(provider, model_id):
+                continue
+            if self.bot_config.lock_provider and provider != self.bot_config.provider:
+                continue
+            if self.bot_config.lock_model and model_id != self.bot_config.model:
+                continue
+            key = (provider, model_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(self._model_public(item))
         return selected
 
     @staticmethod
@@ -393,14 +394,84 @@ class PiChatManager:
             "contextWindow": int(model.get("contextWindow") or 0),
         }
 
+    def _configured_target(
+        self,
+        state: dict[str, Any],
+        models: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        provider = self.bot_config.provider
+        model_id = self.bot_config.model
+        if not provider and not model_id:
+            return None
+
+        current = state.get("model") if isinstance(state.get("model"), dict) else {}
+        current_provider = str(current.get("provider") or "")
+        current_id = str(current.get("id") or "")
+        if ((not provider or current_provider == provider)
+                and (not model_id or current_id == model_id)
+                and self.bot_config.allows_model(current_provider, current_id)):
+            return self._model_public(current)
+
+        matches = [
+            item for item in models
+            if (not provider or item["provider"] == provider)
+            and (not model_id or item["id"] == model_id)
+        ]
+        if not matches:
+            wanted = "/".join(part for part in (provider, model_id) if part) or "configured selection"
+            raise RuntimeError(
+                f"LanternBot configured provider/model is unavailable on this machine: {wanted}"
+            )
+        return matches[0]
+
+    def bootstrap_state(self) -> dict[str, Any]:
+        state = self.get_state()
+        if self.selection_applied:
+            return state
+        models = self.available_models()
+        target = self._configured_target(state, models)
+        current = state.get("model") if isinstance(state.get("model"), dict) else {}
+        current_provider = str(current.get("provider") or "")
+        current_id = str(current.get("id") or "")
+        current_allowed = (
+            bool(current_provider and current_id)
+            and self.bot_config.allows_model(current_provider, current_id)
+            and (not self.bot_config.lock_provider or current_provider == self.bot_config.provider)
+            and (not self.bot_config.lock_model or current_id == self.bot_config.model)
+        )
+        if target is None and not current_allowed:
+            if not models:
+                raise RuntimeError("LanternBot policy allows no model available on this machine")
+            target = models[0]
+        if target is not None:
+            if current_provider != target["provider"] or current_id != target["id"]:
+                self.request({
+                    "type": "set_model",
+                    "provider": target["provider"],
+                    "modelId": target["id"],
+                })
+                state = self.get_state()
+        self.selection_applied = True
+        return state
+
     def set_model(self, provider: str, model_id: str) -> dict[str, Any]:
+        provider = str(provider or "").strip()
+        model_id = str(model_id or "").strip()
         if not provider or not model_id:
             raise ValueError("provider and modelId are required")
+        if self.bot_config.lock_provider and provider != self.bot_config.provider:
+            raise PermissionError("LanternBot provider is locked by configuration")
+        if self.bot_config.lock_model and model_id != self.bot_config.model:
+            raise PermissionError("LanternBot model is locked by configuration")
+        allowed = {
+            (item["provider"], item["id"])
+            for item in self.available_models()
+        }
+        if (provider, model_id) not in allowed:
+            raise PermissionError("LanternBot provider/model is not allowed by configuration")
         response = self.request({"type": "set_model", "provider": provider, "modelId": model_id})
-        try:
-            self.get_state()
-        except Exception:
-            pass
+        self.last_state = {}
+        self.get_state()
         return response
 
     def new_session(self) -> dict[str, Any]:
@@ -448,6 +519,17 @@ class PiChatManager:
         selected = str(source.get("selectedText") or "")
         if selected:
             result["selectedText"] = selected[:8000]
+        attachments = source.get("attachments")
+        if isinstance(attachments, list):
+            normalized_attachments: list[str] = []
+            seen: set[str] = set()
+            for item in attachments[:32]:
+                value = canonical(item)
+                if value and value not in seen:
+                    seen.add(value)
+                    normalized_attachments.append(value)
+            if normalized_attachments:
+                result["attachments"] = normalized_attachments
         return result
 
     @staticmethod
@@ -467,6 +549,9 @@ class PiChatManager:
         selected = str(context.get("selectedText") or "")
         if selected:
             fields.append("selectedText:\n" + selected[:8000])
+        attachments = context.get("attachments")
+        if isinstance(attachments, list) and attachments:
+            fields.append("attachments:\n" + "\n".join(f"- {item}" for item in attachments))
         block = "\n".join(fields) if fields else "kind: unknown"
         return f"<lantern_context>\n{block}\n</lantern_context>\n\n<user_request>\n{text}\n</user_request>"
 
@@ -476,6 +561,23 @@ class PiChatManager:
         context: Optional[dict[str, Any]] = None,
         work_hash: Optional[str] = None,
     ) -> dict[str, Any]:
+        raw_message = str(message or "").strip()
+        if not raw_message:
+            raise ValueError("Chat message is empty")
+        if len(raw_message) > 200_000:
+            raise ValueError("Chat message is too large")
+        if not self.bot_config.enabled:
+            raise PermissionError("LanternBot is disabled by configuration")
+        state = self.bootstrap_state()
+        current = state.get("model") if isinstance(state.get("model"), dict) else {}
+        provider = str(current.get("provider") or "")
+        model_id = str(current.get("id") or "")
+        if not provider or not model_id or not self.bot_config.allows_model(provider, model_id):
+            raise PermissionError("LanternBot current provider/model is not allowed by configuration")
+        self.usage.assert_prompt_allowed(
+            max_prompts=self.bot_config.max_prompts_per_day,
+            max_tokens=self.bot_config.max_tokens_per_day,
+        )
         normalized = self.normalize_context(context)
         if normalized.get("kind") == "markdown":
             real_path = normalized.get("path")
@@ -488,7 +590,7 @@ class PiChatManager:
                 raise ValueError("Markdown chat path must stay inside the configured root") from exc
             with self.turn_lock:
                 if self.turn_rel:
-                    raise RuntimeError("A Pi working-copy turn is already active")
+                    raise RuntimeError("A LanternBot working-copy turn is already active")
                 try:
                     turn = self.work_store.begin_turn(rel, work_hash)
                 except WorkingCopyError as exc:
@@ -498,11 +600,13 @@ class PiChatManager:
             normalized["logicalPath"] = rel
             normalized["workingPath"] = str(turn["workingPath"])
         elif self.turn_rel:
-            raise RuntimeError("A Pi working-copy turn is already active")
+            raise RuntimeError("A LanternBot working-copy turn is already active")
 
         wrapped = self.build_prompt(message, normalized)
         try:
-            return self.request({"type": "prompt", "message": wrapped})
+            response = self.request({"type": "prompt", "message": wrapped})
+            self.usage.record_prompt()
+            return response
         except Exception:
             self._emit_work_update(final=True)
             raise
@@ -522,7 +626,10 @@ class PiChatManager:
             "streaming": bool(self.streaming),
             "sessionId": str(state.get("sessionId") or ""),
             "model": self._model_public(model) if model else None,
-            "terminalId": "pi_chat",
+            "terminalId": "lantern_bot",
+            "name": "LanternBot",
+            "policy": self.bot_config.public_policy(),
+            "usage": self.usage.snapshot(),
         }
 
     def close(self) -> None:
@@ -534,7 +641,7 @@ class PiChatManager:
             waiting = list(self.pending.values())
             self.pending.clear()
         for item in waiting:
-            item.error = RuntimeError("Pi chat manager closed")
+            item.error = RuntimeError("LanternBot manager closed")
             item.event.set()
         if not proc:
             return
@@ -563,3 +670,6 @@ class PiChatManager:
         for thread in (self.reader, self.stderr_reader):
             if thread and thread is not current and thread.is_alive():
                 thread.join(timeout=0.5)
+
+
+PiChatManager = LanternBotManager  # compatibility for older tests/imports

@@ -362,11 +362,12 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
             and not getattr(peer, "can_terminal", lambda: True)()):
         raise PermissionError("Terminal locked: enter the password on the host-issued sign-in form")
     if typ.startswith("chat_") and chat is None:
-        raise RuntimeError("Pi chat is not initialized")
+        raise RuntimeError("LanternBot is not initialized")
     if typ == "chat_sync":
+        state = chat.bootstrap_state()
         peer.send({
             "type": "chat_state",
-            "state": chat.get_state(),
+            "state": state,
             "summary": chat.summary(),
             "models": chat.available_models(),
             "messages": chat.get_messages(),
@@ -393,7 +394,8 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
         return
     if typ == "chat_set_model":
         chat.set_model(str(msg.get("provider") or ""), str(msg.get("modelId") or ""))
-        peer.send({"type": "chat_model_changed", "state": chat.get_state()})
+        peer.send({"type": "chat_model_changed", "state": chat.get_state(),
+                   "summary": chat.summary()})
         return
     if typ == "terminal_client_v2":
         peer.protocol = "v2"

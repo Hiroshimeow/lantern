@@ -71,7 +71,7 @@ except Exception:
     LAN_PLUGIN = None  # lan_drive.py must remain standalone
 from http.server import SimpleHTTPRequestHandler
 from lantern.terminal import TerminalManager
-from lantern.pi_chat import PiChatManager
+from lantern.pi_chat import LanternBotManager
 from lantern.scm import ScmService
 from lantern.terminal_auth import TerminalAccess, hash_password, update_password_yaml
 from lantern.ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
@@ -79,6 +79,8 @@ from lantern.md_editor import (MarkdownEditorError, read_document as read_markdo
                                save_document as save_markdown_document,
                                MAX_MARKDOWN_EDITOR_BYTES)
 from lantern.working_copy import WorkingCopyError, WorkingCopyStore
+from lantern.bot_config import LanternBotConfig
+import yaml
 
 try:
     from PIL import Image, ImageOps  # type: ignore
@@ -180,6 +182,7 @@ class AppConfig:
     upload_auto_start: bool = False
     upload_parallel: int = 3
     upload_conflict: str = "ask"
+    lantern_bot: LanternBotConfig = LanternBotConfig()
 
 CONFIG: AppConfig
 
@@ -275,18 +278,17 @@ def parse_scalar(value: str) -> Any:
 
 
 def load_simple_yaml(path: Path) -> Dict[str, Any]:
-    data: Dict[str, Any] = {}
     if not path.exists():
-        return data
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        key, val = line.split(":", 1)
-        key = key.strip()
-        if key:
-            data[key] = parse_scalar(val)
-    return data
+        return {}
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8", errors="strict"))
+    except Exception as exc:
+        raise ValueError(f"Invalid YAML config {path}: {exc}") from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError("Lantern config root must be a YAML mapping")
+    return dict(loaded)
 
 
 def yaml_quote(value: Any) -> str:
@@ -332,6 +334,7 @@ def config_to_dict(cfg: "AppConfig", *, include_secrets: bool = False) -> Dict[s
         "upload_auto_start": cfg.upload_auto_start,
         "upload_parallel": cfg.upload_parallel,
         "upload_conflict": cfg.upload_conflict,
+        "lantern_bot": cfg.lantern_bot.public_policy(),
     }
     if include_secrets:
         data["terminal_password_hash"] = cfg.terminal_password_hash
@@ -341,30 +344,44 @@ def config_to_dict(cfg: "AppConfig", *, include_secrets: bool = False) -> Dict[s
 def write_config_file(cfg: "AppConfig") -> None:
     cfg.config_path.parent.mkdir(parents=True, exist_ok=True)
     data = config_to_dict(cfg, include_secrets=True)
-    # An interactive local CLI may have rotated the hash since startup.
-    current = load_simple_yaml(cfg.config_path).get("terminal_password_hash")
-    if isinstance(current, str):
-        data["terminal_password_hash"] = current
-    lines = [
-        "# LAN Drive config - file này có thể sửa tay hoặc đổi trong UI.",
-        "# Chạy: python3 lan_drive.py --config lan_drive_config.yaml",
-    ]
-    for key in [
-        "root", "port", "host", "title", "cache_dir",
-        "show_hidden", "show_system", "default_sort", "default_view",
-        "page_limit", "folders_first", "search_debounce_ms",
-        "terminal_enabled", "terminal_password_hash", "terminal_local_bypass", "terminal_max_sessions", "terminal_max_buffer_chars",
-        "terminal_start_height_px", "terminal_mobile_extra_keys",
-        "thumb_fit", "folder_preview_enabled", "folder_preview_mode", "folder_preview_fit",
-        "folder_preview_rotate", "folder_preview_animation", "folder_preview_interval_ms",
-        "folder_preview_scan_limit", "folder_preview_max_items", "folder_preview_include_video",
-        "upload_auto_start", "upload_parallel", "upload_conflict",
-    ]:
-        lines.append(f"{key}: {yaml_quote(data[key])}")
-    fd, tmp = tempfile.mkstemp(prefix=".lantern-password-", dir=str(cfg.config_path.parent))
+    current = load_simple_yaml(cfg.config_path)
+    password_hash = current.get("terminal_password_hash")
+    if isinstance(password_hash, str):
+        data["terminal_password_hash"] = password_hash
+    else:
+        data["terminal_password_hash"] = cfg.terminal_password_hash
+
+    bot = cfg.lantern_bot
+    data["lantern_bot"] = {
+        "enabled": bot.enabled,
+        "selection": {
+            "provider": bot.provider or None,
+            "model": bot.model or None,
+            "lock_provider": bot.lock_provider,
+            "lock_model": bot.lock_model,
+        },
+        "policy": {
+            "allowed_providers": list(bot.allowed_providers),
+            "allowed_models": list(bot.allowed_models),
+            "bypass_models": list(bot.bypass_models),
+            "max_prompts_per_day": bot.max_prompts_per_day,
+            "max_tokens_per_day": bot.max_tokens_per_day,
+        },
+        "greeting": bot.greeting,
+        "lantern_context": bot.system_prompt,
+    }
+
+    rendered = yaml.safe_dump(
+        data,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+        width=120,
+    )
+    fd, tmp = tempfile.mkstemp(prefix=".lantern-config-", dir=str(cfg.config_path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write("\n".join(lines) + "\n")
+            stream.write(rendered)
             stream.flush()
             os.fsync(stream.fileno())
         if os.name != "nt":
@@ -2325,7 +2342,7 @@ def _image_crop_target(rel: str) -> Path:
 WS_HUB = WebSocketHub()
 TERMINAL_ACCESS: Optional[TerminalAccess] = None
 TERM_MANAGER: Optional[TerminalManager] = None
-CHAT_MANAGER: Optional[PiChatManager] = None
+CHAT_MANAGER: Optional[LanternBotManager] = None
 SCM_SERVICE: Optional[ScmService] = None
 WORK_STORE: Optional[WorkingCopyStore] = None
 
@@ -3611,6 +3628,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         upload_auto_start=bool(data.get("upload_auto_start", False)),
         upload_parallel=max(1, min(int(data.get("upload_parallel") or 3), 8)),
         upload_conflict=normalize_conflict(data.get("upload_conflict")),
+        lantern_bot=LanternBotConfig.from_mapping(data.get("lantern_bot")),
     )
 
 
@@ -3637,7 +3655,7 @@ def main() -> None:
     TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
     work_dir = Path(os.environ.get("LANTERN_WORK_DIR") or (Path.home() / ".lantern" / "work"))
     WORK_STORE = WorkingCopyStore(CONFIG.root, work_dir, {".md", ".markdown"})
-    CHAT_MANAGER = PiChatManager(CONFIG.root, WS_HUB.broadcast, work_store=WORK_STORE)
+    CHAT_MANAGER = LanternBotManager(CONFIG.root, WS_HUB.broadcast, work_store=WORK_STORE, bot_config=CONFIG.lantern_bot)
     SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():
         print(f"Root does not exist: {CONFIG.root}", file=sys.stderr)

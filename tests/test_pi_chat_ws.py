@@ -26,9 +26,15 @@ class FakeChat:
     def get_state(self):
         return {"sessionId": "session-1", "model": {"provider": "p", "id": "m"}}
 
+    def bootstrap_state(self):
+        return self.get_state()
+
     def summary(self):
         return {"running": True, "streaming": False, "sessionId": "session-1",
-                "model": {"provider": "p", "id": "m"}, "terminalId": "pi_chat"}
+                "model": {"provider": "p", "id": "m"}, "terminalId": "lantern_bot",
+                "name": "LanternBot",
+                "policy": {"enabled": True, "greeting": "hello"},
+                "usage": {"date": "2026-10-16", "prompts": 0, "tokens": 0}}
 
     def available_models(self):
         return [{"provider": "p", "id": "m", "name": "m"}]
@@ -75,7 +81,7 @@ class PiChatWebSocketTests(unittest.TestCase):
         allowed = Peer(allowed=True)
         hub.add(locked)
         hub.add(allowed)
-        hub.broadcast({"type": "chat_pi_event", "event": {"type": "message_update"}})
+        hub.broadcast({"type": "chat_bot_event", "event": {"type": "message_update"}})
         self.assertEqual(locked.messages, [])
         self.assertEqual(len(allowed.messages), 1)
 

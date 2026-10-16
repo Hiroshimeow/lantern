@@ -7,11 +7,12 @@ import threading
 import unittest
 from pathlib import Path
 
-from lantern.pi_chat import PiChatManager
+from lantern.pi_chat import LanternBotManager
+from lantern.bot_config import LanternBotConfig
 from lantern.working_copy import WorkingCopyStore
 
 
-class PiChatManagerTests(unittest.TestCase):
+class LanternBotManagerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "root"
@@ -27,17 +28,18 @@ class PiChatManagerTests(unittest.TestCase):
 
         def emit(event):
             self.events.append(event)
-            if (event.get("type") == "chat_pi_event"
+            if (event.get("type") == "chat_bot_event"
                     and event.get("event", {}).get("type") == "agent_settled"):
                 self.settled.set()
 
-        self.manager = PiChatManager(
+        self.manager = LanternBotManager(
             self.root,
             emit,
             work_store=self.work,
             session_dir=Path(self.tmp.name) / "sessions",
             argv_override=[sys.executable, "-u", str(fake)],
             request_timeout=3,
+            usage_path=Path(self.tmp.name) / "usage.json",
         )
 
     def tearDown(self):
@@ -54,9 +56,9 @@ class PiChatManagerTests(unittest.TestCase):
         )
         self.assertEqual(saved["sessionId"], "fake-session-1")
 
-    def test_model_inventory_is_bounded_to_five_priorities(self):
+    def test_model_inventory_uses_native_inventory_without_hardcoded_limit(self):
         models = self.manager.available_models()
-        self.assertEqual(len(models), 5)
+        self.assertEqual(len(models), 6)
         self.assertEqual(
             [item["id"] for item in models],
             [
@@ -65,8 +67,68 @@ class PiChatManagerTests(unittest.TestCase):
                 "claude-opus-5-5-high",
                 "claude-sonnet-5-5-high",
                 "gemini-3.1-pro-low",
+                "extra-model",
             ],
         )
+
+    def test_native_default_is_not_changed_when_yaml_selection_is_empty(self):
+        state = self.manager.bootstrap_state()
+        self.assertEqual(state["model"]["provider"], "fake")
+        self.assertEqual(state["model"]["id"], "gpt-6.1-sol")
+        self.assertEqual(self.manager.get_messages(), [])
+
+    def test_policy_without_explicit_selection_moves_off_disallowed_native_model(self):
+        fake = Path(__file__).with_name("fake_pi_rpc.py")
+        manager = LanternBotManager(
+            self.root,
+            lambda _event: None,
+            work_store=self.work,
+            session_dir=Path(self.tmp.name) / "policy-auto-sessions",
+            usage_path=Path(self.tmp.name) / "policy-auto-usage.json",
+            argv_override=[sys.executable, "-u", str(fake)],
+            request_timeout=3,
+            bot_config=LanternBotConfig.from_mapping({
+                "policy": {"allowed_models": ["fake/claude-*"]},
+            }),
+        )
+        try:
+            state = manager.bootstrap_state()
+            self.assertTrue(state["model"]["id"].startswith("claude-"))
+            self.assertNotEqual(state["model"]["id"], "gpt-6.1-sol")
+        finally:
+            manager.close()
+
+    def test_yaml_policy_filters_inventory_and_can_lock_model(self):
+        fake = Path(__file__).with_name("fake_pi_rpc.py")
+        manager = LanternBotManager(
+            self.root,
+            lambda _event: None,
+            work_store=self.work,
+            session_dir=Path(self.tmp.name) / "policy-sessions",
+            usage_path=Path(self.tmp.name) / "policy-usage.json",
+            argv_override=[sys.executable, "-u", str(fake)],
+            request_timeout=3,
+            bot_config=LanternBotConfig.from_mapping({
+                "selection": {
+                    "provider": "fake",
+                    "model": "claude-opus-5-5-high",
+                    "lock_provider": True,
+                    "lock_model": True,
+                },
+                "policy": {
+                    "allowed_models": ["fake/claude-*"],
+                },
+            }),
+        )
+        try:
+            models = manager.available_models()
+            self.assertEqual([item["id"] for item in models], ["claude-opus-5-5-high"])
+            state = manager.bootstrap_state()
+            self.assertEqual(state["model"]["id"], "claude-opus-5-5-high")
+            with self.assertRaises(PermissionError):
+                manager.set_model("fake", "gpt-6.1-sol")
+        finally:
+            manager.close()
 
     def test_model_switch_uses_same_session(self):
         before = self.manager.get_state()["sessionId"]
@@ -144,7 +206,7 @@ class PiChatManagerTests(unittest.TestCase):
         work_events = [item for item in self.events if item.get("type") == "chat_work_changed"]
         self.assertTrue(work_events)
         self.assertTrue(work_events[-1]["final"])
-        pi_events = [item["event"] for item in self.events if item.get("type") == "chat_pi_event"]
+        pi_events = [item["event"] for item in self.events if item.get("type") == "chat_bot_event"]
         self.assertTrue(any(item.get("type") == "message_update" for item in pi_events))
         self.assertTrue(any(item.get("type") == "agent_settled" for item in pi_events))
 
@@ -176,6 +238,44 @@ class PiChatManagerTests(unittest.TestCase):
         )
         self.assertEqual(target.read_text(encoding="utf-8"), "# Work\n\nreal saved text\n")
 
+    def test_attachments_are_hidden_context_and_usage_is_recorded(self):
+        attachment = self.root / "notes.txt"
+        attachment.write_text("context\n", encoding="utf-8")
+        self.manager.prompt(
+            "Use the selected file",
+            {"kind": "folder", "folder": ".", "attachments": ["notes.txt"]},
+        )
+        self.assertTrue(self.settled.wait(2))
+        prompt = self.manager.get_messages()[0]["content"]
+        self.assertIn("attachments:\n- " + str(attachment.resolve()), prompt)
+        self.assertEqual(self.manager.usage.snapshot()["prompts"], 1)
+        self.assertEqual(self.manager.usage.snapshot()["tokens"], 7)
+
+    def test_daily_prompt_limit_is_enforced_before_runtime_turn(self):
+        fake = Path(__file__).with_name("fake_pi_rpc.py")
+        manager = LanternBotManager(
+            self.root,
+            lambda _event: None,
+            work_store=self.work,
+            session_dir=Path(self.tmp.name) / "quota-sessions",
+            usage_path=Path(self.tmp.name) / "quota-usage.json",
+            argv_override=[sys.executable, "-u", str(fake)],
+            request_timeout=3,
+            bot_config=LanternBotConfig.from_mapping({
+                "policy": {"max_prompts_per_day": 1},
+            }),
+        )
+        try:
+            manager.prompt("first", {"kind": "folder"})
+            for _ in range(40):
+                if manager.usage.snapshot()["prompts"] == 1:
+                    break
+                threading.Event().wait(0.025)
+            with self.assertRaisesRegex(RuntimeError, "prompt limit"):
+                manager.prompt("second", {"kind": "folder"})
+        finally:
+            manager.close()
+
     def test_empty_message_is_rejected_before_start(self):
         with self.assertRaisesRegex(ValueError, "empty"):
             self.manager.prompt("  ", {"kind": "folder"})
@@ -198,7 +298,7 @@ class PiChatManagerTests(unittest.TestCase):
             Path(self.tmp.name) / "work2",
             {".md", ".markdown"},
         )
-        manager = PiChatManager(
+        manager = LanternBotManager(
             self.root,
             lambda _event: None,
             work_store=store,

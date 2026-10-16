@@ -67,6 +67,11 @@ for raw in sys.stdin:
                       "toolName": "edit", "isError": False})
         send({"type": "message_update", "delta": "FAKE_OK"})
         messages.append({"role": "assistant", "content": "FAKE_OK"})
+        send({"type": "message_end", "message": {
+            "role": "assistant",
+            "content": "FAKE_OK",
+            "usage": {"totalTokens": 7},
+        }})
         send({"type": "agent_settled"})
     elif typ == "abort":
         send({"id": rid, "type": "response", "command": typ, "success": True})
