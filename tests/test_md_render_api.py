@@ -22,7 +22,7 @@ def free_port() -> int:
 
 class MarkdownDraftRenderApiTests(unittest.TestCase):
     def test_unsaved_markdown_renders_with_anchors_without_touching_real_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             shared = Path(tmp) / "shared"
             shared.mkdir()
             target = shared / "doc.md"
