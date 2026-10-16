@@ -74,8 +74,11 @@ for (const file of artifactPaths) {
     artifacts[path.basename(file)] = { bytes: buffer.length, sha256: crypto.createHash('sha256').update(buffer).digest('hex') };
   }
 }
-fs.writeFileSync(path.join(vendor, 'lantern-crepe.manifest.json'), JSON.stringify({
+const manifestPath = path.join(vendor, 'lantern-crepe.manifest.json');
+const manifestTmp = manifestPath + '.tmp';
+fs.writeFileSync(manifestTmp, JSON.stringify({
   dependencies: {'@milkdown/crepe':'7.22.2', esbuild:'0.28.2', 'markdown-it':'14.3.1',cropperjs:'2.3.0'},
   artifacts,
 }, null, 2) + '\n');
+fs.renameSync(manifestTmp, manifestPath);
 console.log('Lantern Crepe offline bundle:', artifacts);
