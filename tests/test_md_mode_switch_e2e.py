@@ -439,7 +439,7 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
-    def test_source_two_clients_conflict_without_overwrite(self):
+    def test_source_two_clients_explicit_second_save_rebases_and_wins(self):
         path = self.root / "conflict.md"
         path.write_text("# Clients\n\nOriginal\n", encoding="utf-8")
         context = self.browser.new_context()
@@ -449,17 +449,110 @@ class MarkdownModesE2E(unittest.TestCase):
                 page.goto(self.base + "/api/plugin/preview?p=conflict.md", wait_until="domcontentloaded")
                 page.get_by_role("button", name="Source", exact=True).click()
                 page.get_by_role("textbox", name="Markdown source").wait_for(timeout=10000)
+
             a.get_by_role("textbox", name="Markdown source").fill("# Clients\n\nClient A\n")
             a.keyboard.press("Control+s")
             a.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=13000)
+            self.assertEqual(path.read_text(encoding="utf-8"), "# Clients\n\nClient A\n")
+
             b.get_by_role("textbox", name="Markdown source").fill("# Clients\n\nClient B\n")
             b.keyboard.press("Control+s")
-            b.locator(".md-visual-status").filter(has_text="Conflict").wait_for(timeout=13000)
-            self.assertEqual(path.read_text(encoding="utf-8"), "# Clients\n\nClient A\n")
-            self.assertTrue(b.evaluate("window.__lanternMdVisual.state.conflict"))
+            b.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=13000)
+            self.assertEqual(path.read_text(encoding="utf-8"), "# Clients\n\nClient B\n")
+            self.assertFalse(b.evaluate("window.__lanternMdVisual.state.conflict"))
+            self.assertEqual(
+                b.evaluate("window.__lanternMdVisual.state.baseline"),
+                "# Clients\n\nClient B\n",
+            )
         finally:
             context.close()
 
+
+    def test_external_disk_edit_rebases_then_save_and_undo_becomes_pending_diff(self):
+        path = self.root / "external-rebase.md"
+        original = "# External\n\nOriginal disk text.\n"
+        draft = "# External\n\nLantern draft.\n"
+        external = "# External\n\nVS Code edit.\n"
+        path.write_text(original, encoding="utf-8")
+
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=external-rebase.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            area = page.get_by_role("textbox", name="Markdown source")
+            area.wait_for(timeout=12000)
+            area.fill(draft)
+            page.wait_for_function(
+                "() => !!window.__lanternMdVisual?.state?.workHash",
+                timeout=10000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+
+            # Simulate VS Code or another external editor writing the real file.
+            path.write_text(external, encoding="utf-8")
+            page.evaluate("() => window.dispatchEvent(new Event('focus'))")
+            page.wait_for_function(
+                """() => window.__lanternMdVisual?.state?.baseline?.includes('VS Code edit.')""",
+                timeout=10000,
+            )
+            self.assertEqual(area.input_value(), draft)
+            self.assertFalse(page.evaluate("() => window.__lanternMdVisual.state.conflict"))
+            page.locator(".md-visual-status").filter(
+                has_text="File changed outside Lantern"
+            ).wait_for(timeout=10000)
+            self.assertIn(
+                "VS Code edit.",
+                "\n".join(page.locator(".md-source-deletion").all_inner_texts()),
+            )
+
+            # Explicit Save means the current working copy wins, but still through
+            # a versioned CAS against the just-observed disk state.
+            page.keyboard.press("Control+s")
+            page.locator(".md-visual-status").filter(
+                has_text=re.compile(r"^Saved")
+            ).wait_for(timeout=13000)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
+            self.assertEqual(
+                page.evaluate("() => document.documentElement.dataset.mdPendingHunks"),
+                "0",
+            )
+            self.assertFalse(page.evaluate("() => window.__lanternMdVisual.state.conflict"))
+
+            # Saving must not destroy editor history. A later undo is simply a new
+            # pending edit and must not mutate disk until the next explicit Save.
+            area.click()
+            page.keyboard.press("Control+End")
+            page.keyboard.type("EXTRA")
+            page.wait_for_function(
+                "() => Number(document.documentElement.dataset.mdPendingHunks || '0') > 0",
+                timeout=8000,
+            )
+            page.keyboard.press("Control+s")
+            page.locator(".md-visual-status").filter(
+                has_text=re.compile(r"^Saved")
+            ).wait_for(timeout=13000)
+            saved_with_extra = path.read_text(encoding="utf-8")
+            self.assertIn("EXTRA", saved_with_extra)
+            self.assertEqual(
+                page.evaluate("() => document.documentElement.dataset.mdPendingHunks"),
+                "0",
+            )
+
+            page.keyboard.press("Control+z")
+            page.wait_for_function(
+                "() => Number(document.documentElement.dataset.mdPendingHunks || '0') > 0",
+                timeout=8000,
+            )
+            self.assertNotIn("EXTRA", area.input_value())
+            self.assertEqual(path.read_text(encoding="utf-8"), saved_with_extra)
+            self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
 
     def test_unsaved_source_moves_across_visual_preview_without_saving(self):
         path = self.root / "draft.md"

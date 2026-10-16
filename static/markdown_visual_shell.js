@@ -297,6 +297,40 @@
   };
   const fetchWorkState = () => api('/api/work?p=' + encodeURIComponent(path));
 
+  const adoptSavedBaseline = state => {
+    if (!state?.saved) return false;
+    view.version = state.saved.version;
+    view.baseline = state.saved.content;
+    view.lastSaved = state.saved.content;
+    view.workState = state.state || (state.work ? 'pending' : 'clean');
+    // An external disk update is a new comparison baseline, not a lock.
+    // Missing files and stale working copies remain real conflicts.
+    view.conflict = state.state === 'missing';
+    view.dirty = !!view.instance &&
+      cleanLineEndings(getEditorText()) !== cleanLineEndings(view.baseline);
+    renderDraftDiff();
+    return true;
+  };
+
+  const refreshDiskBaseline = async ({quiet = false} = {}) => {
+    if (!view.active || !view.instance || view.saving || view.piTurn) return false;
+    let state;
+    try { state = await fetchWorkState(); }
+    catch { return false; }
+    if (!state?.saved || state.saved.version === view.version) return false;
+    const serverHash = state.work?.hash || null;
+    if (serverHash !== (view.workHash || null)) {
+      view.conflict = true;
+      if (!quiet) status('Another Lantern working copy changed. Your editor text is retained.', 'error');
+      return false;
+    }
+    adoptSavedBaseline(state);
+    if (!quiet) {
+      status('File changed outside Lantern. Diff now uses the latest disk version; Ctrl+S or Save will commit your current working copy.', 'warn');
+    }
+    return true;
+  };
+
   const beginBotTurn = async () => {
     if (globalThis.__lanternMdPaged?.active) {
       throw new Error('LanternBot editing is not enabled while the section editor is active. Save or return to Source first.');
@@ -317,8 +351,8 @@
       view.workHash = state.work?.hash || null;
       view.workState = state.state || (view.workHash ? 'pending' : 'clean');
       view.ackedText = base;
-      view.conflict = state.state === 'external' || state.state === 'missing';
-      if (view.conflict) throw new Error('Markdown saved file changed outside this working copy');
+      view.conflict = state.state === 'missing';
+      if (view.conflict) throw new Error('Saved Markdown file is unavailable');
     }
     clearTimeout(view.draftTimer);
     view.piTurn = {
@@ -460,9 +494,38 @@
       if (error.status === 409) {
         if (error.data?.reason === 'pi_turn') {
           status('LanternBot is editing this draft. Your newer typing is held locally and will flush after it finishes.', 'warn');
+        } else if (error.data?.reason === 'base_changed') {
+          try {
+            const state = await fetchWorkState();
+            const serverHash = state.work?.hash || null;
+            if (state.saved && serverHash === (view.workHash || null)) {
+              adoptSavedBaseline(state);
+              const retry = await api('/api/work/write', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  path,
+                  content: text,
+                  expectHash: view.workHash || null,
+                  baseVersion: view.version,
+                }),
+              });
+              view.workHash = retry.hash || null;
+              view.workState = retry.state || (view.workHash ? 'pending' : 'clean');
+              view.ackedText = text;
+              view.conflict = false;
+              await drafts.clear().catch(() => {});
+              status('Disk changed outside Lantern. Your working copy was rebased to the latest saved version.', 'warn');
+              return true;
+            }
+          } catch {
+            // Fall through to the stale-working-copy conflict below.
+          }
+          view.conflict = true;
+          status('Another Lantern working copy changed. Your editor text is retained.', 'error');
         } else {
           view.conflict = true;
-          status('Conflict: draft or saved file changed elsewhere. Your newer typing is kept locally; reconcile before Save.', 'error');
+          status('Another Lantern working copy changed. Your editor text is retained.', 'error');
         }
       } else {
         status('Working-copy sync failed. Your newer typing is kept in this browser.', 'error');
@@ -698,7 +761,23 @@
         if (manual) status('Already saved');
         return;
       }
-      const result = await api('/api/work/save', {
+      let observed = await fetchWorkState();
+      if (!observed.saved) {
+        view.conflict = true;
+        status('Saved file is missing. Working copy retained.', 'error');
+        return;
+      }
+      if ((observed.work?.hash || null) !== hashToSave) {
+        view.conflict = true;
+        status('Another Lantern working copy changed. Your editor text is retained.', 'error');
+        return;
+      }
+      if (observed.saved.version !== view.version) {
+        adoptSavedBaseline(observed);
+        status('Disk changed outside Lantern. Saving your current working copy over the latest saved version…', 'warn');
+      }
+
+      const saveOnce = () => api('/api/work/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -707,6 +786,19 @@
           expectSavedVersion: view.version,
         }),
       });
+
+      let result;
+      try {
+        result = await saveOnce();
+      } catch (error) {
+        if (error.status !== 409 || error.data?.reason !== 'external') throw error;
+        // One bounded retry: refresh the disk version, keep the exact same
+        // working-copy hash, then CAS again. Never blind-overwrite a moving file.
+        observed = await fetchWorkState();
+        if (!observed.saved || (observed.work?.hash || null) !== hashToSave) throw error;
+        adoptSavedBaseline(observed);
+        result = await saveOnce();
+      }
       view.version = result.version;
       view.lastSaved = text;
       view.baseline = text;
@@ -929,7 +1021,7 @@
       view.workHash = serverWork?.hash || null;
       view.workState = workState.state || (view.workHash ? 'pending' : 'clean');
       view.ackedText = contents;
-      view.conflict = workState.state === 'external' || workState.state === 'missing';
+      view.conflict = workState.state === 'missing';
       view.dirty = contents !== doc.content;
       view.approvedReformat = false;
 
@@ -999,12 +1091,14 @@
         view.revision += 1;
       }
       if (contents !== view.ackedText) queueDraft();
-      status(view.conflict ? 'Draft restored but disk version differs. Do not overwrite; download draft first.' :
+      status(view.conflict ? 'Saved file is unavailable. Your working copy is retained.' :
+        workState.state === 'external'
+          ? 'File changed outside Lantern. Diff uses the latest disk version; Ctrl+S or Save will commit your current working copy.' :
         restoredDraft ? 'Unsaved draft restored.' :
         kind === 'source' ? 'Source ready. Changes stay pending until Ctrl+S or Save.' :
         view.roundtripSafe ? 'Ready. Changes stay pending until Ctrl+S or Save.' :
         'Visual editing ready. Formatting differs; review required before Save.',
-        view.conflict ? 'error' : view.roundtripSafe ? 'info' : 'warn');
+        view.conflict ? 'error' : workState.state === 'external' || !view.roundtripSafe ? 'warn' : 'info');
       restoreButtons();
       renderDraftDiff();
       view.instance.focus();
@@ -1069,8 +1163,13 @@
     e.returnValue = '';
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && view.active && getEditorText() !== view.ackedText) void saveDraft();
+    if (document.hidden && view.active && getEditorText() !== view.ackedText) {
+      void saveDraft();
+      return;
+    }
+    if (!document.hidden) void refreshDiskBaseline();
   });
+  window.addEventListener('focus', () => { void refreshDiskBaseline(); });
   const scrollKey = 'lantern-md-scroll:' + path;
   const priorScroll = sessionStorage.getItem(scrollKey);
   const priorAnchor = sessionStorage.getItem(anchorKey);
