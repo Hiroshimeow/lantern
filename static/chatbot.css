@@ -50,4 +50,12 @@ body.lantern-chat-open{overflow-x:hidden}
   .lantern-chat-messages{padding:9px}
   .lantern-chat-input{min-height:64px}
 }
+/* Markdown uses the available left workspace; do not center under the chat. */
+body:has(.md-bar) .md-preview{margin:0;max-width:none}
+body.lantern-chat-open:has(.md-bar) .content{
+  padding-right:calc(min(440px,92vw) + 14px)
+}
+@media(max-width:700px){
+  body.lantern-chat-open:has(.md-bar) .content{padding-right:6px}
+}
 @media print{.lantern-chat-drawer,.lantern-chat-launch,.lantern-chat-float{display:none!important}}

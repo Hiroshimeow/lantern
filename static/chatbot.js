@@ -18,6 +18,7 @@
     attachmentDismissed: new Set(),
     selectedPaths: new Set(),
     contextTimer: null,
+    logTimer: null,
   };
 
   const q = (sel, root = document) => root.querySelector(sel);
@@ -32,6 +33,12 @@
       if (typeof part.content === 'string') return part.content;
       return '';
     }).filter(Boolean).join('');
+  }
+
+  function displayUserText(raw) {
+    const text = String(raw || '');
+    const match = text.match(/<user_request>\s*\n([\s\S]*?)\n<\/user_request>\s*$/);
+    return match ? match[1] : text;
   }
 
   function roleOf(message) {
@@ -194,6 +201,61 @@
     }
   }
 
+  // Browser-session event log: tool invocations are ephemeral in Pi's text
+  // transcript, but must survive F5 in this tab, including their order.
+  const logKey = sessionId => 'lanternbot-view:' + location.origin + ':' + sessionId;
+  function persistChatLog() {
+    clearTimeout(S.logTimer);
+    S.logTimer = setTimeout(() => {
+      const list = q('#lanternChatMessages');
+      const sessionId = String(S.state?.sessionId || '');
+      if (!sessionId || !list) return;
+      try {
+        const nodes = [...list.children].slice(-500).map(el => ({
+          kind:el.classList.contains('lantern-chat-tool') ? 'tool' : 'message',
+          role:el.dataset.role || 'system',
+          text:el.textContent || '',
+          id:el.dataset.toolCallId || '',
+          error:el.dataset.error || '',
+        }));
+        const lastUser = [...nodes].reverse().find(x => x.role === 'user')?.text || '';
+        const raw = JSON.stringify({at:Date.now(),lastUser,nodes});
+        if (raw.length < 1500000) sessionStorage.setItem(logKey(sessionId),raw);
+      } catch { /* Private mode or quota limits: continue without local replay. */ }
+    },180);
+  }
+  function restoreChatLog(messages) {
+    const id = String(S.state?.sessionId || '');
+    if (!id) return false;
+    let snapshot;
+    try { snapshot = JSON.parse(sessionStorage.getItem(logKey(id)) || 'null'); }
+    catch { return false; }
+    if (!snapshot || Date.now() - snapshot.at > 7*86400000 ||
+        !Array.isArray(snapshot.nodes) || !snapshot.nodes.length) return false;
+    const lastUser = [...(Array.isArray(messages) ? messages : [])].reverse()
+      .find(m => m?.role === 'user');
+    if ((lastUser ? displayUserText(textContentOf(lastUser.content)) : '') !== snapshot.lastUser)
+      return false;
+    const list = q('#lanternChatMessages');
+    if (!list) return false;
+    list.textContent = '';
+    S.toolRows.clear();
+    S.assistant = null;
+    for (const item of snapshot.nodes) {
+      if (item.kind === 'tool') {
+        const node = create('div', 'lantern-chat-tool', String(item.text || ''));
+        node.dataset.toolCallId = String(item.id || '');
+        if (item.error) node.dataset.error = item.error;
+        list.append(node);
+        if (item.id) S.toolRows.set(item.id, node);
+      } else {
+        appendMessage(item.role || 'system', String(item.text || ''));
+      }
+    }
+    list.scrollTop = list.scrollHeight;
+    return true;
+  }
+
   function appendMessage(role, text, options = {}) {
     const list = q('#lanternChatMessages');
     if (!list) return null;
@@ -202,6 +264,7 @@
     if (options.streaming) node.classList.add('is-streaming');
     list.append(node);
     list.scrollTop = list.scrollHeight;
+    persistChatLog();
     return node;
   }
 
@@ -221,7 +284,8 @@
     for (const message of Array.isArray(messages) ? messages : []) {
       const role = roleOf(message);
       if (role === 'system') continue;
-      const text = textContentOf(message.content);
+      const raw = textContentOf(message.content);
+      const text = role === 'user' ? displayUserText(raw) : raw;
       if (text) {
         appendMessage(role, text);
         visible += 1;
@@ -461,6 +525,7 @@
     node.textContent += delta;
     const list = q('#lanternChatMessages');
     if (list) list.scrollTop = list.scrollHeight;
+    persistChatLog();
   }
 
   function assistantDelta(event) {
@@ -487,6 +552,8 @@
     list.append(row);
     list.scrollTop = list.scrollHeight;
     S.toolRows.set(id, row);
+    S.assistant = null; // subsequent assistant response must appear after tool calls
+    persistChatLog();
   }
 
   function renderToolEnd(event) {
@@ -497,6 +564,7 @@
     row.dataset.error = failed ? 'true' : 'false';
     const suffix = create('span', '', failed ? 'failed' : 'done');
     row.append(suffix);
+    persistChatLog();
   }
 
   function onBotEvent(event) {
@@ -507,7 +575,8 @@
       return;
     }
     if (typ === 'message_start' && event.message?.role === 'assistant') {
-      ensureAssistant();
+      // No placeholder before the tool events: render a reply only once
+      // there is real text to place on the timeline.
       return;
     }
     if (typ === 'message_update') {
@@ -519,6 +588,7 @@
       const text = textContentOf(event.message.content);
       const node = ensureAssistant();
       if (!node.textContent && text) node.textContent = text;
+      persistChatLog();
       const error = event.message.errorMessage;
       if (error && !node.textContent) node.textContent = 'LanternBot error: ' + error;
       return;
@@ -553,6 +623,7 @@
       S.usage = message.summary?.usage || {};
       renderModels(message.models || [], S.state, message.summary || {});
       renderHistory(message.messages || [], String(S.policy?.greeting || ''));
+      restoreChatLog(message.messages || []);
       setStreaming(Boolean(message.summary?.streaming));
       setAccess(S.authenticated !== false);
       setStatus('Ready');
@@ -575,8 +646,8 @@
         Boolean(message.final),
       )).then(() => {
         setStatus(message.final
-          ? 'LanternBot changes are pending review. Save to commit them.'
-          : 'LanternBot updated the working copy.');
+          ? 'LanternBot updated the real .md; Ctrl+S accepts the diff.'
+          : 'LanternBot changed the real .md.');
         refreshContextLabel();
       }).catch(error => {
         setStatus('LanternBot working-copy merge failed: ' + String(error?.message || error), 'error');
@@ -632,9 +703,6 @@
 
   async function prepareMarkdownTurn(context) {
     if (context?.kind !== 'markdown') return null;
-    if (globalThis.__lanternMdPaged?.active) {
-      throw new Error('LanternBot editing is not enabled for the section editor yet. Save or switch to Source first.');
-    }
     const editor = globalThis.__lanternMdVisual;
     if (!editor?.beginBotTurn) throw new Error('Markdown working-copy controller is unavailable');
     return await editor.beginBotTurn();

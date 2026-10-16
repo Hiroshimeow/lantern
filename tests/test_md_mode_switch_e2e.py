@@ -132,7 +132,7 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertFalse(any("lantern-crepe.min.js" in url for url in requests))
             area.fill(initial.replace("Three modes", "Three modes updated"))
             page.keyboard.press("Control+s")
-            page.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=14000)
+            page.wait_for_function("() => window.__lanternMdVisual?.state?.baseline.includes('Three modes updated') && document.documentElement.dataset.mdPendingHunks === '0'", timeout=18000)
             saved = path.read_text(encoding="utf-8")
             self.assertIn("Three modes updated", saved)
             self.assertIn("<!-- invisible comment -->", saved)
@@ -315,7 +315,7 @@ class MarkdownModesE2E(unittest.TestCase):
               return a.value.slice(0,a.selectionStart).split('\\n').length;
             }""")
             self.assertEqual(line, 203)
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertIn("Editor paragraph 100 unique content. UPDATED", path.read_text(encoding="utf-8"))
         finally:
             context.close()
 
@@ -350,7 +350,7 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertGreater(page.evaluate("scrollY"), 1000)
             self.assertLess(box["y"], 820)
             self.assertGreater(box["y"], 30)
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertIn("Source paragraph 100 changed by user.", path.read_text(encoding="utf-8"))
         finally:
             context.close()
 
@@ -389,7 +389,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 "() => !!window.__lanternMdVisual?.state?.workHash",
                 timeout=10000,
             )
-            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(target.read_text(encoding="utf-8"), source)
 
             # Put the Source viewport/caret back at the changed block before the
             # repeated mode switches.
@@ -436,7 +436,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 self.assertGreater(pos["line"], 200)
                 self.assertGreater(pos["top"], 800)
 
-            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(target.read_text(encoding="utf-8"), source)
             self.assertEqual(errors, [])
         finally:
             context.close()
@@ -544,13 +544,14 @@ class MarkdownModesE2E(unittest.TestCase):
             area.wait_for(timeout=16000)
             self.assertIn("appended", area.input_value())
             self.assertTrue(page.evaluate("window.__lanternMdVisual.state.dirty"))
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertIn("appended", path.read_text(encoding="utf-8"))
             page.keyboard.press("Control+s")
             page.locator(".md-visual-status").filter(has_text=re.compile(r"^Saved")).wait_for(timeout=13000)
             self.assertIn("appended", path.read_text(encoding="utf-8"))
         finally:
             context.close()
 
+    @unittest.skip('Old B-overwrites-A policy removed; replaced by live-CAS coverage.')
     def test_source_two_clients_explicit_second_save_rebases_and_wins(self):
         path = self.root / "conflict.md"
         path.write_text("# Clients\n\nOriginal\n", encoding="utf-8")
@@ -580,6 +581,7 @@ class MarkdownModesE2E(unittest.TestCase):
             context.close()
 
 
+    @unittest.skip('Old disk-rebase/Saved-baseline policy removed; replaced by live VS Code E2E.')
     def test_external_disk_edit_rebases_then_save_and_undo_becomes_pending_diff(self):
         path = self.root / "external-rebase.md"
         original = "# External\n\nOriginal disk text.\n"
@@ -687,13 +689,13 @@ class MarkdownModesE2E(unittest.TestCase):
             editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
             editor.wait_for(timeout=24000)
             self.assertIn("Uncommitted draft", editor.inner_text())
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.get_by_role("button", name="Preview", exact=True).click()
             page.locator("article.md-preview").wait_for(state="visible", timeout=13000)
             self.assertIn("Uncommitted draft", page.locator("article.md-preview").inner_text())
             self.assertEqual(len(navs), 1)
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for(timeout=14000)
@@ -751,31 +753,12 @@ class MarkdownModesE2E(unittest.TestCase):
             paragraph.click()
             page.keyboard.press("End")
             page.keyboard.type(" DRAFT")
-            page.wait_for_function("() => window.__lanternMdPaged.dirty", timeout=6000)
-            page.get_by_role("button", name="Source", exact=True).click()
             page.wait_for_function(
-                "() => (document.querySelector('.md-visual-status')?.textContent || '').includes('Save this section before switching')",
-                timeout=7000,
-            )
-            self.assertTrue(page.evaluate("window.__lanternMdPaged.active"))
-            self.assertFalse(page.get_by_role("textbox", name="Markdown source").count())
-            self.assertIn("DRAFT", page.locator(".md-visual-host .ProseMirror").inner_text())
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
-            page.get_by_role("button", name="Save", exact=True).click()
-            review = page.get_by_role("button", name="Accept changes & Save")
-            try:
-                review.wait_for(timeout=1500)
-                review.click()
-            except Exception:
-                pass  # No conversion review needed for a byte-safe section.
-            # Autosave may have completed while the mode switch was blocked:
-            # the disk source/version, not the status-label wording, is truth.
-            page.wait_for_function(
-                "() => { const p=window.__lanternMdPaged; "
-                "return !!p && !p.dirty && p.source.includes('DRAFT'); }",
-                timeout=16000,
-            )
+                "() => !!window.__lanternMdPaged && "
+                "window.__lanternMdPaged.source.includes('DRAFT') && "
+                "!window.__lanternMdPaged.saving", timeout=18000)
             self.assertIn("DRAFT", path.read_text(encoding="utf-8"))
+            # Dirty edits are already on the original: no Save gate or draft loss.
             page.get_by_role("button", name="Source", exact=True).click()
             page.get_by_role("textbox", name="Markdown source").wait_for(timeout=17000)
             self.assertIn("DRAFT", page.get_by_role("textbox", name="Markdown source").input_value())
@@ -882,7 +865,7 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Preview", exact=True).click()
             page.locator("article.md-preview").wait_for(state="visible", timeout=12000)
             self.assertIn("UNSAVED-CACHE-MARKER", page.locator("article.md-preview").inner_text())
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
             self.assertEqual(prompts, [])
 
             work = page.evaluate("""async () => {
@@ -891,7 +874,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 return await r.json();
             }""")
             self.assertEqual(work["state"], "pending")
-            self.assertEqual(work["work"]["content"], draft)
+            self.assertEqual(work["work"]["content"].replace("\r\n", "\n"), draft)
 
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for()
@@ -975,6 +958,28 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertTrue(page.evaluate(
                 "() => window.__lanternMdPaged.currentText() !== window.__lanternMdPaged.lastSaved"),
                 "Changing editor text must be treated as unsaved even if the dirty flag races")
+            # Milkdown's non-lossless conversion requires explicit review;
+            # approve the format conversion, then exercise the failed write.
+            review=page.locator('dialog.md-format-review')
+            review.wait_for(state='visible',timeout=13000)
+            review.get_by_role('button',name='Accept changes & Save').click()
+            review.wait_for(state='detached',timeout=10000)
+            # A failed write must not discard this section or close the editor.
+            page.get_by_role("button",name="Preview",exact=True).click()
+            page.wait_for_function(
+                "() => !!window.__lanternMdPaged?.active && "
+                "!window.__lanternMdPaged.saving",timeout=12000)
+            self.assertIn("UNSAVED-PAGED-MARKER",
+                          page.locator("#md-paged-edit-host").inner_text())
+            self.assertEqual(path.read_text(encoding="utf-8"),original)
+            # Restore the network, and prove close writes the real file and
+            # clears the recovery cache instead of asking to discard work.
+            page.unroute("**/api/md/save")
+            page.get_by_role("button",name="Save",exact=True).click()
+            page.wait_for_function(
+                "() => !!window.__lanternMdPaged?.source.includes('UNSAVED-PAGED-MARKER')"
+                " && !window.__lanternMdPaged.saving",timeout=17000)
+            self.assertIn("UNSAVED-PAGED-MARKER",path.read_text(encoding="utf-8"))
             page.get_by_role("button",name="Preview",exact=True).click()
             page.locator("article.md-preview").wait_for(state="visible",timeout=12000)
             cached=page.evaluate("""key=>new Promise(resolve=>{
@@ -986,8 +991,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 };
             })""",arg=key)
             self.assertIsNone(cached)
-            self.assertEqual(path.read_text(encoding="utf-8"),original)
-            self.assertEqual(len(prompts),1)
+            self.assertEqual(prompts,[])
         finally:
             context.close()
 
@@ -1031,7 +1035,7 @@ class MarkdownModesE2E(unittest.TestCase):
             # Old autosave fired at about 2.4 seconds. Waiting longer proves that
             # typing now persists only to the local recovery draft, not disk.
             page.wait_for_timeout(3400)
-            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertEqual(path.read_text(encoding="utf-8"), changed)
             self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
 
             page.keyboard.press("Control+S")
@@ -1089,7 +1093,7 @@ class MarkdownModesE2E(unittest.TestCase):
             # Diff chrome is outside the draft value and never serializes.
             self.assertEqual(source.input_value(), changed)
             self.assertNotIn("Removed near line", source.input_value())
-            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertEqual(path.read_text(encoding="utf-8"), changed)
 
             page.keyboard.press("Control+S")
             page.wait_for_function(
@@ -1106,6 +1110,7 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    @unittest.skip('Private Pi staging removed; replaced by native real-path bot tests.')
     def test_pi_working_copy_merges_with_human_typing_without_touching_disk(self):
         initial = "# Pi merge\nalpha\nbeta\ngamma\nomega\n"
         path = self.root / "pi-working-merge.md"
@@ -1204,19 +1209,20 @@ class MarkdownModesE2E(unittest.TestCase):
                 "() => !!window.__lanternMdVisual?.state?.workHash",
                 timeout=10000,
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.get_by_role("button", name="Edit visually", exact=True).click()
             editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
             editor.wait_for(timeout=24000)
             self.assertIn("Pending paragraph.", editor.inner_text())
-            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
             self.assertEqual(page.evaluate("() => window.__lanternMdVisual.state.mode"), "visual")
             self.assertTrue(page.evaluate("() => !!window.__lanternMdVisual.state.workHash"))
             self.assertEqual(errors, [])
         finally:
             context.close()
 
+    @unittest.skip('Old Save-commits-real expectation removed; replaced by live real/md_temp E2E.')
     def test_external_disk_edit_visual_save_then_undo_is_pending(self):
         original = "# External Visual\n\nOriginal text.\n"
         external = "# External Visual\n\nVS Code changed this file.\n"
@@ -1309,7 +1315,7 @@ class MarkdownModesE2E(unittest.TestCase):
             )
             current = page.evaluate("() => window.__lanternMdVisual.state.instance.getMarkdown()")
             self.assertNotIn("Editable paragraph. NEW", current)
-            self.assertEqual(path.read_text(encoding="utf-8"), saved)
+            self.assertNotIn("Editable paragraph. NEW", path.read_text(encoding="utf-8"))
             self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
             self.assertEqual(errors, [])
         finally:
@@ -1348,7 +1354,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 "() => !!window.__lanternMdVisual?.state?.workHash",
                 timeout=10000,
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.get_by_role("button", name="Edit visually", exact=True).click()
             editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
@@ -1386,7 +1392,7 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertEqual(serialized, draft)
             self.assertNotIn("Old value.", serialized)
             self.assertNotIn("md-visual-diff", serialized)
-            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             tail = editor.locator("p").filter(has_text="Tail block.").first
             tail.click()
@@ -1402,7 +1408,7 @@ class MarkdownModesE2E(unittest.TestCase):
             )
             self.assertIn("Tail block. HUMAN", edited)
             self.assertNotIn("Old value.", edited)
-            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+            self.assertIn("Tail block. HUMAN", path.read_text(encoding="utf-8"))
 
             page.keyboard.press("Control+s")
             page.wait_for_function(
@@ -1455,7 +1461,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 "() => !!window.__lanternMdVisual?.state?.workHash",
                 timeout=10000,
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.get_by_role("button", name="Preview", exact=True).click()
             article = page.locator("article.md-preview")
@@ -1476,7 +1482,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 int(page.evaluate("() => document.documentElement.dataset.mdPendingHunks || '0'")),
                 0,
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.reload(wait_until="domcontentloaded")
             article = page.locator("article.md-preview")
@@ -1487,7 +1493,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 "Delete me.",
                 "\n".join(page.locator("article.md-preview .md-preview-deletion").all_inner_texts()),
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.get_by_role("button", name="Source", exact=True).click()
             source = page.get_by_role("textbox", name="Markdown source")
@@ -1531,19 +1537,19 @@ class MarkdownModesE2E(unittest.TestCase):
                 "() => !!window.__lanternMdVisual?.state?.workHash",
                 timeout=10000,
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
             work = page.evaluate("""async () => {
                 const r=await fetch('/api/work?p='+encodeURIComponent('working-copy-preview.md'),
                   {cache:'no-store'});
                 return await r.json();
             }""")
             self.assertEqual(work["state"], "pending")
-            self.assertEqual(work["work"]["content"], draft)
+            self.assertEqual(work["work"]["content"].replace("\r\n", "\n"), draft)
 
             page.get_by_role("button", name="Preview", exact=True).click()
             page.get_by_role("heading", name="Working copy changed").wait_for(timeout=12000)
             self.assertIn("Pending body", page.locator("article.md-preview").inner_text())
-            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
 
             page.get_by_role("button", name="Source", exact=True).click()
             source.wait_for(timeout=12000)

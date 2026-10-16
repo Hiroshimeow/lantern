@@ -179,6 +179,8 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
                     page.get_by_role('button',name='Edit visually').click()
                     table=page.locator('.md-visual-host .milkdown-table-block table.children')
                     table.wait_for(timeout=35000)
+                    self.assertEqual(target.read_bytes(),source.encode(),
+                        'Opening Visual must not rewrite source formatting')
                     metrics=page.evaluate('''() => {
                       const root=document.querySelector('.md-visual-host .milkdown-table-block');
                       const scroller=root.querySelector('.table-wrapper');
@@ -219,14 +221,29 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
                       return {left:x.scrollLeft,max:x.scrollWidth-x.clientWidth};
                     }""")
                     self.assertLessEqual(abs(scroll_after_add['max']-scroll_after_add['left']),6,scroll_after_add)
+                    # Wide GFM tables are not round-trip byte safe in Milkdown.
+                    # Explicitly approve the conversion once; edits afterward
+                    # continue writing the real .md without repeat dialogs.
+                    review=page.locator('dialog.md-format-review')
+                    review.wait_for(state='visible',timeout=10000)
+                    review.get_by_role('button',name='Accept conversion & Save').click()
+                    review.wait_for(state='detached',timeout=8000)
 
                     # Lantern exposes stable table actions instead of depending on
                     # Milkdown's transient drag-handle popover, which is replaced
                     # during wide-table re-renders.
                     last_header=page.locator('.md-visual-host .milkdown-table-block th').last
                     hbox=last_header.bounding_box();self.assertIsNotNone(hbox)
-                    page.mouse.click(hbox['x']+hbox['width']/2,hbox['y']+hbox['height']/2)
+                    point={'x':hbox['x']+hbox['width']/2,'y':hbox['y']+hbox['height']/2}
+                    page.mouse.click(point['x'],point['y'])
                     tools=page.locator('.md-table-tools')
+                    details=page.evaluate("""p=>({
+                      hit:document.elementFromPoint(p.x,p.y)?.outerHTML.slice(0,200),
+                      toolHidden:document.querySelector('.md-table-tools')?.hidden,
+                      actions:document.querySelectorAll('.md-visual-hunk-actions').length,
+                      lastHeader:document.querySelector('.md-visual-host .milkdown-table-block th:last-child')?.outerHTML.slice(0,200)
+                    })""",point)
+                    self.assertFalse(page.locator('.md-table-tools').evaluate('e=>e.hidden'),details)
                     tools.wait_for(state='visible',timeout=7000)
                     self.assertTrue(tools.get_by_role('button',name='− Col',exact=True).is_visible())
                     tools.get_by_role('button',name='− Col',exact=True).click(timeout=7000)
@@ -253,8 +270,10 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
                         arg=rows_before,timeout=7000)
                     self.assertEqual(errors,[])
                 finally:context.close()
-        # Changes above remain local drafts unless explicitly saved.
-        self.assertEqual(target.read_bytes(),source.encode())
+        # User table actions modify the real source, while the md_temp
+        # comparison checkpoint remains the original bytes until Ctrl+S.
+        self.assertIn('Column_29',target.read_text(encoding='utf-8'))
+        self.assertIn('No data should change',target.read_text(encoding='utf-8'))
 
     def test_preview_anchor_to_source_line_and_visual_block(self):
         source=('# Start\n\nParagraph alpha.\n\n## Middle\n\nUnique alpha section text.\n\n## Ending\n\nEnd of document.\n'

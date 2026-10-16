@@ -46,7 +46,7 @@
   // browser tests and for the common save/draft path in either editor.
   const view = {
     mode: 'preview', get active() { return this.mode === 'visual' || this.mode === 'source'; },
-    loading: false, instance: null, version: null,
+    loading: false, instance: null, version: null, currentVersion: null,
     dirty: false, revision: 0, savedRevision: 0, saving: false, conflict: false,
     baseline: '', lastSaved: '', roundtripSafe: false, approvedReformat: false,
     draftTimer: 0, diffTimer: 0, checkTimer: 0, host: null, status: null,
@@ -132,12 +132,101 @@
     if (!view.sourceArea || !view.sourceBackdrop) return;
     view.sourceBackdrop.style.transform =
       'translate(' + (-view.sourceArea.scrollLeft) + 'px,' + (-view.sourceArea.scrollTop) + 'px)';
+    if (view.sourceDeletions) {
+      const area = view.sourceArea;
+      const style = getComputedStyle(area);
+      const lineHeight = parseFloat(style.lineHeight) || 21;
+      const paddingTop = parseFloat(style.paddingTop) || 16;
+      for (const row of view.sourceDeletions.children) {
+        const at = Number(row.dataset.line) * lineHeight + paddingTop - area.scrollTop;
+        row.hidden = at < 0 || at > area.clientHeight - 32;
+        row.style.top = at + 'px';
+      }
+    }
   };
+  const hunkButtons = index => {
+    const group = document.createElement('span');
+    group.className = 'md-hunk-actions';
+    for (const [action, label] of [['accept', '✓ Accept'], ['undo', '↶ Undo']]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'md-hunk-button';
+      button.textContent = label;
+      button.title = action === 'accept'
+        ? 'Accept only this change into md_temp'
+        : 'Restore only this change in the real project .md';
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        void actionHunk(index, action);
+      });
+      group.append(button);
+    }
+    return group;
+  };
+  const actionHunk = async (index, action) => {
+    if (view.saving || view.loading || view.piTurn) {
+      status('Wait for the current operation before changing a diff hunk.', 'warn');
+      return;
+    }
+    if (view.active && !(await saveDraft())) return;
+    try {
+      const state = await fetchWorkState();
+      if (!state.saved || state.currentVersion !== view.currentVersion ||
+          state.saved.version !== view.version) {
+        await refreshDiskBaseline();
+        status('File changed elsewhere; review refreshed diff before applying an action.', 'warn');
+        return;
+      }
+      const before = state.saved.content;
+      const real = state.work?.content ?? before;
+      const h = diffApi()?.diffLines(before, real)[index];
+      if (!h) return;
+      const lines = text => String(text).replace(/\r\n?/g, '\n').split('\n');
+      let next;
+      if (action === 'accept') {
+        const baseLines = lines(before);
+        next = [...baseLines.slice(0, h.baseStart), ...h.draftText, ...baseLines.slice(h.baseEnd)].join('\n');
+        await api('/api/work/accept-hunk', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            path, content:next, expectSavedVersion:state.saved.version,
+            expectCurrentVersion:state.currentVersion,
+          }),
+        });
+      } else {
+        const realLines = lines(real);
+        next = [...realLines.slice(0, h.draftStart), ...h.baseText, ...realLines.slice(h.draftEnd)].join('\n');
+        await api('/api/work/write', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            path, content:next, expectHash:state.work?.hash || null,
+            baseVersion:state.saved.version,
+          }),
+        });
+      }
+      const fresh = await fetchWorkState();
+      adoptSavedBaseline(fresh);
+      view.currentVersion = fresh.currentVersion;
+      view.workHash = fresh.work?.hash || null;
+      view.workState = fresh.state;
+      const current = fresh.work?.content ?? fresh.saved.content;
+      view.ackedText = current;
+      view.lastSaved = current;
+      if (view.active) await applyWorkingText(current, view.workHash, {backed:true});
+      else await renderDraftPreview(current);
+      status(action === 'accept'
+        ? 'Accepted this hunk into md_temp; other diff hunks remain.'
+        : 'Reverted this hunk in the real .md; other edits remain.', 'info');
+    } catch (error) {
+      status('Diff action refused: ' + error.message, 'error');
+    }
+  };
+
   const renderSourceDiff = (hunks, draftText) => {
     if (!view.sourceArea || !view.sourceBackdrop || !view.sourceDeletions) return;
     const lines = String(draftText || '').replace(/\r\n?/g, '\n').split('\n');
     const classes = Array.from({length: Math.max(1, lines.length)}, () => new Set());
-    const deletions = [];
+
     for (const hunk of hunks) {
       if (hunk.kind === 'add' || hunk.kind === 'mod') {
         for (let i = hunk.draftStart; i < hunk.draftEnd; i++) {
@@ -147,7 +236,7 @@
       if (hunk.baseText?.length) {
         const at = Math.max(0, Math.min(classes.length - 1, hunk.draftStart));
         classes[at].add('md-diff-delete-anchor');
-        deletions.push(hunk);
+
       }
     }
     view.sourceBackdrop.textContent = '';
@@ -160,25 +249,26 @@
     }
     view.sourceBackdrop.append(fragment);
     view.sourceDeletions.textContent = '';
-    for (const hunk of deletions) {
+    for (const [index, hunk] of hunks.entries()) {
       const row = document.createElement('div');
       row.className = 'md-source-deletion';
-      const label = document.createElement('span');
-      label.className = 'md-source-deletion-label';
-      label.textContent = 'Removed near line ' + (hunk.draftStart + 1);
-      const old = document.createElement('pre');
-      old.textContent = hunk.baseText.join('\n');
-      row.append(label, old);
+      row.dataset.line = String(hunk.draftStart);
+      const old = document.createElement('span');
+      old.className = 'md-source-deletion-text';
+      old.textContent = hunk.baseText?.length
+        ? '− ' + hunk.baseText.join(' ↵ ') : '+ ' + hunk.draftText.join(' ↵ ');
+      old.title = old.textContent;
+      row.append(old, hunkButtons(index));
       view.sourceDeletions.append(row);
     }
-    view.sourceDeletions.hidden = !deletions.length;
+    view.sourceDeletions.hidden = !hunks.length;
     syncSourceBackdrop();
   };
   const clearPreviewDiff = () => {
     for (const node of preview.querySelectorAll('.md-preview-diff-add,.md-preview-diff-mod')) {
       node.classList.remove('md-preview-diff-add', 'md-preview-diff-mod');
     }
-    for (const ghost of preview.querySelectorAll('.md-preview-deletion')) ghost.remove();
+    for (const ghost of preview.querySelectorAll('.md-preview-deletion,.md-preview-hunk-actions')) ghost.remove();
   };
 
   const renderPreviewDiff = (hunks, draftText) => {
@@ -195,7 +285,7 @@
       blocks[i].end = i + 1 < blocks.length ? blocks[i + 1].line : lineCount;
     }
 
-    for (const hunk of hunks) {
+    for (const [index, hunk] of hunks.entries()) {
       if ((hunk.kind === 'add' || hunk.kind === 'mod') && hunk.draftEnd > hunk.draftStart) {
         for (const block of blocks) {
           if (block.line < hunk.draftEnd && block.end > hunk.draftStart) {
@@ -215,11 +305,41 @@
         const old = document.createElement('div');
         old.className = 'md-preview-deletion-text';
         old.textContent = hunk.baseText.join('\n');
-        ghost.append(old);
+        ghost.append(old, hunkButtons(index));
         const anchor = blocks.find(block => block.line >= hunk.draftStart)?.node || null;
         if (anchor) anchor.insertAdjacentElement('beforebegin', ghost);
         else preview.append(ghost);
+      } else {
+        const toolbar = document.createElement('div');
+        toolbar.className = 'md-preview-hunk-actions';
+        toolbar.append(hunkButtons(index));
+        const anchor = blocks.find(block => block.line >= hunk.draftStart)?.node || null;
+        if (anchor) anchor.insertAdjacentElement('beforebegin', toolbar);
+        else preview.append(toolbar);
       }
+    }
+  };
+
+  // Keep controls out of ProseMirror's editable DOM. An exact source-line
+  // proof locates each toolbar; unproved blocks get actions in the fallback
+  // panel, never an arbitrary nearby row.
+  const clearVisualHunkTools = () => {
+    view.host?.querySelectorAll('.md-visual-hunk-actions').forEach(node => node.remove());
+  };
+  const showVisualHunkTools = hunks => {
+    clearVisualHunkTools();
+    const host = view.host?.querySelector('.md-visual-host');
+    if (!host || typeof view.instance?.sourceBlockAtLine !== 'function') return;
+    const rect = host.getBoundingClientRect();
+    for (const [index, hunk] of hunks.entries()) {
+      const block = view.instance.sourceBlockAtLine(hunk.draftStart + 1);
+      if (!block || !host.contains(block)) continue;
+      const blockRect = block.getBoundingClientRect();
+      const toolbar = document.createElement('div');
+      toolbar.className = 'md-visual-hunk-actions';
+      toolbar.style.top = (blockRect.top - rect.top) + 'px';
+      toolbar.append(hunkButtons(index));
+      host.append(toolbar);
     }
   };
 
@@ -240,18 +360,21 @@
     note.textContent = changed.length +
       ' pending Markdown change(s). Exact Visual positions are unavailable; Preview/Source shows them precisely.';
     panel.append(note);
-    for (const hunk of changed) {
-      if (!Array.isArray(hunk.baseText) || !hunk.baseText.length) continue;
-      const ghost = document.createElement('div');
-      ghost.className = 'md-visual-fallback-deletion';
-      ghost.dataset.mdDiffGhost = 'true';
-      ghost.textContent = hunk.baseText.join('\n');
-      panel.append(ghost);
+    for (const [index, hunk] of hunks.entries()) {
+      const group = document.createElement('div');
+      group.className = 'md-visual-fallback-deletion';
+      group.dataset.mdDiffGhost = 'true';
+      const original = document.createElement('span');
+      original.textContent = Array.isArray(hunk.baseText) && hunk.baseText.length
+        ? hunk.baseText.join('\n') : 'Added content';
+      group.append(original, hunkButtons(index));
+      panel.append(group);
     }
   };
 
   const renderVisualDiff = (hunks, draftText) => {
     if (!view.instance) return;
+    clearVisualHunkTools();
     if (!hunks.length) {
       view.instance.clearPendingDiff?.();
       if (view.visualDiffFallback) {
@@ -272,6 +395,7 @@
         view.visualDiffFallback.hidden = true;
         view.visualDiffFallback.textContent = '';
       }
+      showVisualHunkTools(hunks);
       document.documentElement.dataset.mdVisualDiff =
         result.unanchored ? 'mapped-partial' : 'mapped';
       return;
@@ -283,7 +407,10 @@
   const renderDraftDiff = () => {
     const diff = diffApi();
     if (!diff || !view.instance) return [];
-    const text = getEditorText();
+    const editorText = getEditorText();
+    // Visual serialization can reformat a complex Markdown table without a
+    // human edit. Pending diff compares md_temp to the real project bytes.
+    const text = matchesLastSaved(editorText) ? view.ackedText : editorText;
     const hunks = diff.diffLines(diffBaseline(), text);
     view.hunks = hunks;
     if (view.mode === 'source') renderSourceDiff(hunks, text);
@@ -299,43 +426,74 @@
 
   const adoptSavedBaseline = state => {
     if (!state?.saved) return false;
-    view.version = state.saved.version;
+    view.version = state.saved.version; // md_temp, not the project .md
     view.baseline = state.saved.content;
-    view.lastSaved = state.saved.content;
     view.workState = state.state || (state.work ? 'pending' : 'clean');
-    // An external disk update is a new comparison baseline, not a lock.
-    // Missing files and stale working copies remain real conflicts.
-    view.conflict = state.state === 'missing';
-    view.dirty = !!view.instance &&
-      cleanLineEndings(getEditorText()) !== cleanLineEndings(view.baseline);
+    view.conflict = false;
+    if (view.active && view.instance)
+      view.dirty = cleanLineEndings(getEditorText()) !== cleanLineEndings(view.baseline);
     renderDraftDiff();
     return true;
   };
 
+  // A project .md may also be edited in VS Code. Poll its real version,
+  // refreshing the preview/editor without silently overwriting local typing.
+  let refreshingReal = false;
   const refreshDiskBaseline = async ({quiet = false} = {}) => {
-    if (!view.active || !view.instance || view.saving || view.piTurn) return false;
-    let state;
-    try { state = await fetchWorkState(); }
-    catch { return false; }
-    if (!state?.saved || state.saved.version === view.version) return false;
-    const serverHash = state.work?.hash || null;
-    if (serverHash !== (view.workHash || null)) {
-      view.conflict = true;
-      if (!quiet) status('Another Lantern working copy changed. Your editor text is retained.', 'error');
+    if (refreshingReal || view.loading || view.saving || view.piTurn || document.hidden) return false;
+    refreshingReal = true;
+    try {
+      const state = await fetchWorkState();
+      if (!state?.saved) return false;
+      const currentVersion = state.currentVersion;
+      const realText = state.work?.content ?? state.saved.content;
+      if (currentVersion === view.currentVersion && state.saved.version === view.version)
+        return false;
+      const prevReal = view.ackedText;
+      const local = view.active && view.instance ? getEditorText() : prevReal;
+      const locallyEdited = view.active && view.instance && !matchesLastSaved(local);
+      if (locallyEdited && currentVersion !== view.currentVersion) {
+        // No blind overwrite. Conflicting human/bot/VS Code hunks remain in
+        // the browser recovery copy until the user resolves them.
+        const merge = diffApi()?.merge3(prevReal, local, realText);
+        if (!merge || merge.conflicts?.length) {
+          view.conflict = true;
+          status('File changed in VS Code/LanternBot while you typed. Local text is retained; resolve overlapping edits in Source.', 'warn');
+          await drafts.write(local).catch(() => {});
+          return false;
+        }
+        adoptSavedBaseline(state);
+        view.currentVersion = currentVersion;
+        view.workHash = state.work?.hash || null;
+        view.lastSaved = realText;
+        view.ackedText = realText;
+        await applyWorkingText(merge.text, view.workHash, {backed: false});
+        return flushWorkingCopy(merge.text);
+      }
+      adoptSavedBaseline(state);
+      view.currentVersion = currentVersion;
+      view.workHash = state.work?.hash || null;
+      view.lastSaved = realText;
+      view.ackedText = realText;
+      if (view.active && view.instance) {
+        await applyWorkingText(realText, view.workHash, {backed: true});
+      } else {
+        await renderDraftPreview(realText);
+      }
+      if (!quiet) status('Project .md changed externally. Diff reflects the live file.', 'info');
+      return true;
+    } catch (error) {
+      if (!quiet) console.warn('Cannot refresh Markdown from disk:', error);
       return false;
+    } finally {
+      refreshingReal = false;
     }
-    adoptSavedBaseline(state);
-    if (!quiet) {
-      status('File changed outside Lantern. Diff now uses the latest disk version; Ctrl+S or Save will commit your current working copy.', 'warn');
-    }
-    return true;
   };
 
   const beginBotTurn = async () => {
-    if (globalThis.__lanternMdPaged?.active) {
-      throw new Error('LanternBot editing is not enabled while the section editor is active. Save or return to Source first.');
-    }
     if (view.piTurn) throw new Error('A LanternBot Markdown turn is already active');
+    if (globalThis.__lanternMdPaged?.active)
+      await globalThis.__lanternMdPaged.beginBotTurn();
 
     let base;
     if (view.active && view.instance) {
@@ -346,8 +504,9 @@
       if (!state.saved) throw new Error('Saved Markdown file is unavailable');
       base = state.work?.content ?? state.saved.content;
       view.version = state.saved.version;
+      view.currentVersion = state.currentVersion;
       view.baseline = state.saved.content;
-      view.lastSaved = state.saved.content;
+      view.lastSaved = base;
       view.workHash = state.work?.hash || null;
       view.workState = state.state || (view.workHash ? 'pending' : 'clean');
       view.ackedText = base;
@@ -359,12 +518,13 @@
       base: String(base ?? ''),
       expectedRevision: view.revision,
     };
-    status('LanternBot is editing the working copy. You may keep typing; overlapping changes keep your text.', 'info');
+    status('LanternBot edits the real .md. The md_temp baseline is unchanged until Ctrl+S.', 'info');
     return view.workHash || null;
   };
 
   const cancelBotTurn = () => {
     view.piTurn = null;
+    globalThis.__lanternMdPaged?.cancelBotTurn?.();
   };
 
   const replaceTextareaText = (area, nextText) => {
@@ -409,7 +569,10 @@
     }
     view.workHash = hash || null;
     view.workState = view.workHash ? 'pending' : 'clean';
-    if (backed) view.ackedText = next;
+    if (backed) {
+      view.ackedText = next;
+      view.lastSaved = view.mode === 'visual' ? getEditorText() : next;
+    }
     view.dirty = cleanLineEndings(next) !== cleanLineEndings(view.baseline);
     renderDraftDiff();
   };
@@ -418,6 +581,11 @@
     if (String(eventPath || '').replace(/\\/g, '/') !== String(path || '').replace(/\\/g, '/')) return;
     const turn = view.piTurn;
     if (!turn) return;
+    if (globalThis.__lanternMdPaged?.active) {
+      await globalThis.__lanternMdPaged.onBotWorkChanged(final);
+      if (final) view.piTurn = null;
+      return;
+    }
     const state = await fetchWorkState();
     if (!state.saved) throw new Error('Saved Markdown file is unavailable');
     const piText = state.work?.content ?? state.saved.content;
@@ -426,9 +594,10 @@
     const humanChanged = view.active && view.revision !== turn.expectedRevision;
 
     if (!final) {
+      view.currentVersion = state.currentVersion;
       view.workHash = serverHash;
       view.workState = state.state || (serverHash ? 'pending' : 'clean');
-      if (!humanChanged && view.mode !== 'visual') {
+      if (!humanChanged) {
         await applyWorkingText(piText, serverHash, { backed: true });
         turn.expectedRevision = view.revision;
       }
@@ -437,15 +606,17 @@
 
     clearTimeout(view.draftTimer);
     view.piTurn = null;
+    view.currentVersion = state.currentVersion;
     if (!humanChanged) {
       await applyWorkingText(piText, serverHash, { backed: true });
-      status('LanternBot changes are pending review. Press Ctrl+S or Save to commit.', 'info');
+      status('LanternBot updated the real .md. Ctrl+S accepts it as the comparison baseline.', 'info');
       return;
     }
 
     view.workHash = serverHash;
     view.workState = state.state || (serverHash ? 'pending' : 'clean');
     view.ackedText = piText;
+    view.lastSaved = piText;
     const diff = diffApi();
     if (!diff) throw new Error('Markdown diff engine is unavailable');
     let merged = humanText;
@@ -465,99 +636,114 @@
       status('LanternBot finished; ' + conflicts.length +
         ' overlapping hunk(s) were skipped because your newer text wins.', 'warn');
     } else if (appliedPiHunks) {
-      status('LanternBot changes merged with your typing and remain pending Save.', 'info');
+      status('LanternBot changes merged into the real .md; diff remains visible.', 'info');
     } else {
       status('Your newer typing is preserved; LanternBot made no additional non-overlapping changes.', 'info');
     }
   };
 
+  // Every edit goes to the project .md, not md_temp. A CAS rejects writes
+  // based on stale file versions (VS Code, bot, or another browser).
+  let writingReal = null;
   const flushWorkingCopy = async (text = getEditorText()) => {
     if (!view.version) return false;
-    try {
-      const result = await api('/api/work/write', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path,
-          content: text,
-          expectHash: view.workHash || null,
-          baseVersion: view.version,
-        }),
-      });
-      view.workHash = result.hash || null;
-      view.workState = result.state || (view.workHash ? 'pending' : 'clean');
-      view.ackedText = text;
-      await drafts.clear().catch(() => {});
-      return true;
-    } catch (error) {
+    if (view.piTurn) {
       await drafts.write(text).catch(() => {});
-      if (error.status === 409) {
-        if (error.data?.reason === 'pi_turn') {
-          status('LanternBot is editing this draft. Your newer typing is held locally and will flush after it finishes.', 'warn');
-        } else if (error.data?.reason === 'base_changed') {
-          try {
-            const state = await fetchWorkState();
-            const serverHash = state.work?.hash || null;
-            if (state.saved && serverHash === (view.workHash || null)) {
-              adoptSavedBaseline(state);
-              const retry = await api('/api/work/write', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  path,
-                  content: text,
-                  expectHash: view.workHash || null,
-                  baseVersion: view.version,
-                }),
-              });
-              view.workHash = retry.hash || null;
-              view.workState = retry.state || (view.workHash ? 'pending' : 'clean');
-              view.ackedText = text;
-              view.conflict = false;
-              await drafts.clear().catch(() => {});
-              status('Disk changed outside Lantern. Your working copy was rebased to the latest saved version.', 'warn');
-              return true;
-            }
-          } catch {
-            // Fall through to the stale-working-copy conflict below.
-          }
-          view.conflict = true;
-          status('Another Lantern working copy changed. Your editor text is retained.', 'error');
-        } else {
-          view.conflict = true;
-          status('Another Lantern working copy changed. Your editor text is retained.', 'error');
-        }
-      } else {
-        status('Working-copy sync failed. Your newer typing is kept in this browser.', 'error');
-      }
+      status('LanternBot is editing the real .md; your typing will merge when its turn ends.', 'warn');
       return false;
     }
+    if (writingReal) {
+      await writingReal;
+      if (view.active && view.instance && matchesLastSaved(getEditorText())) return true;
+      text = view.active && view.instance ? getEditorText() : text;
+    }
+    if (text === view.lastSaved) return true;
+    if (view.mode === 'visual' && !view.roundtripSafe && !view.approvedReformat) {
+      if (!await showReformatReview()) {
+        status('Markdown conversion cancelled; local edit kept for recovery.', 'warn');
+        await drafts.write(text).catch(() => {});
+        return false;
+      }
+      view.approvedReformat = true;
+    }
+
+    const put = (bodyText, hash, version) => api('/api/work/write', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path, content:bodyText, expectHash:hash, baseVersion:version}),
+    });
+    const task = (async () => {
+      try {
+        let persistedText = text;
+        let result;
+        try {
+          result = await put(text, view.workHash || null, view.version);
+        } catch (error) {
+          if (error.status !== 409) throw error;
+          const state = await fetchWorkState();
+          if (!state.saved) throw error;
+          const actual = state.work?.content ?? state.saved.content;
+          const merge = diffApi()?.merge3(view.ackedText, text, actual);
+          if (!merge || merge.conflicts?.length) {
+            view.conflict = true;
+            status('Real .md changed concurrently. Overlapping edits are kept locally; no overwrite.', 'error');
+            await drafts.write(text).catch(() => {});
+            return false;
+          }
+          adoptSavedBaseline(state);
+          view.currentVersion = state.currentVersion;
+          view.workHash = state.work?.hash || null;
+          view.ackedText = actual;
+          persistedText = merge.text;
+          result = await put(persistedText, view.workHash, view.version);
+          if (persistedText !== text) await applyWorkingText(persistedText, view.workHash, {backed:false});
+        }
+        view.workHash = result.hash || null;
+        view.currentVersion = result.currentVersion;
+        view.workState = result.state;
+        view.ackedText = persistedText;
+        view.lastSaved = persistedText;
+        view.conflict = false;
+        view.dirty = cleanLineEndings(persistedText) !== cleanLineEndings(view.baseline);
+        await drafts.clear().catch(() => {});
+        renderDraftDiff();
+        return true;
+      } catch (error) {
+        await drafts.write(text).catch(() => {});
+        status('Cannot update project .md: ' + error.message + '. Local edit retained.', 'error');
+        return false;
+      }
+    })();
+    writingReal = task;
+    try { return await task; }
+    finally { if (writingReal === task) writingReal = null; }
   };
   const saveDraft = async () => {
     if (!view.active || !view.instance) return true;
     const text = getEditorText();
+    if (view.piTurn) {
+      await drafts.write(text).catch(() => {});
+      return false;
+    }
     if (view.saving) {
       await drafts.write(text).catch(() => {});
-      return true;
+      return false;
     }
-    if (matchesLastSaved(text) && !view.workHash) {
-      view.ackedText = text;
-      await drafts.clear().catch(() => {});
-      return true;
-    }
+    if (matchesLastSaved(text)) return true;
     return flushWorkingCopy(text);
   };
   const queueDraft = () => {
     clearTimeout(view.draftTimer);
-    view.draftTimer = setTimeout(saveDraft, 900);
+    view.draftTimer = setTimeout(() => { void saveDraft(); }, 110);
   };
   const changed = () => {
     if (!view.active || view.applyingPi) return;
     view.dirty = true;
     view.revision += 1;
-    status(view.conflict ? 'Conflict: your draft is preserved; do not overwrite another client.' :
+    status(view.conflict ? 'Concurrent file edit: reviewing changes before writing.' :
       !view.roundtripSafe && !view.approvedReformat
-      ? 'Formatting differs from source. Review before saving.' : 'Unsaved changes — press Ctrl+S or Save to commit.',
+      ? 'Visual Markdown conversion requires review before writing the real .md.' :
+      'Updating project .md automatically; Ctrl+S accepts the diff baseline.',
       view.conflict ? 'error' : 'info');
     // Milkdown features may issue internal document transactions after mount.
     // Compare the actual Markdown after a brief idle gap; only semantic source
@@ -567,17 +753,17 @@
     view.checkTimer = setTimeout(() => {
       if (!view.active || !view.instance || observedRevision !== view.revision) return;
       if (matchesLastSaved(getEditorText())) {
-        view.dirty = false;
+        view.dirty = cleanLineEndings(getEditorText()) !== cleanLineEndings(view.baseline);
         queueDraft();
         renderDraftDiff();
         if (!view.conflict && !view.saving) status(view.roundtripSafe ?
           'Ready. No pending changes.' :
-          'Visual editing ready. Formatting differs; review required before Save.');
+          'Visual editing ready. Formatting differs; review before writing the real .md.');
         return;
       }
       queueDraft();
       queueDiff();
-    }, 260);
+    }, 90);
   };
   const restoreButtons = () => {
     const paged = !!window.__lanternMdPaged?.active;
@@ -592,7 +778,7 @@
       control.setAttribute('aria-pressed', String(view.mode === mode || (mode === 'visual' && paged)));
     }
     if (view.saveButton) view.saveButton.disabled = view.saving;
-    if (topActions) topActions.hidden = !view.active;
+    if (topActions) topActions.hidden = paged;
     if (topStatus) {
       topStatus.hidden = !view.active;
       // Paged documents own a separate status element; never shadow its selector.
@@ -671,8 +857,8 @@
       const deleted = document.createElement('div');
       deleted.className = 'md-source-deletions';
       deleted.hidden = true;
-      wrap.append(backdrop, area);
-      editorHost.append(wrap, deleted);
+      wrap.append(backdrop, area, deleted);
+      editorHost.append(wrap);
       view.sourceArea = area;
       view.sourceBackdrop = backdropContent;
       view.sourceDeletions = deleted;
@@ -734,97 +920,49 @@
     modal.showModal();
   });
 
+  // Ctrl+S accepts a diff checkpoint; it never commits edits to the real
+  // .md because every prior edit has already been written there.
   async function save(manual) {
-    if (!view.active || !view.instance || view.conflict) {
-      if (view.conflict) status('File changed externally. Your working copy is retained; reconcile before Save.', 'error');
+    if (view.loading || view.saving || view.conflict || view.piTurn) {
+      if (view.piTurn) status('Wait until LanternBot finishes before accepting diff.', 'warn');
       return;
     }
-    if (view.saving) { status('Save already in progress.', 'info'); return; }
-    const text = getEditorText();
-    if (!view.roundtripSafe && !view.approvedReformat && !matchesLastSaved(text)) {
-      if (!await showReformatReview()) { status('Save cancelled; working copy retained.', 'warn'); return; }
-      view.approvedReformat = true;
-    }
-    const revision = view.revision;
+    if (view.active && view.instance && !(await saveDraft())) return;
+    if (writingReal) await writingReal;
     view.saving = true;
     restoreButtons();
-    status('Saving…');
     try {
-      if (!(await flushWorkingCopy(text))) return;
-      const hashToSave = view.workHash;
-      if (!hashToSave) {
-        view.dirty = false;
-        view.lastSaved = text;
-        view.baseline = text;
-        view.ackedText = text;
-        renderDraftDiff();
-        if (manual) status('Already saved');
+      const state = await fetchWorkState();
+      if (!state.saved) throw new Error('Project Markdown file is unavailable');
+      if (view.currentVersion && state.currentVersion !== view.currentVersion) {
+        // Do not accept an external edit the user has not seen yet.
+        view.saving = false;
+        await refreshDiskBaseline();
+        status('The project file changed. Review new diff before accepting.', 'warn');
         return;
       }
-      let observed = await fetchWorkState();
-      if (!observed.saved) {
-        view.conflict = true;
-        status('Saved file is missing. Working copy retained.', 'error');
-        return;
-      }
-      if ((observed.work?.hash || null) !== hashToSave) {
-        view.conflict = true;
-        status('Another Lantern working copy changed. Your editor text is retained.', 'error');
-        return;
-      }
-      if (observed.saved.version !== view.version) {
-        adoptSavedBaseline(observed);
-        status('Disk changed outside Lantern. Saving your current working copy over the latest saved version…', 'warn');
-      }
-
-      const saveOnce = () => api('/api/work/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path,
-          expectHash: hashToSave,
-          expectSavedVersion: view.version,
+      const current = state.work?.content ?? state.saved.content;
+      const result = await api('/api/work/save', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          path, expectHash:state.work?.hash || null,
+          expectSavedVersion:state.saved.version,
         }),
       });
-
-      let result;
-      try {
-        result = await saveOnce();
-      } catch (error) {
-        if (error.status !== 409 || error.data?.reason !== 'external') throw error;
-        // One bounded retry: refresh the disk version, keep the exact same
-        // working-copy hash, then CAS again. Never blind-overwrite a moving file.
-        observed = await fetchWorkState();
-        if (!observed.saved || (observed.work?.hash || null) !== hashToSave) throw error;
-        adoptSavedBaseline(observed);
-        result = await saveOnce();
-      }
       view.version = result.version;
-      view.lastSaved = text;
-      view.baseline = text;
+      view.currentVersion = result.version;
+      view.baseline = current;
       view.workHash = null;
       view.workState = 'clean';
-      view.ackedText = text;
-      view.savedSincePreview = true;
-      if (view.revision === revision) {
-        view.dirty = false;
-        await drafts.clear().catch(() => {});
-        renderDraftDiff();
-        status('Saved ✓');
-      } else {
-        view.dirty = true;
-        await flushWorkingCopy(getEditorText());
-        renderDraftDiff();
-        status('Saved the earlier revision; newer edits are still pending.', 'warn');
-      }
+      view.ackedText = current;
+      view.lastSaved = view.active ? getEditorText() : current;
+      view.dirty = false;
+      await drafts.clear().catch(() => {});
+      if (view.active) renderDraftDiff();
+      else await renderDraftPreview(current);
+      if (manual) status('Saved diff baseline into md_temp. Real .md remains editable.', 'info');
     } catch (error) {
-      if (error.status === 409 || error.status === 404) {
-        view.conflict = true;
-        status('Conflict: saved file or working copy changed elsewhere. Your editor text is retained.', 'error');
-      } else {
-        status('Save failed: ' + error.message + '. Working copy retained.', 'error');
-      }
-      await drafts.write(getEditorText()).catch(() => {});
+      status('Could not accept diff: ' + error.message, 'error');
     } finally {
       view.saving = false;
       restoreButtons();
@@ -863,8 +1001,11 @@
       return;
     }
     if ((wasDirty || view.workHash) && !(await saveDraft())) return;
-    const contents = wasDirty ? contentNow : view.baseline;
-    const oldLastSaved = view.lastSaved;
+    // An untouched Visual editor may normalize GFM tables on serialization.
+    // When no real edit occurred, switch using the actual project Markdown,
+    // not that normalized Visual serialization and never the md_temp baseline.
+    const contents = wasDirty ? contentNow : view.ackedText;
+    // The accepted md_temp snapshot must not replace the real document.
     const oldSafe = view.roundtripSafe;
     const oldApproved = view.approvedReformat;
     let engine = null;
@@ -890,13 +1031,13 @@
         ? (!wasDirty || oldSafe)
         : safeRoundtrip && (!wasDirty || oldSafe);
       view.approvedReformat = wasDirty && oldApproved;
-      view.lastSaved = wasDirty ? oldLastSaved : (kind === 'visual' ? converted : contents);
-      view.dirty = wasDirty;
+      view.lastSaved = kind === 'visual' ? converted : contents;
+      view.dirty = cleanLineEndings(contents) !== cleanLineEndings(view.baseline);
       status(view.conflict ? 'Conflict: draft retained; another client changed the file.' :
-        wasDirty ? 'Unsaved draft preserved across modes. Save before leaving.' :
+        wasDirty ? 'Real .md updated; continue editing or accept diff with Ctrl+S.' :
         !view.roundtripSafe ? 'Formatting differs: review required before Save.' :
-        kind === 'source' ? 'Source ready. Changes stay pending until Ctrl+S or Save.' :
-        'Ready. Changes stay pending until Ctrl+S or Save.',
+        kind === 'source' ? 'Source edits update the project file automatically.' :
+        'Edit updates the real .md. Ctrl+S accepts the diff baseline.',
         view.conflict ? 'error' : view.dirty || !view.roundtripSafe ? 'warn' : 'info');
       view.instance.focus();
       renderDraftDiff();
@@ -942,12 +1083,13 @@
       if (view.active || view.loading) return;
       if (!state.saved) return;
       view.version = state.saved.version;
+      view.currentVersion = state.currentVersion;
       view.baseline = state.saved.content;
-      view.lastSaved = state.saved.content;
+      view.lastSaved = state.work?.content ?? state.saved.content;
       view.workHash = state.work?.hash || null;
       view.workState = state.state || (view.workHash ? 'pending' : 'clean');
       view.ackedText = state.work?.content ?? state.saved.content;
-      view.conflict = state.state === 'external' || state.state === 'missing';
+      view.conflict = state.state === 'missing';
       view.dirty = !!state.work &&
         cleanLineEndings(state.work.content) !== cleanLineEndings(state.saved.content);
       if (state.work) {
@@ -1012,24 +1154,23 @@
     try {
       const start = performance.now();
       const workState = await api('/api/work?p=' + encodeURIComponent(path));
-      const doc = workState.saved;
-      if (!doc) throw new Error('Saved Markdown file is missing');
+      const baselineDoc = workState.saved;
+      if (!baselineDoc) throw new Error('Markdown file is missing');
       const serverWork = workState.work;
-      let contents = serverWork?.content ?? doc.content;
-      view.version = doc.version;
-      view.baseline = doc.content;
+      const doc = serverWork ? {...baselineDoc, content:serverWork.content, version:workState.currentVersion,
+        bytes:new Blob([serverWork.content]).size} : baselineDoc;
+      let contents = doc.content;
+      view.version = baselineDoc.version;
+      view.currentVersion = workState.currentVersion;
+      view.baseline = baselineDoc.content;
       view.workHash = serverWork?.hash || null;
       view.workState = workState.state || (view.workHash ? 'pending' : 'clean');
       view.ackedText = contents;
       view.conflict = workState.state === 'missing';
-      view.dirty = contents !== doc.content;
+      view.dirty = contents !== view.baseline;
       view.approvedReformat = false;
 
       if(kind === 'visual' && new Blob([contents]).size > FULL_VISUAL_LIMIT_BYTES){
-        if (serverWork) {
-          status('Pending changes — use Source, or Save/Discard before section-based Visual Edit.', 'warn');
-          return;
-        }
         const loadPaged = () => new Promise((resolve,reject)=>{
           if(window.LanternPagedEditor)return resolve(window.LanternPagedEditor);
           const script=document.createElement('script');
@@ -1062,17 +1203,18 @@
           recovered.content !== contents) {
         const sameBacking = recovered.version === view.version &&
           (recovered.workHash ?? null) === (view.workHash ?? null);
-        if (sameBacking) {
-          contents = recovered.content;
-          view.dirty = contents !== doc.content;
-        } else if (!recovered.workHash &&
-                   confirm('A legacy unsent browser draft was found. Restore it into the new working copy?')) {
-          contents = recovered.content;
-          view.dirty = contents !== doc.content;
+        if (sameBacking || !recovered.workHash) {
+          if (confirm('Recover a browser edit into the real project .md?')) {
+            contents = recovered.content;
+            view.dirty = contents !== view.baseline;
+          } else {
+            // Explicit rejection must not keep prompting on each mode switch.
+            await drafts.clear().catch(() => {});
+          }
         }
       }
       const editorHost = renderToolbar(kind, contents);
-      // Source needs no Milkdown runtime; both modes use the same versioned save.
+      // Source and Visual both edit the same project .md via versioned CAS.
       preview.hidden = true;
       if (kind === 'visual') {
         view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
@@ -1091,14 +1233,12 @@
         view.revision += 1;
       }
       if (contents !== view.ackedText) queueDraft();
-      status(view.conflict ? 'Saved file is unavailable. Your working copy is retained.' :
-        workState.state === 'external'
-          ? 'File changed outside Lantern. Diff uses the latest disk version; Ctrl+S or Save will commit your current working copy.' :
-        restoredDraft ? 'Unsaved draft restored.' :
-        kind === 'source' ? 'Source ready. Changes stay pending until Ctrl+S or Save.' :
-        view.roundtripSafe ? 'Ready. Changes stay pending until Ctrl+S or Save.' :
-        'Visual editing ready. Formatting differs; review required before Save.',
-        view.conflict ? 'error' : workState.state === 'external' || !view.roundtripSafe ? 'warn' : 'info');
+      status(view.conflict ? 'Project .md unavailable; local recovery text retained.' :
+        restoredDraft ? 'Browser recovery loaded; updating project .md automatically.' :
+        kind === 'source' ? 'Source edits update the real .md automatically.' :
+        view.roundtripSafe ? 'Real .md is live. Ctrl+S accepts the comparison baseline.' :
+        'Visual serialization differs; review conversion before writing the real .md.',
+        view.conflict ? 'error' : !view.roundtripSafe ? 'warn' : 'info');
       restoreButtons();
       renderDraftDiff();
       view.instance.focus();
@@ -1153,12 +1293,13 @@
     if (view.active) void close(bookmark, pos.y);
   });
   document.addEventListener('keydown', e => {
-    if (!view.active || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;
+    if (globalThis.__lanternMdPaged?.active) return;
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;
     e.preventDefault();
     void save(true);
   });
   window.addEventListener('beforeunload', e => {
-    if (!view.active || getEditorText() === view.ackedText) return;
+    if (!view.active || matchesLastSaved(getEditorText())) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -1170,6 +1311,7 @@
     if (!document.hidden) void refreshDiskBaseline();
   });
   window.addEventListener('focus', () => { void refreshDiskBaseline(); });
+  setInterval(() => { if (!document.hidden) void refreshDiskBaseline({quiet:true}); }, 2500);
   const scrollKey = 'lantern-md-scroll:' + path;
   const priorScroll = sessionStorage.getItem(scrollKey);
   const priorAnchor = sessionStorage.getItem(anchorKey);

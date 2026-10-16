@@ -248,6 +248,13 @@
     range.setStart(start.node, start.offset);range.setEnd(end.node, end.offset);
     selection.removeAllRanges();selection.addRange(range);
   }
+  function flashAnchor(block, bookmark) {
+    if (!bookmark?.flash || !block) return;
+    block.classList.remove('lantern-md-anchor-highlight');
+    void block.offsetWidth; // restart the 550-ms highlight for repeated jumps
+    block.classList.add('lantern-md-anchor-highlight');
+    setTimeout(() => block.classList.remove('lantern-md-anchor-highlight'), 560);
+  }
   async function restore(mode, bookmark, preview = document.querySelector('article.md-preview')) {
     if (!bookmark || !preview) return false;
     if (mode === 'preview' && !preview.hidden) return restorePreview(preview, bookmark);
@@ -273,6 +280,7 @@
         block.scrollIntoView({block:'center', behavior:'instant'});
         host.focus({preventScroll:true});
         selectVisualText(block, bookmark.selectedText);
+        flashAnchor(block, bookmark);
         return true;
       }
       const resolved = bookmark.text ? bookmark : previewAnchorAtLine(preview, bookmark)?.bookmark;
@@ -281,6 +289,7 @@
       block.scrollIntoView({block:'center', behavior:'instant'});
       host.focus({preventScroll:true});
       selectVisualText(block, resolved?.selectedText);
+      flashAnchor(block, bookmark);
       return true;
     }
     return false;
@@ -303,7 +312,7 @@
       button.style.left = Math.max(4, Math.min(innerWidth - 220, event.clientX)) + 'px';
       button.style.top = Math.max(4, Math.min(innerHeight - 40, event.clientY)) + 'px';
       button.addEventListener('click', () => {
-        cleanup();void globalThis.__lanternMdVisual?.open('visual', bookmark);
+        cleanup();void globalThis.__lanternMdVisual?.open('visual', {...bookmark,flash:true});
       });
       document.body.append(button);menu = button;
     });

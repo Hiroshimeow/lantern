@@ -45,6 +45,7 @@
       this.dirty=false; this.saving=false; this.conflict=false; this.revision=0;
       this.draftTimer=0; this.changedTimer=0; this.reindex=null;
       this.active=false; this.loadingPage=false; this.savePromise=null;
+      this.botTurnActive=false;
       this.pendingDraftWrites=new Set();
       this.draftKey='paged:'+location.origin+':'+path;
       this.onLeave=this.onLeave.bind(this); this.onKey=this.onKey.bind(this);
@@ -149,8 +150,9 @@
       if(generation!==this.generation||!this.active)return;
       this.dirty=true; this.revision++;
       this.status(this.conflict?'File changed on another client; draft preserved.' :
-        !this.roundtripSafe&&!this.approved?'Review conversion before saving.' :
-        'Unsaved changes — press Ctrl+S or Save to commit.',this.conflict?'error':'info');
+        this.botTurnActive?'LanternBot is updating the real .md.' :
+        !this.roundtripSafe&&!this.approved?'Review conversion before writing changes.' :
+        'Updating the real .md automatically…',this.conflict?'error':'info');
       clearTimeout(this.changedTimer);
       const revision=this.revision;
       this.changedTimer=setTimeout(()=>{
@@ -161,7 +163,10 @@
           return;
         }
         clearTimeout(this.draftTimer);
-        this.draftTimer=setTimeout(()=>{void this.draftWrite();},700);
+        this.draftTimer=setTimeout(()=>{
+          void this.draftWrite();
+          if(!this.botTurnActive)void this.flushReal(false);
+        },430);
       },260);
     }
     initUI() {
@@ -261,12 +266,12 @@
       this.pageField.max=String(total);
       this.pageField.value=String(this.pageNumber+1);
       this.countEl.textContent='/ '+total;
-      this.prev.disabled=this.loadingPage||this.pageNumber<=0;
-      this.next.disabled=this.loadingPage||this.pageNumber>=total-1;
-      this.pageField.disabled=this.loadingPage;
-      this.sections.disabled=this.loadingPage;
+      this.prev.disabled=this.loadingPage||this.botTurnActive||this.pageNumber<=0;
+      this.next.disabled=this.loadingPage||this.botTurnActive||this.pageNumber>=total-1;
+      this.pageField.disabled=this.loadingPage||this.botTurnActive;
+      this.sections.disabled=this.loadingPage||this.botTurnActive;
       this.headingSearch.disabled=this.loadingPage;
-      this.saveButton.disabled=this.saving||this.loadingPage||this.conflict;
+      this.saveButton.disabled=this.saving||this.loadingPage||this.conflict||this.botTurnActive;
       this.trigger.disabled=true;
       this.trigger.textContent='Editing by section';
     }
@@ -297,13 +302,13 @@
       dlg.showModal();
       return answer;
     }
-    async save(manual) {
-      if(!this.active||!this.page||this.conflict)return false;
+    async flushReal() {
+      if(!this.active||!this.page||this.conflict||this.botTurnActive)return false;
       if(this.saving)return this.savePromise || false;
       const current=this.currentText();
       if(current===this.lastSaved) {
         this.dirty=false;
-        if(manual)this.status('Already saved.');
+        this.status('Project .md is up to date.');
         return true;
       }
       if(!this.roundtripSafe&&!this.approved){
@@ -314,7 +319,7 @@
         this.approved=true;
       }
       const revision=this.revision;
-      this.saving=true;this.updateNav();this.status('Saving…');
+      this.saving=true;this.updateNav();this.status('Updating real .md…');
       const task=(async()=>{
         try {
           const patch=boundaries(this.pageOriginal,current);
@@ -336,15 +341,15 @@
           if(this.revision===revision) {
             this.dirty=false;
             await this.clearDraft().catch(()=>{});
-            this.status('Saved ✓');
+            this.status('Updated real .md. Ctrl+S accepts the diff baseline.');
           } else {
             this.dirty=true;
             await this.draftWrite();
-            this.status('Saved the earlier revision; newer edits are still pending.','warn');
+            this.status('Updated real .md; newer typing still needs syncing.','warn');
           }
           // Reparse edited block boundaries off-thread before the next page jump.
           this.reindex=this.workerIndex(this.source).catch(err=>{
-            this.status('Saved, but page index refresh failed: '+err.message,'warn');
+            this.status('Real .md updated; page index refresh failed: '+err.message,'warn');
             return null;
           });
           return true;
@@ -361,13 +366,111 @@
       this.savePromise=task;
       try{return await task;}finally{this.savePromise=null;}
     }
-    async go(next, restore=null) {
+    // Save is an acceptance checkpoint, not the mechanism that writes edits
+    // to disk. Normal edits already update the project .md via flushReal().
+    async save(manual=true) {
+      if(!this.active||this.conflict||this.botTurnActive)return false;
+      if(this.saving&&!(await this.savePromise))return false;
+      if(this.hasUnsaved()&&!(await this.flushReal()))return false;
+      try{
+        const state=await api('/api/work?p='+encodeURIComponent(this.path));
+        if(!state.saved||state.currentVersion!==this.version){
+          this.status('Project .md changed externally. Review before accepting diff.','warn');
+          return false;
+        }
+        await api('/api/work/save',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({path:this.path,expectHash:state.work?.hash||null,
+            expectSavedVersion:state.saved.version}),
+        });
+        if(manual)this.status('Saved diff baseline into md_temp. Real .md stays editable.');
+        return true;
+      }catch(error){
+        this.status('Cannot accept diff: '+error.message,'error');return false;
+      }
+    }
+
+    async beginBotTurn() {
+      if(!this.active||this.conflict||this.loadingPage||this.botTurnActive)
+        throw Error('Section editor is not ready for a LanternBot turn.');
+      if(this.saving&&!(await this.savePromise))
+        throw Error('Cannot finish the current Markdown write.');
+      if(this.hasUnsaved()&&!(await this.flushReal()))
+        throw Error('Cannot synchronize this section with the real .md.');
+      const state=await api('/api/work?p='+encodeURIComponent(this.path));
+      if(state.currentVersion!==this.version)
+        throw Error('Project .md changed outside Lantern. Refresh this section before editing.');
+      clearTimeout(this.changedTimer);clearTimeout(this.draftTimer);
+      this.botTurnActive=true;
+      // Keep the section visible, but never let an in-flight human edit race
+      // with the bot's live file write and silently overwrite either one.
+      this.host.inert=true;
+      this.host.querySelector('.ProseMirror')?.blur();
+      this.status('LanternBot edits the real .md; this section will refresh when it finishes.');
+      this.updateNav();
+      return state.work?.hash||null;
+    }
+    cancelBotTurn() {
+      this.botTurnActive=false;
+      if(this.host)this.host.inert=false;
+      if(this.active)this.updateNav();
+    }
+    async onBotWorkChanged(final) {
+      if(!this.botTurnActive||!final)return;
+      try {
+        const state=await api('/api/work?p='+encodeURIComponent(this.path));
+        if(!state.saved)throw Error('Project Markdown is missing.');
+        if(this.hasUnsaved()){
+          this.conflict=true;
+          await this.draftWrite();
+          this.status('Another edit occurred during LanternBot. Local text retained; review before applying.','warn');
+          return;
+        }
+        const next=state.work?.content??state.saved.content;
+        if(next===this.source) {
+          this.version=state.currentVersion;
+          this.status('LanternBot completed; real .md is unchanged.');
+          return;
+        }
+        const previous=this.source, oldPage=this.page;
+        const oldBlock=previous.slice(oldPage.start,oldPage.end);
+        const indexed=await this.workerIndex(next);
+        // Exact byte-level evidence only: unchanged section uniquely located,
+        // or identical prefix plus exactly preserved page start.
+        const matching=indexed.pages.map((item,i)=>
+          next.slice(item.start,item.end)===oldBlock?i:-1).filter(i=>i>=0);
+        let target=matching.length===1?matching[0]:-1;
+        if(target<0&&next.slice(0,oldPage.start)===previous.slice(0,oldPage.start))
+          target=indexed.pages.findIndex(item=>item.start===oldPage.start);
+        const unmapped=target<0;
+        if(unmapped)target=0; // No guesses: show a known, indexed first section.
+        this.source=next;this.version=state.currentVersion;
+        this.index=indexed;this.reindex=null;
+        this.botTurnActive=false;
+        this.host.inert=false;
+        this.savedSincePreview=true;
+        if(!await this.go(target,null,true))
+          throw Error('Could not reload the updated section.');
+        if(unmapped)this.status(
+          'LanternBot changed document structure. Showing section 1; old position could not be verified.','warn');
+        else this.status('LanternBot updated the real .md. Continue editing; Ctrl+S accepts diff.');
+      } catch(error) {
+        this.conflict=true;
+        this.status('Cannot synchronize LanternBot edit: '+error.message+
+          '. Existing editor content retained; reopen Preview to inspect the real file.','error');
+      } finally {
+        this.cancelBotTurn();
+      }
+    }
+
+    async go(next, restore=null, force=false) {
       if(!this.active||this.loadingPage)return false;
       const num=Math.max(0,Math.min(this.index.pages.length-1,Math.trunc(next)));
       if(!Number.isFinite(num))return false;
-      if(num===this.pageNumber&&!restore)return true;
+      if(num===this.pageNumber&&!restore&&!force)return true;
       if(this.saving&&!await this.savePromise)return false;
-      if(this.hasUnsaved()){this.status('Save this section before navigating; pending edits stay local.','warn');return false;}
+      if(this.botTurnActive){this.status('Wait for LanternBot to finish updating this section.','warn');return false;}
+      if(this.hasUnsaved()&&!await this.flushReal())return false;
       clearTimeout(this.draftTimer);clearTimeout(this.changedTimer);
       this.loadingPage=true;this.updateNav();
       try {
@@ -462,14 +565,8 @@
     }
     async close(destination='preview'){
       if(!this.active||this.saving||this.loadingPage)return false;
-      const unsaved=this.hasUnsaved();
-      if(destination==='source' && unsaved){
-        // Source will load the server's version, not an unsaved paged section.
-        // Keep this editor in place instead of hiding its live draft.
-        this.status('Save this section before switching to Source; unsaved text stays here.','warn');
-        return false;
-      }
-      if(unsaved&&!confirm('Discard unsaved changes and return to Preview?'))return false;
+      if(this.botTurnActive){this.status('Wait for LanternBot to finish first.','warn');return false;}
+      if(this.hasUnsaved()&&!(await this.flushReal()))return false;
       clearTimeout(this.draftTimer);
       clearTimeout(this.changedTimer);clearTimeout(this.headingSearchTimer);
       // Existing navigation guard blocks a second mode switch until cleanup
