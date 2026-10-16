@@ -164,6 +164,70 @@ class PiChatWebSocketTests(unittest.TestCase):
         self.assertEqual(peer.messages[-1],
                          {"type": "chat_prompt_accepted", "reqId": "chat-1"})
 
+    def test_lan_direct_ws_model_override_is_rejected_by_real_manager(self):
+        # The transport must derive scope from the peer IP. Supplying a
+        # forged 'scope: local' in a crafted websocket message cannot bypass it.
+        import sys
+        import tempfile
+        from pathlib import Path
+        from lantern.bot_config import LanternBotConfig
+        from lantern.pi_chat import LanternBotManager
+        from lantern.working_copy import WorkingCopyStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "files"
+            root.mkdir()
+            fake = Path(__file__).with_name("fake_pi_rpc.py")
+            policy = LanternBotConfig.from_mapping({
+                "access": {
+                    "localhost": {"provider_mode": "all", "model_mode": "all"},
+                    "lan": {
+                        "provider_mode": "whitelist",
+                        "providers": ["fake"],
+                        "model_mode": "whitelist",
+                        "models": ["fake/gpt-6.1-sol"],
+                        "selection": {
+                            "provider": "fake", "model": "gpt-6.1-sol",
+                            "lock_provider": True, "lock_model": True,
+                        },
+                    },
+                },
+            })
+            manager = LanternBotManager(
+                root, lambda _event: None,
+                work_store=WorkingCopyStore(root, Path(tmp) / "work", {".md"}),
+                session_dir=Path(tmp) / "sessions",
+                argv_override=[sys.executable, "-u", str(fake)],
+                request_timeout=3,
+                usage_path=Path(tmp) / "usage.json",
+                bot_config=policy,
+            )
+            local = Peer(client_ip="127.0.0.1")
+            lan = Peer(client_ip="192.168.0.42")
+            try:
+                dispatch(local, {"type": "chat_sync"}, object(), None, chat=manager)
+                self.assertEqual(len(local.messages[-1]["models"]), 6)
+                dispatch(lan, {"type": "chat_sync"}, object(), None, chat=manager)
+                self.assertEqual([m["id"] for m in lan.messages[-1]["models"]],
+                                 ["gpt-6.1-sol"])
+                with self.assertRaises(PermissionError):
+                    dispatch(lan, {
+                        "type": "chat_set_model",
+                        "provider": "fake", "modelId": "claude-opus-5-5-high",
+                        "scope": "local",
+                    }, object(), None, chat=manager)
+                self.assertEqual(manager.get_state()["model"]["id"], "gpt-6.1-sol")
+                dispatch(local, {
+                    "type": "chat_set_model",
+                    "provider": "fake", "modelId": "claude-opus-5-5-high",
+                }, object(), None, chat=manager)
+                self.assertEqual(manager.get_state()["model"]["id"], "claude-opus-5-5-high")
+                # LAN admission cannot inherit a model selected on localhost.
+                dispatch(lan, {"type": "chat_sync"}, object(), None, chat=manager)
+                self.assertEqual(lan.messages[-1]["state"]["model"]["id"], "gpt-6.1-sol")
+            finally:
+                manager.close()
+
     def test_missing_chat_manager_fails_closed(self):
         peer = Peer()
         with self.assertRaisesRegex(RuntimeError, "not initialized"):
