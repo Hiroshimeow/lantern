@@ -77,11 +77,17 @@ class PiChatManager:
     def rebind_emit(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self.emit = emit
 
-    def _saved_session_id(self) -> str:
+    def _saved_session_file(self) -> str:
         try:
             raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-            value = str(raw.get("sessionId") or "")
-            return value if 8 <= len(value) <= 160 else ""
+            value = str(raw.get("sessionFile") or "").strip()
+            if not value:
+                return ""
+            path = Path(value).expanduser().resolve()
+            path.relative_to(self.session_dir)
+            if path.suffix.lower() != ".jsonl" or not path.is_file():
+                return ""
+            return str(path)
         except Exception:
             return ""
 
@@ -91,8 +97,10 @@ class PiChatManager:
             return
         self.session_dir.mkdir(parents=True, exist_ok=True)
         model = state.get("model") if isinstance(state.get("model"), dict) else {}
+        session_file = str(state.get("sessionFile") or "").strip()
         payload = {
             "sessionId": session_id,
+            "sessionFile": session_file,
             "model": {
                 "provider": str(model.get("provider") or ""),
                 "id": str(model.get("id") or ""),
@@ -117,21 +125,29 @@ class PiChatManager:
         if self.argv_override:
             return list(self.argv_override)
         pi = self._resolve_pi()
-        args = [
-            pi,
+        prefix = [pi]
+        if os.name == "nt" and Path(pi).suffix.lower() in {".cmd", ".bat"}:
+            # npm's pi.cmd is only a wrapper around Node. Prefer the real JS entry
+            # so spaces/quotes do not pass through cmd.exe and corrupt CLI values.
+            cli = (Path(pi).resolve().parent / "node_modules" / "@earendil-works"
+                   / "pi-coding-agent" / "dist" / "bundle" / "cli.js")
+            node = shutil.which("node.exe") or shutil.which("node")
+            if node and cli.is_file():
+                prefix = [node, str(cli)]
+        args = prefix + [
             "--mode", "rpc",
             "--session-dir", str(self.session_dir),
-            "--name", "Lantern Chat",
+            "--name", "LanternChat",
             "--append-system-prompt", SYSTEM_PROMPT,
             "--no-extensions",
             "--no-mcp",
         ]
-        session_id = self._saved_session_id()
-        if session_id:
-            args.extend(["--session-id", session_id])
-        if os.name == "nt" and Path(pi).suffix.lower() in {".cmd", ".bat"}:
+        session_file = self._saved_session_file()
+        if session_file:
+            args.extend(["--session", session_file])
+        if os.name == "nt" and len(prefix) == 1 and Path(pi).suffix.lower() in {".cmd", ".bat"}:
             comspec = os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
-            return [comspec, "/D", "/S", "/C", subprocess.list2cmdline(args)]
+            return [comspec, "/D", "/C", subprocess.list2cmdline(args)]
         return args
 
     def ensure_started(self) -> None:

@@ -113,6 +113,22 @@ class PiChatManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inside the configured root"):
             self.manager.normalize_context({"kind": "file", "path": "../outside.txt"})
 
+    def test_persisted_session_file_is_used_for_restart(self):
+        saved = self.root / "sessions" / "saved.jsonl"
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_text('{"type":"session"}\n', encoding="utf-8")
+        manager = PiChatManager(self.root, lambda _event: None, session_dir=saved.parent)
+        manager._persist_state({
+            "sessionId": "session-persisted",
+            "sessionFile": str(saved),
+            "model": {"provider": "fake", "id": "gpt-6.1-sol"},
+        })
+        command = manager._command()
+        self.assertIn("--session", command)
+        self.assertEqual(command[command.index("--session") + 1], str(saved.resolve()))
+        state = json.loads(manager.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["sessionFile"], str(saved))
+
 
 if __name__ == "__main__":
     unittest.main()
