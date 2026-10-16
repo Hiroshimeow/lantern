@@ -36,7 +36,7 @@ class CropFormatsE2E(unittest.TestCase):
         page.locator("#modalCropBtn").click()
         page.get_by_role("dialog",name="Crop image").wait_for(timeout=16000)
         page.locator("cropper-selection").wait_for(timeout=16000)
-        page.get_by_role("button",name="Apply crop").click()
+        page.get_by_role("button",name=("Apply crop" if filename.endswith(".bmp") else "Save cropped copy")).click()
         page.wait_for_function(
             "() => !!document.querySelector('#modalBody img')?.src.includes('-cropped-')",
             timeout=25000)
@@ -140,7 +140,7 @@ class CropFormatsE2E(unittest.TestCase):
                 selection.$change(x+40*sx,y+30*sy,90*sx,70*sy);
                 return [sx,sy,selection.x,selection.y,selection.width,selection.height];
             }""")
-            page.get_by_role("button",name="Apply crop").click()
+            page.get_by_role("button",name="Save cropped copy").click()
             page.wait_for_function(
                 "() => !!document.querySelector('#modalBody img')?.src.includes('-cropped-')",
                 timeout=20000)
@@ -179,7 +179,7 @@ class CropFormatsE2E(unittest.TestCase):
                     dialog=page.get_by_role("dialog",name="Crop image")
                     dialog.wait_for(timeout=16000)
                     dialog.locator(".lantern-crop-status").filter(has_text="Animated").wait_for(timeout=14000)
-                    self.assertTrue(dialog.get_by_role("button",name="Apply crop").is_disabled())
+                    self.assertTrue(dialog.get_by_role("button",name="Save cropped copy").is_disabled())
                     self.assertEqual(list(folder.glob(filename.rsplit('.',1)[0]+"-cropped-*")),[])
                 finally:
                     context.close()
@@ -198,11 +198,21 @@ class CropFormatsE2E(unittest.TestCase):
         try:
             page.goto(self.base+"/Formats/",wait_until="domcontentloaded")
             page.evaluate("""() => openPreview('image','/Formats/noisy.png','noisy.png','Formats/noisy.png')""")
+            # Large PNG may be rejected at the image-version preflight,
+            # before the crop dialog, rather than only at export.
+            preflight=page.evaluate("""async() => (await fetch('/api/image/version?p=Formats/noisy.png')).status""")
             page.locator("#modalCropBtn").click()
+            if preflight == 413:
+                page.wait_for_timeout(250)
+                self.assertEqual(page.get_by_role("dialog",name="Crop image").count(),0)
+                self.assertEqual(list(folder.glob("noisy-cropped-*")),[])
+                self.assertEqual(target.read_bytes()[:4],bytes([137,80,78,71]))
+                return
+            self.assertEqual(preflight,200)
             dialog=page.get_by_role("dialog",name="Crop image")
             dialog.wait_for(timeout=20000)
             page.locator("cropper-selection").wait_for(timeout=22000)
-            dialog.get_by_role("button",name="Apply crop").click()
+            dialog.get_by_role("button",name="Save cropped copy").click()
             dialog.locator(".lantern-crop-status").filter(has_text="20 MiB").wait_for(timeout=30000)
             self.assertEqual(list(folder.glob("noisy-cropped-*")),[])
             self.assertEqual(target.read_bytes()[:8],b"\x89PNG\r\n\x1a\n")

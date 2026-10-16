@@ -6,7 +6,7 @@ const TEMPLATE = [
   '<cropper-canvas background>',
   '<cropper-image initial-fit="contain" translatable scalable></cropper-image>',
   '<cropper-shade></cropper-shade>',
-  '<cropper-selection initial-coverage="0.82" movable resizable keyboard outlined>',
+  '<cropper-selection initial-coverage="1" movable resizable keyboard outlined>',
   '<cropper-grid role="grid" bordered covered></cropper-grid>',
   '<cropper-crosshair centered></cropper-crosshair>',
   '<cropper-handle action="move" theme-color="rgba(255,255,255,.07)"></cropper-handle>',
@@ -192,6 +192,58 @@ export async function openCrop({src,name='image',signal,allowOverwrite=false,pre
       if(!r.width||!r.height)return null;
       return {left:r.left-base.left,top:r.top-base.top,width:r.width,height:r.height};
     };
+    // CropperJS bounds selections against the canvas, not the image. Keep
+    // the white rectangle entirely inside the *rendered* image (also after
+    // zoom/pan); the pasted layer already follows this same containment rule.
+    const imageBounds=()=>{
+      if(!cropperImage)return null;
+      const canvas=cropperImage.closest('cropper-canvas');
+      const outer=canvas?.getBoundingClientRect();
+      const img=cropperImage.getBoundingClientRect();
+      if(!outer?.width||!outer.height||!img.width||!img.height)return null;
+      const scaleX=canvas.clientWidth/outer.width,scaleY=canvas.clientHeight/outer.height;
+      return {x:(img.left-outer.left)*scaleX,y:(img.top-outer.top)*scaleY,
+        width:img.width*scaleX,height:img.height*scaleY};
+    };
+    const boundedCrop=(x,y,width,height)=>{
+      const bounds=imageBounds();if(!bounds)return {x,y,width,height};
+      const right=bounds.x+bounds.width,bottom=bounds.y+bounds.height;
+      const minSize=Math.min(1,bounds.width,bounds.height);
+      // Moving preserves current size. Resizing cannot go past an edge.
+      const moving=cropperImage.closest('cropper-canvas')?.$action==='move';
+      if(moving){
+        width=Math.min(width,bounds.width);height=Math.min(height,bounds.height);
+        x=Math.max(bounds.x,Math.min(right-width,x));
+        y=Math.max(bounds.y,Math.min(bottom-height,y));
+      }else{
+        if(x<bounds.x){width-=bounds.x-x;x=bounds.x;}
+        if(y<bounds.y){height-=bounds.y-y;y=bounds.y;}
+        x=Math.max(bounds.x,Math.min(right-minSize,x));
+        y=Math.max(bounds.y,Math.min(bottom-minSize,y));
+        width=Math.max(minSize,Math.min(width,right-x));
+        height=Math.max(minSize,Math.min(height,bottom-y));
+      }
+      return {x,y,width,height};
+    };
+    const clampCrop=()=>{
+      if(!selection||done)return;
+      const bounded=boundedCrop(selection.x,selection.y,selection.width,selection.height);
+      if(['x','y','width','height'].some(k=>Math.abs(bounded[k]-selection[k])>.001)){
+        selection.$change(bounded.x,bounded.y,bounded.width,bounded.height);
+      }
+    };
+    const onCropChange=event=>{
+      const next=event.detail;
+      if(!next||!selection)return;
+      const bounded=boundedCrop(next.x,next.y,next.width,next.height);
+      if(['x','y','width','height'].some(k=>Math.abs(bounded[k]-next[k])>.001)){
+        event.preventDefault();
+        queueMicrotask(()=>{
+          if(!done&&selection)selection.$change(
+            bounded.x,bounded.y,bounded.width,bounded.height);
+        });
+      }else{update();clampLayers();}
+    };
     const placeLayer=(layer,left,top,width,height)=>{
       const bounds=selectionBounds();if(!bounds)return;
       width=Math.max(24,Math.min(width,bounds.width));
@@ -267,7 +319,14 @@ export async function openCrop({src,name='image',signal,allowOverwrite=false,pre
     };
     zoomOut.addEventListener('click',()=>{cropperImage?.$zoom(-.15);update();});
     zoomIn.addEventListener('click',()=>{cropperImage?.$zoom(.15);update();});
-    reset.addEventListener('click',()=>{cropperImage?.$reset();selection?.$reset();update();});
+    reset.addEventListener('click',()=>{
+      cropperImage?.$resetTransform().$center('contain');
+      requestAnimationFrame(()=>{
+        const bounds=imageBounds();
+        if(bounds&&selection)selection.$change(bounds.x,bounds.y,bounds.width,bounds.height);
+        clampCrop();update();
+      });
+    });
     const exportCrop=async action=>{
       if(!selection||!cropperImage||exporting)return;
       exporting=true;for(const control of cropButtons)control.disabled=true;reset.disabled=true;zoomIn.disabled=true;zoomOut.disabled=true;
@@ -275,8 +334,8 @@ export async function openCrop({src,name='image',signal,allowOverwrite=false,pre
       try {
         const rect=selectedPixels(selection,cropperImage,source.naturalWidth,source.naturalHeight);
         if(rect.width*rect.height>MAX_PIXELS)throw Error('Crop exceeds the 60 MP export limit; select a smaller area.');
-        if(!pasteLayers.length&&rect.width===source.naturalWidth&&rect.height===source.naturalHeight)
-          throw Error('Choose a smaller area; this selection covers the entire image.');
+        // Full-frame selection is the default; exporting it is valid, including
+        // when the user only adds a pasted layer without trimming the source.
         const canvas=document.createElement('canvas');canvas.width=rect.width;canvas.height=rect.height;
         let blob;
         try {
@@ -328,8 +387,18 @@ export async function openCrop({src,name='image',signal,allowOverwrite=false,pre
           handle.setAttribute('aria-label','Resize '+(name[corner]||corner)+' corner');
         }
         selection.tabIndex=0;selection.setAttribute('aria-label','Move crop selection');
-        selection.addEventListener('change',()=>{update();clampLayers();});
-        update();
+        selection.precise=true;
+        selection.addEventListener('change',onCropChange);
+        cropperImage.addEventListener('transform',()=>{
+          requestAnimationFrame(()=>{clampCrop();update();clampLayers();});
+        });
+        // Cropper may finish its initial layout one frame after image decode.
+        // Force full-image selection, rather than 100% of the canvas viewport.
+        requestAnimationFrame(()=>{
+          const bounds=imageBounds();
+          if(bounds && !done)selection.$change(bounds.x,bounds.y,bounds.width,bounds.height);
+          update();
+        });
         status.textContent='Original image remains unchanged.';
       }catch(e){
         if(!abort.signal.aborted&&!done)status.textContent='Crop unavailable: '+(e.message||String(e));

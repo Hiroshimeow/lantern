@@ -94,6 +94,78 @@ class SharedCropBrowserE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_crop_full_image_initially_and_never_crosses_image_edges(self):
+        folder=self.root/"CropBounds"
+        folder.mkdir(exist_ok=True)
+        source=folder/"edge.png"
+        source.write_bytes(png_bytes((72,116,197),size=280))
+        context=self.browser.new_context(viewport={"width":1100,"height":860})
+        page=context.new_page()
+        errors=[]
+        page.on("pageerror",lambda err:errors.append(str(err)))
+        metrics="""() => {
+          const canvas=document.querySelector('cropper-canvas');
+          const image=document.querySelector('cropper-image');
+          const selection=document.querySelector('cropper-selection');
+          if(!canvas||!image||!selection) return null;
+          const area=canvas.getBoundingClientRect(),img=image.getBoundingClientRect();
+          const sx=canvas.clientWidth/area.width,sy=canvas.clientHeight/area.height;
+          return {
+            image:{x:(img.left-area.left)*sx,y:(img.top-area.top)*sy,
+              w:img.width*sx,h:img.height*sy},
+            crop:{x:selection.x,y:selection.y,w:selection.width,h:selection.height}
+          };
+        }"""
+        def contained(m):
+            self.assertIsNotNone(m)
+            image=m["image"]; crop=m["crop"]
+            self.assertGreater(crop["w"],0)
+            self.assertGreater(crop["h"],0)
+            self.assertGreaterEqual(crop["x"],image["x"]-1,m)
+            self.assertGreaterEqual(crop["y"],image["y"]-1,m)
+            self.assertLessEqual(crop["x"]+crop["w"],image["x"]+image["w"]+1,m)
+            self.assertLessEqual(crop["y"]+crop["h"],image["y"]+image["h"]+1,m)
+        try:
+            page.goto(self.base+"/CropBounds/",wait_until="domcontentloaded")
+            page.evaluate("""() => openPreview('image','/CropBounds/edge.png',
+              'edge.png','CropBounds/edge.png')""")
+            page.locator("#modalCropBtn").click()
+            page.locator("cropper-selection").wait_for(timeout=14000)
+            page.wait_for_function("""() => {
+              const s=document.querySelector('cropper-selection');
+              return s?.width>100 && s?.height>100;
+            }""",timeout=12000)
+            page.wait_for_timeout(250)
+            initial=page.evaluate(metrics)
+            contained(initial)
+            self.assertAlmostEqual(initial["crop"]["w"],initial["image"]["w"],delta=1.1)
+            self.assertAlmostEqual(initial["crop"]["h"],initial["image"]["h"],delta=1.1)
+            # Moving and resizing cannot expand past the displayed pixels.
+            page.evaluate("""() => {
+              const s=document.querySelector('cropper-selection');
+              s.$move(10000,10000);
+              s.$resize('nw-resize',-800,-800);
+              s.$resize('se-resize',800,800);
+            }""")
+            page.wait_for_timeout(300)
+            contained(page.evaluate(metrics))
+            page.get_by_role("dialog",name="Crop image").get_by_role("button",name="−").click()
+            page.wait_for_timeout(220)
+            contained(page.evaluate(metrics))
+            page.get_by_role("dialog",name="Crop image").get_by_role("button",name="Reset").click()
+            page.wait_for_timeout(200)
+            reset=page.evaluate(metrics)
+            contained(reset)
+            self.assertAlmostEqual(reset["crop"]["w"],reset["image"]["w"],delta=1.1)
+            page.get_by_role("dialog",name="Crop image").get_by_role(
+                "button",name="Save cropped copy").click()
+            page.wait_for_function(
+                "() => !!document.querySelector('#modalBody img')?.src.includes('-cropped-')",
+                timeout=15000)
+            self.assertEqual(source.read_bytes(),png_bytes((72,116,197),size=280))
+            self.assertEqual(errors,[],errors)
+        finally:context.close()
+
     def test_twenty_open_cancel_cycles_release_crop_dom(self):
         folder=self.root/"Cycle"
         folder.mkdir(exist_ok=True)
