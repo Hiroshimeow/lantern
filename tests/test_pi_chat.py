@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
+from lantern.md_editor import read_document
 from lantern.pi_chat import PiChatManager
 
 
@@ -29,6 +30,7 @@ class PiChatManagerTests(unittest.TestCase):
             self.root,
             emit,
             session_dir=self.root / "sessions",
+            draft_storage_dir=self.root / "drafts",
             argv_override=[sys.executable, "-u", str(fake)],
             request_timeout=3,
         )
@@ -75,6 +77,9 @@ class PiChatManagerTests(unittest.TestCase):
 
     def test_prompt_wraps_latest_lantern_context_and_streams_events(self):
         target = self.root / "docs" / "spec.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Spec\n\nold text\n", encoding="utf-8")
+        version = read_document(target)["version"]
         self.manager.prompt(
             "Fix this paragraph",
             {
@@ -84,6 +89,12 @@ class PiChatManagerTests(unittest.TestCase):
                 "markdownMode": "source",
                 "line": 243,
                 "selectedText": "old text",
+            },
+            draft={
+                "promptId": "prompt-1",
+                "baseVersion": version,
+                "draftRevision": 7,
+                "text": "# Spec\n\nunsaved browser draft\n",
             },
         )
         self.assertTrue(self.settled.wait(2))
@@ -95,10 +106,41 @@ class PiChatManagerTests(unittest.TestCase):
         self.assertIn("markdownMode: source", prompt)
         self.assertIn("line: 243", prompt)
         self.assertIn("selectedText:\nold text", prompt)
+        self.assertIn("promptId: prompt-1", prompt)
+        self.assertIn("draftRevision: 7", prompt)
+        self.assertIn("savedPath: " + str(target.resolve()), prompt)
+        self.assertIn("draftPath: ", prompt)
         self.assertIn("<user_request>\nFix this paragraph", prompt)
+        self.assertEqual(target.read_text(encoding="utf-8"), "# Spec\n\nold text\n")
+        active = self.manager.drafts.active
+        self.assertIsNotNone(active)
+        self.assertEqual(active.shadow_path.read_text(encoding="utf-8"),
+                         "# Spec\n\nunsaved browser draft\n")
         pi_events = [item["event"] for item in self.events if item.get("type") == "chat_pi_event"]
         self.assertTrue(any(item.get("type") == "message_update" for item in pi_events))
         self.assertTrue(any(item.get("type") == "agent_settled" for item in pi_events))
+
+    def test_fake_pi_shadow_edit_emits_draft_update_without_touching_real_file(self):
+        target = self.root / "docs" / "shadow.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Shadow\n\nreal saved text\n", encoding="utf-8")
+        version = read_document(target)["version"]
+        self.manager.prompt(
+            "FAKE_EDIT_SHADOW",
+            {"kind": "markdown", "path": "docs/shadow.md", "markdownMode": "source"},
+            draft={
+                "promptId": "shadow-1",
+                "baseVersion": version,
+                "draftRevision": 3,
+                "text": "# Shadow\n\nunsaved browser draft\n",
+            },
+        )
+        self.assertTrue(self.settled.wait(2))
+        updates = [item for item in self.events if item.get("type") == "chat_draft_update"]
+        self.assertTrue(updates)
+        self.assertEqual(updates[-1]["text"], "# Shadow\n\nfake Pi shadow edit\n")
+        self.assertTrue(updates[-1]["final"])
+        self.assertEqual(target.read_text(encoding="utf-8"), "# Shadow\n\nreal saved text\n")
 
     def test_empty_message_is_rejected_before_start(self):
         with self.assertRaisesRegex(ValueError, "empty"):
@@ -125,6 +167,11 @@ class PiChatManagerTests(unittest.TestCase):
         })
         command = manager._command()
         self.assertIn("--session", command)
+        self.assertIn("--extension", command)
+        self.assertIn("--tools", command)
+        self.assertIn("read,edit,write,grep,find,ls", command)
+        self.assertNotIn("powershell", command)
+        self.assertNotIn("bash", command)
         self.assertEqual(command[command.index("--session") + 1], str(saved.resolve()))
         state = json.loads(manager.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["sessionFile"], str(saved))

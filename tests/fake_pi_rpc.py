@@ -1,6 +1,8 @@
 from __future__ import annotations
 import json
+import re
 import sys
+from pathlib import Path
 from uuid import uuid4
 
 session_id = "fake-session-1"
@@ -49,6 +51,17 @@ for raw in sys.stdin:
         text = str(req.get("message") or "")
         messages.append({"role": "user", "content": text})
         send({"id": rid, "type": "response", "command": typ, "success": True})
+        if "<user_request>\nFAKE_EDIT_SHADOW\n</user_request>" in text:
+            match = re.search(r"^draftPath: (.+)$", text, re.MULTILINE)
+            if match:
+                shadow = Path(match.group(1).strip())
+                content = shadow.read_text(encoding="utf-8")
+                shadow.write_text(content.replace("unsaved browser draft", "fake Pi shadow edit"),
+                                  encoding="utf-8", newline="")
+                send({"type": "tool_execution_start", "toolCallId": "fake-edit",
+                      "toolName": "edit", "args": {"path": str(shadow)}})
+                send({"type": "tool_execution_end", "toolCallId": "fake-edit",
+                      "toolName": "edit", "isError": False})
         send({"type": "message_update", "delta": "FAKE_OK"})
         messages.append({"role": "assistant", "content": "FAKE_OK"})
         send({"type": "agent_settled"})

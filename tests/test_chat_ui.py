@@ -53,7 +53,10 @@ class ChatUiTests(unittest.TestCase):
             "__lanternMdVisual",
             "selectedArray",
             "currentPath",
-            "flushCurrentDraft",
+            "captureMarkdownDraft",
+            "chat_draft_update",
+            "beginPiDraft",
+            "applyPiDraft",
             "New chat",
             "Stop",
         ):

@@ -50,6 +50,7 @@
     savedSincePreview: false, switchingFromPaged: false,
   };
   const key = location.origin + ':' + path;
+  const piTurns = new Map();
   const escapeCss = s => s.replace(/[^A-Za-z0-9_-]/g, '-');
   const cleanLineEndings = text => String(text || '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const status = (message, kind = 'info') => {
@@ -181,6 +182,64 @@
   const queueDiff = () => {
     clearTimeout(view.diffTimer);
     view.diffTimer = setTimeout(renderDraftDiff, 120);
+  };
+  const getDraftSnapshot = () => {
+    if (view.conflict) throw new Error('Markdown draft conflicts with disk; resolve it before asking Pi.');
+    if (globalThis.__lanternMdPaged?.active) {
+      throw new Error('Pi draft editing is not enabled for the section editor yet. Save or switch to Source first.');
+    }
+    if (!view.active || !view.instance) return null;
+    return {
+      text: getEditorText(),
+      baseVersion: view.version,
+      draftRevision: view.revision,
+      mode: view.mode,
+    };
+  };
+  const beginPiDraft = (promptId, text) => {
+    const id = String(promptId || '');
+    if (!id) throw new Error('Pi draft prompt id is required');
+    piTurns.set(id, {base: String(text ?? ''), revision: view.revision});
+    while (piTurns.size > 6) piTurns.delete(piTurns.keys().next().value);
+  };
+  const applyPiDraft = async (promptId, shadowText, final = false) => {
+    const id = String(promptId || '');
+    const turn = piTurns.get(id);
+    if (!turn) throw new Error('Pi draft update does not match an active prompt');
+    if (globalThis.__lanternMdPaged?.active) {
+      throw new Error('Pi draft update cannot be merged while the section editor is active');
+    }
+    if (!view.active) await start('source');
+    else if (view.mode !== 'source') await switchEditor('source');
+    if (view.mode !== 'source' || !view.sourceArea || !view.instance) {
+      throw new Error('Source editor is unavailable for Pi draft merge');
+    }
+    if (view.conflict) throw new Error('Markdown changed on disk; Pi draft was not merged');
+
+    const diff = diffApi();
+    if (!diff) throw new Error('Markdown diff engine is unavailable');
+    const current = getEditorText();
+    const result = diff.merge3(turn.base, current, String(shadowText ?? ''));
+    if (result.text !== current) {
+      const area = view.sourceArea;
+      const startAt = area.selectionStart;
+      const endAt = area.selectionEnd;
+      area.value = result.text;
+      area.setSelectionRange(Math.min(startAt, area.value.length), Math.min(endAt, area.value.length));
+      view.revision += 1;
+      view.dirty = !matchesLastSaved(result.text);
+      if (view.dirty) queueDraft();
+      else await drafts.clear().catch(() => {});
+      renderDraftDiff();
+    }
+    if (result.conflicts.length) {
+      status('Pi changed the draft, but ' + result.conflicts.length +
+        ' overlapping hunk(s) were skipped because your newer edits win.', 'warn');
+    } else if (result.appliedPiHunks) {
+      status('Pi changes are pending review. Press Ctrl+S or Save to commit.', 'info');
+    }
+    if (final) piTurns.delete(id);
+    return result;
   };
   const saveDraft = async () => {
     if (!view.active || !view.instance) return true;
@@ -712,5 +771,6 @@
     requestAnimationFrame(() => { void restorePosition('preview', bookmark, Number(priorScroll) || 0); });
   }
   window.__lanternMdVisual = { get state() { return view; }, open: start,
-    show: start, save: () => save(true), preview: close };
+    show: start, save: () => save(true), preview: close,
+    getDraftSnapshot, beginPiDraft, applyPiDraft };
 })();

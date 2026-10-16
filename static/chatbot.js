@@ -465,6 +465,46 @@
       onPiEvent(message.event || {});
       return;
     }
+    if (typ === 'chat_draft_update') {
+      const editor = globalThis.__lanternMdVisual;
+      if (!editor?.applyPiDraft) {
+        setStatus('Markdown draft controller is unavailable for Pi updates.', 'error');
+        return;
+      }
+      void Promise.resolve(editor.applyPiDraft(
+        message.promptId,
+        String(message.text || ''),
+        Boolean(message.final),
+      )).then(result => {
+        const conflicts = Number(result?.conflicts?.length || 0);
+        const applied = Number(result?.appliedPiHunks || 0);
+        if (conflicts) {
+          setStatus('Pi draft merged; ' + conflicts + ' overlapping hunk(s) skipped because your edits win.', 'warn');
+          if (message.final) appendSystem(
+            'Pi finished with ' + conflicts + ' overlapping draft hunk(s) skipped. Your newer text was kept.',
+          );
+        } else if (applied) {
+          setStatus('Pi changes are pending review. Save to commit them.');
+        } else if (message.final) {
+          setStatus('Pi finished. No additional Markdown draft changes.');
+        }
+        refreshContextLabel();
+      }).catch(error => {
+        setStatus('Pi draft merge failed: ' + String(error?.message || error), 'error');
+        appendSystem('Pi draft merge failed: ' + String(error?.message || error), 'error');
+      });
+      return;
+    }
+    if (typ === 'chat_draft_error') {
+      setStatus(String(message.error || 'Pi Markdown draft failed'), 'error');
+      appendSystem('Pi Markdown draft error: ' + String(message.error || 'unknown error'), 'error');
+      return;
+    }
+    if (typ === 'chat_real_file_touched') {
+      setStatus('Saved Markdown changed outside the pending draft. Save is blocked until you reconcile.', 'error');
+      appendSystem('Saved Markdown changed while Pi was working. The pending browser draft was kept; reload/reconcile before Save.', 'error');
+      return;
+    }
     if (typ === 'chat_prompt_accepted') {
       setStreaming(true);
       setStatus('Pi is working…');
@@ -498,18 +538,44 @@
     }
   }
 
-  async function flushCurrentDraft() {
-    if (document.body?.dataset?.lanternChatKind !== 'markdown') return true;
+  async function captureMarkdownDraft(context, promptId) {
+    if (context?.kind !== 'markdown') return null;
+    if (globalThis.__lanternMdPaged?.active) {
+      throw new Error('Pi draft editing is not enabled for the section editor yet. Save or switch to Source first.');
+    }
     const editor = globalThis.__lanternMdVisual;
-    const state = editor?.state;
-    if (!state?.active || !state.dirty) return true;
-    if (state.conflict) throw new Error('Markdown has a disk conflict. Resolve or download the draft before asking Pi to edit it.');
-    setStatus('Saving current Markdown before Pi reads it…');
-    await editor.save();
-    const next = editor?.state;
-    if (next?.conflict) throw new Error('Markdown changed on disk while saving. Pi prompt was not sent.');
-    if (next?.dirty) throw new Error('Markdown is still unsaved. Save or resolve the draft before asking Pi.');
-    return true;
+    if (!editor?.beginPiDraft) throw new Error('Markdown draft controller is unavailable');
+
+    let snapshot = editor.getDraftSnapshot?.() || null;
+    if (!snapshot) {
+      const response = await fetch('/api/md/document?p=' + encodeURIComponent(context.path), {
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
+      let doc = null;
+      try { doc = await response.json(); } catch {}
+      if (!response.ok || !doc || typeof doc.content !== 'string' || !doc.version) {
+        throw new Error(doc?.error || 'Unable to load the current Markdown draft');
+      }
+      snapshot = {
+        text: doc.content,
+        baseVersion: doc.version,
+        draftRevision: 0,
+        mode: 'preview',
+      };
+    }
+    const bytes = new TextEncoder().encode(String(snapshot.text || '')).length;
+    if (bytes > 1024 * 1024) {
+      throw new Error('Markdown draft is too large for Pi staging (1 MiB limit).');
+    }
+    if (!snapshot.baseVersion) throw new Error('Markdown baseline version is unavailable');
+    editor.beginPiDraft(promptId, snapshot.text);
+    return {
+      promptId,
+      baseVersion: snapshot.baseVersion,
+      draftRevision: Number(snapshot.draftRevision || 0),
+      text: String(snapshot.text || ''),
+    };
   }
 
   async function sendPrompt() {
@@ -519,15 +585,17 @@
     if (!message) return;
     try {
       input.disabled = true;
-      await flushCurrentDraft();
       const context = captureContext();
+      const promptId = 'chat-' + Date.now().toString(36);
+      const draft = await captureMarkdownDraft(context, promptId);
       refreshContextLabel();
       appendMessage('user', message);
       sendRaw({
         type: 'chat_prompt',
-        reqId: 'chat-' + Date.now().toString(36),
+        reqId: promptId,
         message,
         context,
+        draft,
       });
       input.value = '';
       S.assistant = null;
@@ -583,7 +651,7 @@
       open: () => setOpen(true),
       close: () => setOpen(false),
       captureContext,
-      flushCurrentDraft,
+      captureMarkdownDraft,
       refreshContext: refreshContextLabel,
     };
   }

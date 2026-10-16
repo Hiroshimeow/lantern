@@ -13,12 +13,16 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
+from .pi_draft import MarkdownDraftShadow
+
 SYSTEM_PROMPT = """You are embedded in Lantern's chatbot.
 The newest <lantern_context> block is authoritative for the user's current location.
 When the user says this file, here, or this markdown, use that newest context.
-Read only what is needed. Prefer the native edit/write tools for file mutations so
-Lantern can display precise diffs. Preserve unrelated content and existing formatting.
-Do not claim tests passed unless you actually ran them."""
+Read only what is needed. For an active Markdown document, draftPath is the only
+editable copy of that document. savedPath is read-only reference state: never edit or
+write savedPath. Use native edit/write on draftPath so Lantern can merge the result into
+the user's pending draft. Other project files may be edited normally. Preserve unrelated
+content and existing formatting. Do not claim tests passed unless you actually ran them."""
 
 DEFAULT_MODEL_PRIORITY = (
     "gpt-6.1-sol",
@@ -51,6 +55,7 @@ class PiChatManager:
         emit: Callable[[dict[str, Any]], None],
         *,
         session_dir: Optional[Path] = None,
+        draft_storage_dir: Optional[Path] = None,
         argv_override: Optional[list[str]] = None,
         request_timeout: float = 15.0,
         max_models: int = 5,
@@ -60,6 +65,8 @@ class PiChatManager:
         self.session_dir = (Path(session_dir) if session_dir else
                             Path.home() / ".lantern" / "pi-sessions").resolve()
         self.state_path = self.session_dir / "lantern-active.json"
+        self.drafts = MarkdownDraftShadow(self.root, storage_dir=draft_storage_dir)
+        self.guard_extension = Path(__file__).with_name("pi_markdown_guard.ts").resolve()
         self.argv_override = list(argv_override) if argv_override else None
         self.request_timeout = max(1.0, float(request_timeout))
         self.max_models = max(1, min(int(max_models), 8))
@@ -134,12 +141,16 @@ class PiChatManager:
             node = shutil.which("node.exe") or shutil.which("node")
             if node and cli.is_file():
                 prefix = [node, str(cli)]
+        if not self.guard_extension.is_file():
+            raise RuntimeError("Lantern Pi Markdown guard extension is missing")
         args = prefix + [
             "--mode", "rpc",
             "--session-dir", str(self.session_dir),
             "--name", "LanternChat",
             "--append-system-prompt", SYSTEM_PROMPT,
+            "--tools", "read,edit,write,grep,find,ls",
             "--no-extensions",
+            "--extension", str(self.guard_extension),
             "--no-mcp",
         ]
         session_file = self._saved_session_file()
@@ -158,6 +169,8 @@ class PiChatManager:
                 return
             self.session_dir.mkdir(parents=True, exist_ok=True)
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            child_env = dict(os.environ)
+            child_env["LANTERN_PI_GUARD_STATE"] = str(self.drafts.guard_path)
             self.proc = subprocess.Popen(
                 self._command(),
                 cwd=str(self.root),
@@ -169,6 +182,7 @@ class PiChatManager:
                 errors="replace",
                 bufsize=1,
                 creationflags=creationflags,
+                env=child_env,
             )
             self.reader = threading.Thread(target=self._reader_loop, name="lantern-pi-rpc", daemon=True)
             self.stderr_reader = threading.Thread(target=self._stderr_loop, name="lantern-pi-stderr", daemon=True)
@@ -217,6 +231,13 @@ class PiChatManager:
                     self.streaming = True
                 elif typ == "agent_settled":
                     self.streaming = False
+                if typ == "tool_execution_end":
+                    self._emit_draft_update(final=False)
+                elif typ == "agent_settled":
+                    self._emit_draft_update(final=True)
+                    touched = self.drafts.real_file_changed()
+                    if touched:
+                        self.emit(touched)
                 self.emit({"type": "chat_pi_event", "event": event})
         finally:
             code = proc.poll()
@@ -270,6 +291,14 @@ class PiChatManager:
         if response.get("success") is False:
             raise RuntimeError(str(response.get("error") or f"Pi RPC failed: {payload.get('type')}"))
         return response
+
+    def _emit_draft_update(self, *, final: bool) -> None:
+        try:
+            update = self.drafts.read_update(final=final)
+        except Exception as exc:
+            update = {"type": "chat_draft_error", "error": str(exc), "final": bool(final)}
+        if update:
+            self.emit(update)
 
     def get_state(self) -> dict[str, Any]:
         response = self.request({"type": "get_state"})
@@ -337,6 +366,7 @@ class PiChatManager:
         return response
 
     def new_session(self) -> dict[str, Any]:
+        self.drafts.clear()
         response = self.request({"type": "new_session"})
         state = self.get_state()
         self.emit({"type": "chat_session_changed", "state": state})
@@ -392,7 +422,8 @@ class PiChatManager:
             raise ValueError("Chat message is too large")
         context = context if isinstance(context, dict) else {}
         fields = []
-        for key in ("kind", "folder", "path", "markdownMode", "line"):
+        for key in ("kind", "folder", "path", "markdownMode", "line",
+                    "promptId", "draftPath", "savedPath", "baseVersion", "draftRevision"):
             value = context.get(key)
             if value is not None and value != "":
                 fields.append(f"{key}: {value}")
@@ -402,12 +433,37 @@ class PiChatManager:
         block = "\n".join(fields) if fields else "kind: unknown"
         return f"<lantern_context>\n{block}\n</lantern_context>\n\n<user_request>\n{text}\n</user_request>"
 
-    def prompt(self, message: str, context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        wrapped = self.build_prompt(message, self.normalize_context(context))
+    def prompt(
+        self,
+        message: str,
+        context: Optional[dict[str, Any]] = None,
+        draft: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        normalized = self.normalize_context(context)
+        if normalized.get("kind") == "markdown":
+            if not isinstance(draft, dict):
+                raise ValueError("Markdown chat requires the current browser draft")
+            real_path = normalized.get("path")
+            if not real_path:
+                raise ValueError("Markdown chat context is missing its path")
+            active = self.drafts.prepare(
+                Path(str(real_path)),
+                str(draft.get("text") or ""),
+                prompt_id=str(draft.get("promptId") or ""),
+                base_version=str(draft.get("baseVersion") or ""),
+                draft_revision=int(draft.get("draftRevision") or 0),
+            )
+            normalized.update(self.drafts.context_fields())
+            normalized["path"] = str(active.real_path)
+        else:
+            self.drafts.clear()
+        wrapped = self.build_prompt(message, normalized)
         return self.request({"type": "prompt", "message": wrapped})
 
     def abort(self) -> dict[str, Any]:
-        return self.request({"type": "abort"}, timeout=5.0)
+        response = self.request({"type": "abort"}, timeout=5.0)
+        self._emit_draft_update(final=True)
+        return response
 
     def summary(self) -> dict[str, Any]:
         state = dict(self.last_state)
@@ -423,6 +479,10 @@ class PiChatManager:
         }
 
     def close(self) -> None:
+        try:
+            self.drafts.clear()
+        except Exception:
+            pass
         with self.lock:
             self.closed = True
             proc = self.proc

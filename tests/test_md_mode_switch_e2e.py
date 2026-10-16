@@ -813,6 +813,71 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_pi_shadow_merges_into_pending_source_draft_without_touching_disk(self):
+        initial = "# Pi merge\nalpha\nbeta\ngamma\nomega\n"
+        path = self.root / "pi-shadow-merge.md"
+        path.write_text(initial, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1180, "height": 850})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=pi-shadow-merge.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(state="visible")
+
+            # Pi starts from this browser draft.
+            page.evaluate(
+                "(base) => window.__lanternMdVisual.beginPiDraft('p-merge', base)",
+                initial,
+            )
+            # Human changes beta while Pi is working.
+            human = "# Pi merge\nalpha\nHUMAN BETA\ngamma\nomega\n"
+            source.fill(human)
+            page.wait_for_function("() => window.__lanternMdVisual.state.dirty")
+
+            # Pi independently changes omega. Non-overlap must merge into the same draft.
+            pi_shadow = "# Pi merge\nalpha\nbeta\ngamma\nPI OMEGA\n"
+            result = page.evaluate(
+                """async ({id,text}) => await window.__lanternMdVisual.applyPiDraft(id,text,true)""",
+                {"id": "p-merge", "text": pi_shadow},
+            )
+            merged = "# Pi merge\nalpha\nHUMAN BETA\ngamma\nPI OMEGA\n"
+            self.assertEqual(source.input_value(), merged)
+            self.assertEqual(result["conflicts"], [])
+            self.assertEqual(result["appliedPiHunks"], 1)
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+
+            # New turn: human and Pi touch the same line. Human draft must win.
+            page.evaluate(
+                "(base) => window.__lanternMdVisual.beginPiDraft('p-conflict', base)",
+                merged,
+            )
+            human2 = "# Pi merge\nalpha\nHUMAN BETA\nHUMAN GAMMA\nPI OMEGA\n"
+            source.fill(human2)
+            page.wait_for_timeout(350)
+            pi2 = "# Pi merge\nalpha\nHUMAN BETA\nPI GAMMA\nPI OMEGA\n"
+            conflict = page.evaluate(
+                """async ({id,text}) => await window.__lanternMdVisual.applyPiDraft(id,text,true)""",
+                {"id": "p-conflict", "text": pi2},
+            )
+            self.assertEqual(source.input_value(), human2)
+            self.assertEqual(len(conflict["conflicts"]), 1)
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+
+            # Explicit user Save is still the only real-file commit.
+            page.keyboard.press("Control+S")
+            page.wait_for_function(
+                "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty; }",
+                timeout=8000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), human2)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
 
 if __name__ == "__main__":
     unittest.main()

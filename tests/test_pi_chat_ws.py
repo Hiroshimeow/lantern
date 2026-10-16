@@ -36,8 +36,8 @@ class FakeChat:
     def get_messages(self):
         return [{"role": "assistant", "content": "hello"}]
 
-    def prompt(self, message, context):
-        self.prompts.append((message, context))
+    def prompt(self, message, context, draft=None):
+        self.prompts.append((message, context, draft))
         return {"success": True}
 
     def new_session(self):
@@ -97,7 +97,7 @@ class PiChatWebSocketTests(unittest.TestCase):
              "context": {"kind": "file", "path": "a.txt"}},
             object(), None, chat=chat,
         )
-        self.assertEqual(chat.prompts, [("fix", {"kind": "file", "path": "a.txt"})])
+        self.assertEqual(chat.prompts, [("fix", {"kind": "file", "path": "a.txt"}, None)])
         self.assertEqual(peer.messages[-1], {"type": "chat_prompt_accepted", "reqId": "r1"})
 
         dispatch(peer, {"type": "chat_set_model", "provider": "p", "modelId": "x"},
@@ -111,6 +111,26 @@ class PiChatWebSocketTests(unittest.TestCase):
         self.assertEqual(chat.new_count, 1)
         self.assertEqual(peer.messages[-1]["type"], "chat_state")
         self.assertEqual(peer.messages[-1]["state"]["sessionId"], "session-new")
+
+    def test_chat_prompt_forwards_markdown_draft_payload(self):
+        peer = Peer()
+        chat = FakeChat()
+        draft = {
+            "promptId": "chat-1",
+            "baseVersion": "a" * 64,
+            "draftRevision": 4,
+            "text": "# Draft\n",
+        }
+        context = {"kind": "markdown", "path": "doc.md", "markdownMode": "source"}
+        dispatch(
+            peer,
+            {"type": "chat_prompt", "reqId": "chat-1", "message": "edit",
+             "context": context, "draft": draft},
+            object(), None, chat=chat,
+        )
+        self.assertEqual(chat.prompts, [("edit", context, draft)])
+        self.assertEqual(peer.messages[-1],
+                         {"type": "chat_prompt_accepted", "reqId": "chat-1"})
 
     def test_missing_chat_manager_fails_closed(self):
         peer = Peer()
