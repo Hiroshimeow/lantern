@@ -47,6 +47,7 @@
     draftTimer: 0, diffTimer: 0, checkTimer: 0, host: null, status: null,
     saveButton: null, closeButton: null, details: null,
     sourceArea: null, sourceBackdrop: null, sourceDeletions: null, hunks: [],
+    workHash: null, workState: 'clean', ackedText: '',
     savedSincePreview: false, switchingFromPaged: false,
   };
   const key = location.origin + ':' + path;
@@ -103,7 +104,9 @@
     },
     async read() { return this.store('get'); },
     async write(content) {
-      const pending = this.store('put', { content, version: view.version, at: Date.now() });
+      const pending = this.store('put', {
+        content, version: view.version, workHash: view.workHash || null, at: Date.now(),
+      });
       draftWrites.add(pending);
       try { return await pending; }
       finally { draftWrites.delete(pending); }
@@ -241,15 +244,52 @@
     if (final) piTurns.delete(id);
     return result;
   };
+  const flushWorkingCopy = async (text = getEditorText()) => {
+    if (!view.version) return false;
+    try {
+      const result = await api('/api/work/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path,
+          content: text,
+          expectHash: view.workHash || null,
+          baseVersion: view.version,
+        }),
+      });
+      view.workHash = result.hash || null;
+      view.workState = result.state || (view.workHash ? 'pending' : 'clean');
+      view.ackedText = text;
+      await drafts.clear().catch(() => {});
+      return true;
+    } catch (error) {
+      await drafts.write(text).catch(() => {});
+      if (error.status === 409) {
+        if (error.data?.reason === 'pi_turn') {
+          status('Pi is editing this draft. Your newer typing is held locally and will flush after it finishes.', 'warn');
+        } else {
+          view.conflict = true;
+          status('Conflict: draft or saved file changed elsewhere. Your newer typing is kept locally; reconcile before Save.', 'error');
+        }
+      } else {
+        status('Working-copy sync failed. Your newer typing is kept in this browser.', 'error');
+      }
+      return false;
+    }
+  };
   const saveDraft = async () => {
     if (!view.active || !view.instance) return true;
     const text = getEditorText();
-    if (matchesLastSaved(text)) return true;
-    try { await drafts.write(text); return true; }
-    catch {
-      status('Local draft storage unavailable. Keep this editor open or download the draft.', 'error');
-      return false;
+    if (view.saving) {
+      await drafts.write(text).catch(() => {});
+      return true;
     }
+    if (matchesLastSaved(text) && !view.workHash) {
+      view.ackedText = text;
+      await drafts.clear().catch(() => {});
+      return true;
+    }
+    return flushWorkingCopy(text);
   };
   const queueDraft = () => {
     clearTimeout(view.draftTimer);
@@ -272,7 +312,7 @@
       if (!view.active || !view.instance || observedRevision !== view.revision) return;
       if (matchesLastSaved(getEditorText())) {
         view.dirty = false;
-        clearTimeout(view.draftTimer);
+        queueDraft();
         renderDraftDiff();
         if (!view.conflict && !view.saving) status(view.roundtripSafe ?
           'Ready. No pending changes.' :
@@ -432,20 +472,13 @@
 
   async function save(manual) {
     if (!view.active || !view.instance || view.conflict) {
-      if (view.conflict) status('File changed externally. Your draft is retained; download it before reloading.', 'error');
+      if (view.conflict) status('File changed externally. Your working copy is retained; reconcile before Save.', 'error');
       return;
     }
     if (view.saving) { status('Save already in progress.', 'info'); return; }
     const text = getEditorText();
-    if (matchesLastSaved(text)) {
-      view.dirty = false;
-      await drafts.clear().catch(() => {});
-      renderDraftDiff();
-      if (manual) status('Already saved');
-      return;
-    }
-    if (!view.roundtripSafe && !view.approvedReformat) {
-      if (!await showReformatReview()) { status('Save cancelled; draft retained.', 'warn'); return; }
+    if (!view.roundtripSafe && !view.approvedReformat && !matchesLastSaved(text)) {
+      if (!await showReformatReview()) { status('Save cancelled; working copy retained.', 'warn'); return; }
       view.approvedReformat = true;
     }
     const revision = view.revision;
@@ -453,33 +486,52 @@
     restoreButtons();
     status('Saving…');
     try {
-      const result = await api('/api/md/save', {
+      if (!(await flushWorkingCopy(text))) return;
+      const hashToSave = view.workHash;
+      if (!hashToSave) {
+        view.dirty = false;
+        view.lastSaved = text;
+        view.baseline = text;
+        view.ackedText = text;
+        renderDraftDiff();
+        if (manual) status('Already saved');
+        return;
+      }
+      const result = await api('/api/work/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, content: text, version: view.version }),
+        body: JSON.stringify({
+          path,
+          expectHash: hashToSave,
+          expectSavedVersion: view.version,
+        }),
       });
       view.version = result.version;
       view.lastSaved = text;
       view.baseline = text;
+      view.workHash = null;
+      view.workState = 'clean';
+      view.ackedText = text;
       view.savedSincePreview = true;
-      renderDraftDiff();
       if (view.revision === revision) {
         view.dirty = false;
         await drafts.clear().catch(() => {});
+        renderDraftDiff();
         status('Saved ✓');
       } else {
         view.dirty = true;
-        await saveDraft().catch(() => {});
+        await flushWorkingCopy(getEditorText());
+        renderDraftDiff();
         status('Saved the earlier revision; newer edits are still pending.', 'warn');
       }
     } catch (error) {
       if (error.status === 409 || error.status === 404) {
         view.conflict = true;
-        status('Conflict: file changed or disappeared on disk. Draft preserved. Download your changes before reloading.', 'error');
+        status('Conflict: saved file or working copy changed elsewhere. Your editor text is retained.', 'error');
       } else {
-        status('Save failed: ' + error.message + '. Draft kept locally. Try Save again.', 'error');
+        status('Save failed: ' + error.message + '. Working copy retained.', 'error');
       }
-      await saveDraft();
+      await drafts.write(getEditorText()).catch(() => {});
     } finally {
       view.saving = false;
       restoreButtons();
@@ -495,17 +547,13 @@
     // Milkdown may emit a mount transaction without changing Markdown.
     // Compare content, not its transient dirty flag, before switching modes.
     const wasDirty = !matchesLastSaved(contentNow);
-    // Milkdown can normalize raw Markdown, including HTML comments and tables.
-    // Never reinterpret an unsaved exact Source draft without a versioned save.
-    if (kind === 'visual' && view.mode === 'source' && wasDirty) {
-      status('Save Source before entering Visual Edit; your unsaved text is unchanged.', 'warn');
-      return;
-    }
+    // Pending Source text may move into the full Visual editor; the working copy
+    // remains the durable backing and any Milkdown normalization stays visible as diff.
     // Never open a multi-megabyte document in the full Milkdown tree.
     // Source -> Visual goes through the existing section-indexed editor.
     if (kind === 'visual' && new Blob([contentNow]).size > FULL_VISUAL_LIMIT_BYTES) {
-      if (wasDirty) {
-        status('Save Source before switching to section-based Visual Edit. Your draft is unchanged.', 'warn');
+      if (wasDirty || view.workHash) {
+        status('Pending changes — use Source, or Save/Discard before section-based Visual Edit.', 'warn');
         return;
       }
       const y = scrollY;
@@ -520,7 +568,7 @@
       await start('visual', bookmark);
       return;
     }
-    if (wasDirty && !(await saveDraft())) return;
+    if ((wasDirty || view.workHash) && !(await saveDraft())) return;
     const contents = wasDirty ? contentNow : view.baseline;
     const oldLastSaved = view.lastSaved;
     const oldSafe = view.roundtripSafe;
@@ -575,45 +623,50 @@
     }
   }
 
+  async function renderDraftPreview(text) {
+    const result = await api('/api/md/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, content: text }),
+    });
+    const holder = document.createElement('div');
+    holder.innerHTML = String(result.html || '');
+    const article = holder.querySelector('article.md-preview');
+    if (!article) throw new Error('Draft preview response did not contain an article');
+    preview.innerHTML = article.innerHTML;
+    await globalThis.__lanternMarkdownPreview?.refresh?.(preview);
+  }
+
   async function close(requestedBookmark = null) {
     if (!view.active || view.saving || view.loading) return;
     const bookmark = requestedBookmark || capturePosition();
-    const unsaved = !matchesLastSaved(getEditorText());
-    if (unsaved && !confirm('Discard unsaved changes and return to Preview?')) return;
+    const text = getEditorText();
+    if (!(await flushWorkingCopy(text))) return;
     clearTimeout(view.draftTimer);
     clearTimeout(view.diffTimer);
     clearTimeout(view.checkTimer);
-    // Stop new draft writes while waiting for any in-flight writes to finish.
+    const y = scrollY;
     const previousMode = view.mode;
     view.mode = 'preview';
     view.loading = true;
     restoreButtons();
-    try { await drafts.clear(); }
-    catch {
+    try {
+      await renderDraftPreview(text);
+      await view.instance?.destroy?.();
+      view.instance = null;
+      view.host?.remove();
+      view.host = null;
+      view.status = null;
+      view.dirty = cleanLineEndings(text) !== cleanLineEndings(view.baseline);
+      view.loading = false;
+      preview.hidden = false;
+      restoreButtons();
+      await restorePosition('preview', bookmark, y);
+    } catch (error) {
       view.mode = previousMode;
       view.loading = false;
       restoreButtons();
-      status('Cannot clear local draft. Keep editing or download a copy before closing.', 'error');
-      return;
-    }
-    const y = scrollY;
-    await view.instance?.destroy?.();
-    view.instance = null;
-    view.host?.remove();
-    view.host = null;
-    view.status = null;
-    view.dirty = false;
-    view.loading = false;
-    preview.hidden = false;
-    restoreButtons();
-    // Preview is server-rendered. Reload only when this tab saved new source;
-    // clean toggles simply switch surfaces without a navigation or refetch.
-    if (view.savedSincePreview) {
-      sessionStorage.setItem('lantern-md-scroll:' + path, String(y));
-      if (bookmark) sessionStorage.setItem(anchorKey, JSON.stringify(bookmark));
-      location.reload();
-    } else {
-      await restorePosition('preview', bookmark, y);
+      status('Cannot render pending Preview: ' + error.message, 'error');
     }
   }
 
@@ -632,8 +685,25 @@
     restoreButtons();
     try {
       const start = performance.now();
-      const doc = await api('/api/md/document?p=' + encodeURIComponent(path));
-      if(kind === 'visual' && doc.bytes > FULL_VISUAL_LIMIT_BYTES){
+      const workState = await api('/api/work?p=' + encodeURIComponent(path));
+      const doc = workState.saved;
+      if (!doc) throw new Error('Saved Markdown file is missing');
+      const serverWork = workState.work;
+      let contents = serverWork?.content ?? doc.content;
+      view.version = doc.version;
+      view.baseline = doc.content;
+      view.workHash = serverWork?.hash || null;
+      view.workState = workState.state || (view.workHash ? 'pending' : 'clean');
+      view.ackedText = contents;
+      view.conflict = workState.state === 'external' || workState.state === 'missing';
+      view.dirty = contents !== doc.content;
+      view.approvedReformat = false;
+
+      if(kind === 'visual' && new Blob([contents]).size > FULL_VISUAL_LIMIT_BYTES){
+        if (serverWork) {
+          status('Pending changes — use Source, or Save/Discard before section-based Visual Edit.', 'warn');
+          return;
+        }
         const loadPaged = () => new Promise((resolve,reject)=>{
           if(window.LanternPagedEditor)return resolve(window.LanternPagedEditor);
           const script=document.createElement('script');
@@ -661,21 +731,18 @@
         return;
       }
       const engine = kind === 'visual' ? await loadBundle() : null;
-      let contents = doc.content;
       const recovered = await drafts.read().catch(() => null);
-      view.version = doc.version;
-      view.baseline = doc.content;
-      view.conflict = false;
-      view.dirty = false;
-      view.approvedReformat = false;
-      if (recovered?.mode !== 'paged' && typeof recovered?.content === 'string') {
-        if (recovered.content !== doc.content &&
-            confirm('An unsaved Markdown draft was found in this browser. Restore it?')) {
+      if (recovered?.mode !== 'paged' && typeof recovered?.content === 'string' &&
+          recovered.content !== contents) {
+        const sameBacking = recovered.version === view.version &&
+          (recovered.workHash ?? null) === (view.workHash ?? null);
+        if (sameBacking) {
           contents = recovered.content;
-          if (recovered.version !== doc.version) view.conflict = true;
-        } else {
-          // A declined or already-saved draft must not be offered again.
-          await drafts.clear().catch(() => {});
+          view.dirty = contents !== doc.content;
+        } else if (!recovered.workHash &&
+                   confirm('A legacy unsent browser draft was found. Restore it into the new working copy?')) {
+          contents = recovered.content;
+          view.dirty = contents !== doc.content;
         }
       }
       const editorHost = renderToolbar(kind, contents);
@@ -687,17 +754,17 @@
       view.mode = kind;
       const restoredDraft = contents !== doc.content;
       const serialized = view.instance.getMarkdown();
+      view.ackedText = serverWork?.content ?? doc.content;
       // A restored draft is not the remote baseline. Never accidentally treat it
       // as "already saved" and delete the only copy of unsaved edits.
       view.lastSaved = restoredDraft ? doc.content : serialized;
-      view.roundtripSafe = kind === 'source' || (!restoredDraft &&
-        cleanLineEndings(serialized) === cleanLineEndings(view.baseline));
+      view.roundtripSafe = kind === 'source' ||
+        cleanLineEndings(serialized) === cleanLineEndings(contents);
       if (restoredDraft) {
         view.dirty = true;
         view.revision += 1;
-        // Keep the exact original draft in IndexedDB until the user changes or
-        // explicitly saves it. Initial parsing may normalize Markdown syntax.
       }
+      if (contents !== view.ackedText) queueDraft();
       status(view.conflict ? 'Draft restored but disk version differs. Do not overwrite; download draft first.' :
         restoredDraft ? 'Unsaved draft restored.' :
         kind === 'source' ? 'Source ready. Changes stay pending until Ctrl+S or Save.' :
@@ -753,12 +820,12 @@
     void save(true);
   });
   window.addEventListener('beforeunload', e => {
-    if (!view.active || matchesLastSaved(getEditorText())) return;
+    if (!view.active || getEditorText() === view.ackedText) return;
     e.preventDefault();
     e.returnValue = '';
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && view.active && !matchesLastSaved(getEditorText())) void saveDraft();
+    if (document.hidden && view.active && getEditorText() !== view.ackedText) void saveDraft();
   });
   const scrollKey = 'lantern-md-scroll:' + path;
   const priorScroll = sessionStorage.getItem(scrollKey);
@@ -771,6 +838,6 @@
     requestAnimationFrame(() => { void restorePosition('preview', bookmark, Number(priorScroll) || 0); });
   }
   window.__lanternMdVisual = { get state() { return view; }, open: start,
-    show: start, save: () => save(true), preview: close,
+    show: start, save: () => save(true), preview: close, flushNow: saveDraft,
     getDraftSnapshot, beginPiDraft, applyPiDraft };
 })();

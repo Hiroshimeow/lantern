@@ -548,18 +548,20 @@
 
     let snapshot = editor.getDraftSnapshot?.() || null;
     if (!snapshot) {
-      const response = await fetch('/api/md/document?p=' + encodeURIComponent(context.path), {
+      const response = await fetch('/api/work?p=' + encodeURIComponent(context.path), {
         cache: 'no-store',
         credentials: 'same-origin',
       });
-      let doc = null;
-      try { doc = await response.json(); } catch {}
-      if (!response.ok || !doc || typeof doc.content !== 'string' || !doc.version) {
-        throw new Error(doc?.error || 'Unable to load the current Markdown draft');
+      let state = null;
+      try { state = await response.json(); } catch {}
+      const saved = state?.saved;
+      const current = state?.work?.content ?? saved?.content;
+      if (!response.ok || !saved || typeof current !== 'string' || !saved.version) {
+        throw new Error(state?.error || 'Unable to load the current Markdown working copy');
       }
       snapshot = {
-        text: doc.content,
-        baseVersion: doc.version,
+        text: current,
+        baseVersion: saved.version,
         draftRevision: 0,
         mode: 'preview',
       };

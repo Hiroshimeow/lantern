@@ -372,13 +372,14 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
-    def test_unsaved_source_returns_preview_and_discards_draft(self):
+
+    def test_unsaved_source_moves_across_visual_preview_without_saving(self):
         path = self.root / "draft.md"
         original = "# Draft\n\nOriginal\n"
+        draft = "# Draft\n\nUncommitted draft\n"
         path.write_text(original, encoding="utf-8")
         context = self.browser.new_context()
         page = context.new_page()
-        page.on("dialog", lambda dialog: dialog.accept())
         navs = []
         page.on("framenavigated", lambda frame: navs.append(frame.url) if frame == page.main_frame else None)
         try:
@@ -386,22 +387,27 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             area = page.get_by_role("textbox", name="Markdown source")
             area.wait_for(timeout=12000)
-            area.fill("# Draft\n\nUncommitted draft\n")
+            area.fill(draft)
+            page.wait_for_function("() => !!window.__lanternMdVisual?.state?.workHash", timeout=10000)
+
             page.get_by_role("button", name="Edit visually", exact=True).click()
-            self.assertEqual(page.evaluate("window.__lanternMdVisual.state.mode"), "source")
-            self.assertIn("Save Source before", page.locator(".md-visual-status").inner_text())
-            self.assertIn("Uncommitted draft", area.input_value())
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            self.assertIn("Uncommitted draft", editor.inner_text())
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+
             page.get_by_role("button", name="Preview", exact=True).click()
             page.locator("article.md-preview").wait_for(state="visible", timeout=13000)
+            self.assertIn("Uncommitted draft", page.locator("article.md-preview").inner_text())
             self.assertEqual(len(navs), 1)
             self.assertEqual(path.read_text(encoding="utf-8"), original)
+
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for(timeout=14000)
-            self.assertEqual(area.input_value(), original)
-            self.assertFalse(page.evaluate("window.__lanternMdVisual.state.dirty"))
+            self.assertEqual(area.input_value(), draft)
+            self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
         finally:
             context.close()
-
     def test_large_source_to_paged_visual_and_back(self):
         path = self.root / "large-switch.md"
         original = "# Large switch\n\n" + "".join(
@@ -563,49 +569,43 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
-    def test_confirmed_exit_discards_source_draft_instead_of_caching_it(self):
-        path=self.root/"discard-source.md"
-        original="# Source discard\n\nKept disk version.\n"
-        path.write_text(original,encoding="utf-8")
-        context=self.browser.new_context()
-        page=context.new_page()
-        prompts=[]
-        page.on("dialog",lambda dlg: (prompts.append(dlg.message),dlg.accept()))
+
+    def test_preview_keeps_source_working_copy_without_restore_prompt(self):
+        path = self.root / "discard-source.md"
+        original = "# Source draft\n\nKept disk version.\n"
+        draft = "# Source draft\n\nUNSAVED-CACHE-MARKER\n"
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context()
+        page = context.new_page()
+        prompts = []
+        page.on("dialog", lambda dlg: (prompts.append(dlg.message), dlg.dismiss()))
         try:
             page.goto(self.base + "/api/plugin/preview?p=discard-source.md")
-            page.get_by_role("button",name="Source",exact=True).click()
-            area=page.get_by_role("textbox",name="Markdown source")
-            area.fill("# Source discard\n\nUNSAVED-CACHE-MARKER\n")
-            key=self.base+":discard-source.md"
-            page.wait_for_function("""key=>new Promise(resolve=>{
-                const req=indexedDB.open('lantern-md-drafts',1);
-                req.onsuccess=()=>{
-                  const db=req.result;
-                  const tx=db.transaction('drafts','readonly');
-                  const get=tx.objectStore('drafts').get(key);
-                  get.onsuccess=()=>{resolve(!!get.result?.content?.includes('UNSAVED-CACHE-MARKER'));db.close()};
-                };
-            })""",arg=key,timeout=8000)
-            page.get_by_role("button",name="Preview",exact=True).click()
-            page.locator("article.md-preview").wait_for(state="visible",timeout=12000)
-            page.wait_for_timeout(1200)
-            recovered=page.evaluate("""key=>new Promise(resolve=>{
-                const req=indexedDB.open('lantern-md-drafts',1);
-                req.onsuccess=()=>{
-                  const db=req.result;const tx=db.transaction('drafts','readonly');
-                  const get=tx.objectStore('drafts').get(key);
-                  get.onsuccess=()=>{resolve(get.result||null);db.close()};
-                };
-            })""",arg=key)
-            self.assertIsNone(recovered,"Confirmed discard must clear IndexedDB draft")
-            self.assertEqual(path.read_text(encoding="utf-8"),original)
-            page.get_by_role("button",name="Source",exact=True).click()
+            page.get_by_role("button", name="Source", exact=True).click()
+            area = page.get_by_role("textbox", name="Markdown source")
+            area.fill(draft)
+            page.wait_for_function("() => !!window.__lanternMdVisual?.state?.workHash", timeout=10000)
+
+            page.get_by_role("button", name="Preview", exact=True).click()
+            page.locator("article.md-preview").wait_for(state="visible", timeout=12000)
+            self.assertIn("UNSAVED-CACHE-MARKER", page.locator("article.md-preview").inner_text())
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(prompts, [])
+
+            work = page.evaluate("""async () => {
+                const r=await fetch('/api/work?p='+encodeURIComponent('discard-source.md'),
+                  {cache:'no-store'});
+                return await r.json();
+            }""")
+            self.assertEqual(work["state"], "pending")
+            self.assertEqual(work["work"]["content"], draft)
+
+            page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for()
-            self.assertEqual(area.input_value(),original)
-            self.assertEqual(len(prompts),1,"Should not offer the discarded draft again")
+            self.assertEqual(area.input_value(), draft)
+            self.assertEqual(prompts, [])
         finally:
             context.close()
-
     def test_declining_old_draft_restoration_forgets_it(self):
         path=self.root/"declined-old-cache.md"
         original="# Clean source\n\nReal disk content.\n"
@@ -878,6 +878,95 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+
+    def test_dirty_source_can_switch_to_visual_without_saving_real_file(self):
+        initial = "# Draft mode switch\n\nOriginal paragraph.\n"
+        draft = "# Draft mode switch\n\nPending paragraph.\n"
+        path = self.root / "dirty-source-visual.md"
+        path.write_text(initial, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=dirty-source-visual.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(timeout=12000)
+            source.fill(draft)
+            page.wait_for_function(
+                "() => !!window.__lanternMdVisual?.state?.workHash",
+                timeout=10000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            self.assertIn("Pending paragraph.", editor.inner_text())
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertEqual(page.evaluate("() => window.__lanternMdVisual.state.mode"), "visual")
+            self.assertTrue(page.evaluate("() => !!window.__lanternMdVisual.state.workHash"))
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
+    def test_working_copy_survives_preview_and_only_save_changes_real_file(self):
+        initial = "# Working copy\n\nSaved body\n"
+        draft = "# Working copy changed\n\nPending body\n"
+        path = self.root / "working-copy-preview.md"
+        path.write_text(initial, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=working-copy-preview.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(timeout=12000)
+            source.fill(draft)
+
+            page.wait_for_function(
+                "() => !!window.__lanternMdVisual?.state?.workHash",
+                timeout=10000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            work = page.evaluate("""async () => {
+                const r=await fetch('/api/work?p='+encodeURIComponent('working-copy-preview.md'),
+                  {cache:'no-store'});
+                return await r.json();
+            }""")
+            self.assertEqual(work["state"], "pending")
+            self.assertEqual(work["work"]["content"], draft)
+
+            page.get_by_role("button", name="Preview", exact=True).click()
+            page.get_by_role("heading", name="Working copy changed").wait_for(timeout=12000)
+            self.assertIn("Pending body", page.locator("article.md-preview").inner_text())
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+
+            page.get_by_role("button", name="Source", exact=True).click()
+            source.wait_for(timeout=12000)
+            self.assertEqual(source.input_value(), draft)
+
+            page.keyboard.press("Control+S")
+            page.wait_for_function(
+                "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty && !s.workHash; }",
+                timeout=12000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), draft)
+            clean = page.evaluate("""async () => {
+                const r=await fetch('/api/work?p='+encodeURIComponent('working-copy-preview.md'),
+                  {cache:'no-store'});
+                return await r.json();
+            }""")
+            self.assertEqual(clean["state"], "clean")
+            self.assertIsNone(clean["work"])
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
 
 if __name__ == "__main__":
     unittest.main()

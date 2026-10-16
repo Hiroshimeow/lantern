@@ -14,13 +14,14 @@
     if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncHeight).observe(fixedBar);
     else addEventListener('resize', syncHeight);
   }
-  const diagrams = Array.from(document.querySelectorAll(".mermaid-diagram")).slice(0, 24);
+  const diagramList = (root = document) =>
+    Array.from(root.querySelectorAll(".mermaid-diagram")).slice(0, 24);
   const docName = (document.querySelector("[data-doc-name]")?.getAttribute("data-doc-name") || "document")
     .replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "document";
   let pendingRenders = Promise.resolve();
   const yieldUi = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-  function loadMermaid() {
+  function loadMermaid(diagrams) {
     if (!diagrams.length) return Promise.resolve(null);
     if (window.mermaid) return Promise.resolve(window.mermaid);
     return new Promise((resolve, reject) => {
@@ -83,9 +84,10 @@
     } finally { temp.remove(); }
   }
 
-  async function renderAll() {
+  async function renderAll(root = document) {
+    const diagrams = diagramList(root);
     if (!diagrams.length) return;
-    const runtime = await loadMermaid();
+    const runtime = await loadMermaid(diagrams);
     if (!runtime) throw new Error("Local Mermaid runtime unavailable");
     // script.onload resolves in the same task that parses/evaluates the large bundle.
     // Yield before initialize/render so first-load cost is not compounded with rendering.
@@ -144,8 +146,18 @@
     } finally { URL.revokeObjectURL(svgUrl); }
   }
 
+  const queueRender = (root = document) => {
+    pendingRenders = pendingRenders.then(() => renderAll(root)).catch((error) => {
+      for (const wrapper of diagramList(root)) {
+        const output = wrapper.querySelector(".mermaid-output");
+        if (output && !output.textContent) output.textContent =
+          `Mermaid unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    });
+    return pendingRenders;
+  };
   pendingRenders = renderAll().catch((error) => {
-    for (const wrapper of diagrams) {
+    for (const wrapper of diagramList(document)) {
       const output = wrapper.querySelector(".mermaid-output");
       if (output && !output.textContent) output.textContent =
         `Mermaid unavailable: ${error instanceof Error ? error.message : String(error)}`;
@@ -170,5 +182,9 @@
       finally { button.removeAttribute("disabled"); }
     }
   });
-  window.__lanternMarkdownPreview = { pendingRenders, exportPng };
+  window.__lanternMarkdownPreview = {
+    get pendingRenders() { return pendingRenders; },
+    exportPng,
+    refresh: queueRender,
+  };
 })();
