@@ -125,16 +125,20 @@
   function findVisualBlock(host, bookmark) {
     if (!host || !bookmark?.text) return null;
     const matching = [...host.querySelectorAll(SELECTOR)]
+      .filter(x => !x.closest('[data-md-diff-ghost]'))
       .filter(x => x.tagName === bookmark.blockTag && normalize(x.textContent) === bookmark.text);
     return matching.length === 1 ? matching[0] : matching[bookmark.ordinal] || null;
   }
   function visualAnchorFromElement(element, host, preview, paged = null) {
     if (!element?.closest || !host?.contains(element)) return null;
+    if (element.closest('[data-md-diff-ghost]')) return null;
     const block = element.closest(SELECTOR);
     if (!block || !host.contains(block)) return null;
     const text = normalize(block.textContent);
     if (!text || text.length > 512) return null;
-    const local = [...host.querySelectorAll(SELECTOR)].filter(x => x.tagName === block.tagName && normalize(x.textContent) === text);
+    const local = [...host.querySelectorAll(SELECTOR)]
+      .filter(x => !x.closest('[data-md-diff-ghost]'))
+      .filter(x => x.tagName === block.tagName && normalize(x.textContent) === text);
     const ordinal = local.indexOf(block);
     let matching = [...preview.querySelectorAll('[data-l]')].filter(x =>
       x.tagName === block.tagName && normalize(x.textContent) === text);
@@ -165,6 +169,7 @@
       }
     }
     for (const node of host.querySelectorAll(SELECTOR)) {
+      if (node.closest('[data-md-diff-ghost]')) continue;
       const box = node.getBoundingClientRect();
       if (box.bottom > 72 && box.top < innerHeight)
         return visualAnchorFromElement(node, host, preview, paged);

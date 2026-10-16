@@ -46,7 +46,7 @@
     baseline: '', lastSaved: '', roundtripSafe: false, approvedReformat: false,
     draftTimer: 0, diffTimer: 0, checkTimer: 0, host: null, status: null,
     saveButton: null, closeButton: null, details: null,
-    sourceArea: null, sourceBackdrop: null, sourceDeletions: null, hunks: [],
+    sourceArea: null, sourceBackdrop: null, sourceDeletions: null, visualDiffFallback: null, hunks: [],
     workHash: null, workState: 'clean', ackedText: '', piTurn: null, applyingPi: false,
     savedSincePreview: false, switchingFromPaged: false,
   };
@@ -122,9 +122,7 @@
   const matchesLastSaved = text => text === (view.mode === 'source'
     ? view.lastSaved.replace(/\r\n?/g, '\n') : view.lastSaved);
   const diffApi = () => globalThis.LanternMarkdownDiff;
-  const diffBaseline = () => view.mode === 'source'
-    ? String(view.baseline || '').replace(/\r\n?/g, '\n')
-    : String(view.lastSaved || '');
+  const diffBaseline = () => String(view.baseline || '');
   const syncSourceBackdrop = () => {
     if (!view.sourceArea || !view.sourceBackdrop) return;
     view.sourceBackdrop.style.transform =
@@ -194,38 +192,87 @@
 
     for (const hunk of hunks) {
       if ((hunk.kind === 'add' || hunk.kind === 'mod') && hunk.draftEnd > hunk.draftStart) {
-        let painted = false;
         for (const block of blocks) {
           if (block.line < hunk.draftEnd && block.end > hunk.draftStart) {
             block.node.classList.add(
               hunk.kind === 'add' ? 'md-preview-diff-add' : 'md-preview-diff-mod'
             );
-            painted = true;
           }
         }
-        if (!painted && blocks.length) {
-          const fallback = blocks.find(block => block.line >= hunk.draftStart) || blocks[blocks.length - 1];
-          fallback.node.classList.add(
-            hunk.kind === 'add' ? 'md-preview-diff-add' : 'md-preview-diff-mod'
-          );
-        }
+        // Blank-line-only hunks have no rendered block. Never paint a nearby
+        // block just to make the diff visible: that would be a false mapping.
       }
 
       if (Array.isArray(hunk.baseText) && hunk.baseText.length) {
         const ghost = document.createElement('div');
         ghost.className = 'md-preview-deletion';
         ghost.setAttribute('data-md-diff-ghost', 'true');
-        const label = document.createElement('div');
-        label.className = 'md-preview-deletion-label';
-        label.textContent = hunk.kind === 'mod' ? 'Replaced saved text' : 'Removed saved text';
-        const old = document.createElement('pre');
+        const old = document.createElement('div');
+        old.className = 'md-preview-deletion-text';
         old.textContent = hunk.baseText.join('\n');
-        ghost.append(label, old);
+        ghost.append(old);
         const anchor = blocks.find(block => block.line >= hunk.draftStart)?.node || null;
         if (anchor) anchor.insertAdjacentElement('beforebegin', ghost);
         else preview.append(ghost);
       }
     }
+  };
+
+  const renderVisualDiffFallback = (hunks, reason = '') => {
+    const panel = view.visualDiffFallback;
+    if (!panel) return;
+    panel.textContent = '';
+    const changed = (Array.isArray(hunks) ? hunks : []).filter(h =>
+      h.kind === 'add' || h.kind === 'mod' || h.kind === 'del');
+    if (!changed.length) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    panel.dataset.reason = reason || 'unmapped';
+    const note = document.createElement('div');
+    note.className = 'md-visual-diff-fallback-note';
+    note.textContent = changed.length +
+      ' pending Markdown change(s). Exact Visual positions are unavailable; Preview/Source shows them precisely.';
+    panel.append(note);
+    for (const hunk of changed) {
+      if (!Array.isArray(hunk.baseText) || !hunk.baseText.length) continue;
+      const ghost = document.createElement('div');
+      ghost.className = 'md-visual-fallback-deletion';
+      ghost.dataset.mdDiffGhost = 'true';
+      ghost.textContent = hunk.baseText.join('\n');
+      panel.append(ghost);
+    }
+  };
+
+  const renderVisualDiff = (hunks, draftText) => {
+    if (!view.instance) return;
+    if (!hunks.length) {
+      view.instance.clearPendingDiff?.();
+      if (view.visualDiffFallback) {
+        view.visualDiffFallback.hidden = true;
+        view.visualDiffFallback.textContent = '';
+      }
+      document.documentElement.dataset.mdVisualDiff = 'clean';
+      return;
+    }
+    if (typeof view.instance.setPendingDiff !== 'function') {
+      renderVisualDiffFallback(hunks, 'bundle-unavailable');
+      document.documentElement.dataset.mdVisualDiff = 'unmapped';
+      return;
+    }
+    const result = view.instance.setPendingDiff(draftText, hunks) || {};
+    if (result.mapped) {
+      if (view.visualDiffFallback) {
+        view.visualDiffFallback.hidden = true;
+        view.visualDiffFallback.textContent = '';
+      }
+      document.documentElement.dataset.mdVisualDiff =
+        result.unanchored ? 'mapped-partial' : 'mapped';
+      return;
+    }
+    renderVisualDiffFallback(hunks, String(result.reason || 'unmapped'));
+    document.documentElement.dataset.mdVisualDiff = 'unmapped';
   };
 
   const renderDraftDiff = () => {
@@ -235,6 +282,7 @@
     const hunks = diff.diffLines(diffBaseline(), text);
     view.hunks = hunks;
     if (view.mode === 'source') renderSourceDiff(hunks, text);
+    else if (view.mode === 'visual') renderVisualDiff(hunks, text);
     document.documentElement.dataset.mdPendingHunks = String(hunks.length);
     return hunks;
   };
@@ -529,6 +577,7 @@
     view.sourceArea = null;
     view.sourceBackdrop = null;
     view.sourceDeletions = null;
+    view.visualDiffFallback = null;
     const shell = document.createElement('section');
     shell.className = 'md-visual-shell';
     // Editing actions and status belong to the fixed page header.
@@ -562,6 +611,13 @@
       view.instance = { getMarkdown: () => area.value, focus: () => area.focus(), destroy: () => {} };
     }
     shell.append(editorHost);
+    if (kind === 'visual') {
+      const fallback = document.createElement('div');
+      fallback.className = 'md-visual-diff-fallback';
+      fallback.hidden = true;
+      shell.append(fallback);
+      view.visualDiffFallback = fallback;
+    }
     preview.insertAdjacentElement('afterend', shell);
     view.host = shell;
     view.status = topStatus;

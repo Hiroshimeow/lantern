@@ -926,6 +926,101 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_visual_pending_diff_is_decorative_editable_and_not_serialized(self):
+        baseline = (
+            "# Visual diff\n\n"
+            "Alpha block.\n\n"
+            "Old value.\n\n"
+            "Delete me.\n\n"
+            "Tail block.\n"
+        )
+        draft = (
+            "# Visual diff\n\n"
+            "Alpha block.\n\n"
+            "New value.\n\n"
+            "Tail block.\n\n"
+            "Added end.\n"
+        )
+        path = self.root / "visual-pending-diff.md"
+        path.write_text(baseline, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=visual-pending-diff.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(timeout=12000)
+            source.fill(draft)
+            page.wait_for_function(
+                "() => !!window.__lanternMdVisual?.state?.workHash",
+                timeout=10000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            page.wait_for_function(
+                "() => document.documentElement.dataset.mdVisualDiff === 'mapped'",
+                timeout=12000,
+            )
+
+            mod = editor.locator(".md-visual-diff-mod")
+            added = editor.locator(".md-visual-diff-add")
+            ghost = editor.locator(".md-visual-deletion[data-md-diff-ghost=true]")
+            self.assertGreater(mod.count(), 0)
+            self.assertTrue(any("New value." in text for text in mod.all_inner_texts()))
+            self.assertGreater(added.count(), 0)
+            self.assertTrue(any("Added end." in text for text in added.all_inner_texts()))
+            ghost_text = "\n".join(ghost.all_inner_texts())
+            self.assertIn("Old value.", ghost_text)
+            self.assertIn("Delete me.", ghost_text)
+            self.assertNotIn("Replaced saved text", ghost_text)
+
+            serialized = page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown()"
+            )
+            self.assertEqual(serialized, draft)
+            self.assertNotIn("Old value.", serialized)
+            self.assertNotIn("md-visual-diff", serialized)
+            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+
+            tail = editor.locator("p").filter(has_text="Tail block.").first
+            tail.click()
+            page.keyboard.press("End")
+            page.keyboard.type(" HUMAN")
+            page.wait_for_function(
+                """() => [...document.querySelectorAll('.md-visual-host .md-visual-diff-mod')]
+                  .some(x => x.textContent.includes('Tail block. HUMAN'))""",
+                timeout=8000,
+            )
+            edited = page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown()"
+            )
+            self.assertIn("Tail block. HUMAN", edited)
+            self.assertNotIn("Old value.", edited)
+            self.assertEqual(path.read_text(encoding="utf-8"), baseline)
+
+            page.keyboard.press("Control+s")
+            page.wait_for_function(
+                "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty && !s.workHash; }",
+                timeout=12000,
+            )
+            saved = path.read_text(encoding="utf-8")
+            self.assertIn("Tail block. HUMAN", saved)
+            self.assertNotIn("Old value.", saved)
+            page.wait_for_function(
+                "() => document.documentElement.dataset.mdPendingHunks === '0'",
+                timeout=6000,
+            )
+            self.assertEqual(editor.locator(".md-visual-diff-add,.md-visual-diff-mod,.md-visual-deletion").count(), 0)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_preview_pending_diff_survives_reload_and_clears_after_save(self):
         baseline = (
             "# Preview diff\n\n"

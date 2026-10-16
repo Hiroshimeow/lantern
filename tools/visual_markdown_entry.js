@@ -1,11 +1,13 @@
 // Self-contained browser editor. No CDN, remote fonts, telemetry or AI providers.
 import { Crepe } from '@milkdown/crepe';
-import { commandsCtx, editorViewCtx } from '@milkdown/kit/core';
+import { commandsCtx, editorViewCtx, parserCtx, remarkCtx } from '@milkdown/kit/core';
 import {
   addColAfterCommand, addRowAfterCommand, deleteSelectedCellsCommand,
   selectColCommand, selectRowCommand,
 } from '@milkdown/kit/preset/gfm';
-import { $remark } from '@milkdown/kit/utils';
+import { $prose, $remark } from '@milkdown/kit/utils';
+import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
+import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
 import { imageInlineComponent, inlineImageConfig } from '@milkdown/kit/component/image-inline';
 import { uploadConfig } from '@milkdown/kit/plugin/upload';
 import '@milkdown/crepe/theme/common/style.css';
@@ -34,6 +36,222 @@ const preserveUntitledImages = $remark('lantern-untitled-image-compat', () => ()
   };
   visit(tree);
 });
+
+const DIFF_IGNORED_MDAST = new Set(['definition', 'footnoteDefinition']);
+
+function makePendingDiffPlugin() {
+  const key = new PluginKey('lantern-pending-diff');
+  const milkdown = $prose(() => new Plugin({
+    key,
+    state: {
+      init: () => DecorationSet.empty,
+      apply(tr, current) {
+        const meta = tr.getMeta(key);
+        if (meta?.replace) return DecorationSet.create(tr.doc, meta.decorations || []);
+        if (meta?.clear) return DecorationSet.empty;
+        return current.map(tr.mapping, tr.doc);
+      },
+    },
+    props: {
+      decorations(state) {
+        return key.getState(state) || DecorationSet.empty;
+      },
+    },
+  }));
+  return { key, milkdown };
+}
+
+function currentEditorPieces(crepe) {
+  return crepe.editor.action(ctx => ({
+    view: ctx.get(editorViewCtx),
+    parser: ctx.get(parserCtx),
+    remark: ctx.get(remarkCtx),
+  }));
+}
+
+function sameSerializedBlock(parsedNode, currentNode) {
+  if (parsedNode.eq(currentNode)) return true;
+  if (parsedNode.type === currentNode.type && currentNode.type.name === 'heading') {
+    try {
+      const normalized = currentNode.type.create(
+        { ...currentNode.attrs, id: parsedNode.attrs.id || '' },
+        currentNode.content,
+        currentNode.marks,
+      );
+      return parsedNode.eq(normalized);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function buildVerifiedBlockMap(crepe, markdown) {
+  if (markdown !== crepe.getMarkdown()) {
+    return { mapped: false, reason: 'stale', units: [] };
+  }
+
+  let pieces;
+  let tree;
+  try {
+    pieces = currentEditorPieces(crepe);
+    tree = pieces.remark.runSync(pieces.remark.parse(markdown));
+  } catch (error) {
+    return { mapped: false, reason: 'parse:' + error.message, units: [] };
+  }
+
+  const mdBlocks = (Array.isArray(tree?.children) ? tree.children : [])
+    .filter(node => !DIFF_IGNORED_MDAST.has(node?.type));
+  const pmBlocks = [];
+  pieces.view.state.doc.forEach((node, offset, index) => {
+    pmBlocks.push({ node, offset, index });
+  });
+  while (pmBlocks.length) {
+    const last = pmBlocks[pmBlocks.length - 1];
+    if (!last.node?.isTextblock || last.node.content.size !== 0) break;
+    pmBlocks.pop();
+  }
+
+  if (mdBlocks.length !== pmBlocks.length) {
+    return {
+      mapped: false,
+      reason: 'block-count:' + mdBlocks.length + '/' + pmBlocks.length,
+      units: [],
+    };
+  }
+
+  const units = [];
+  for (let index = 0; index < mdBlocks.length; index++) {
+    const md = mdBlocks[index];
+    const pm = pmBlocks[index];
+    const startOffset = Number(md?.position?.start?.offset);
+    const endOffset = Number(md?.position?.end?.offset);
+    const startLine = Number(md?.position?.start?.line);
+    const endLine = Number(md?.position?.end?.line);
+    if (![startOffset, endOffset, startLine, endLine].every(Number.isFinite)) {
+      return { mapped: false, reason: 'missing-position:' + index, units: [] };
+    }
+
+    let parsed;
+    try {
+      parsed = pieces.parser(markdown.slice(startOffset, endOffset));
+    } catch (error) {
+      return { mapped: false, reason: 'slice-parse:' + index + ':' + error.message, units: [] };
+    }
+    if (parsed.childCount !== 1 || !sameSerializedBlock(parsed.child(0), pm.node)) {
+      return { mapped: false, reason: 'block-proof:' + index, units: [] };
+    }
+    units.push({
+      index,
+      type: pm.node.type.name,
+      from: pm.offset,
+      to: pm.offset + pm.node.nodeSize,
+      lineStart: Math.max(0, startLine - 1),
+      lineEnd: Math.max(startLine, endLine),
+    });
+  }
+
+  return { mapped: true, reason: '', units, view: pieces.view };
+}
+
+function diffGhost(text) {
+  const ghost = document.createElement('div');
+  ghost.className = 'md-visual-deletion';
+  ghost.dataset.mdDiffGhost = 'true';
+  ghost.contentEditable = 'false';
+  ghost.textContent = text;
+  return ghost;
+}
+
+function buildPendingDecorations(units, hunks, docSize) {
+  const kinds = new Map();
+  const widgets = [];
+  let unanchored = 0;
+
+  for (const hunk of Array.isArray(hunks) ? hunks : []) {
+    if ((hunk.kind === 'add' || hunk.kind === 'mod') && hunk.draftEnd > hunk.draftStart) {
+      const touched = units.filter(unit =>
+        unit.lineStart < hunk.draftEnd && unit.lineEnd > hunk.draftStart);
+      if (!touched.length) {
+        unanchored++;
+      } else {
+        for (const unit of touched) {
+          const prior = kinds.get(unit.index);
+          kinds.set(unit.index, prior === 'mod' || hunk.kind === 'mod' ? 'mod' : 'add');
+        }
+      }
+    }
+
+    if (Array.isArray(hunk.baseText) && hunk.baseText.length) {
+      const anchor = units.find(unit => unit.lineStart >= hunk.draftStart);
+      const pos = anchor ? anchor.from : docSize;
+      const key = [
+        'del', hunk.baseStart, hunk.baseEnd, hunk.draftStart,
+        hunk.baseText.join('\n'),
+      ].join(':');
+      widgets.push(Decoration.widget(
+        pos,
+        () => diffGhost(hunk.baseText.join('\n')),
+        { side: -1, key, ignoreSelection: true },
+      ));
+    }
+  }
+
+  const decorations = widgets.slice();
+  for (const unit of units) {
+    const kind = kinds.get(unit.index);
+    if (!kind) continue;
+    decorations.push(Decoration.node(unit.from, unit.to, {
+      class: kind === 'mod' ? 'md-visual-diff-mod' : 'md-visual-diff-add',
+      'data-md-visual-diff-kind': kind,
+    }));
+  }
+  return { decorations, unanchored };
+}
+
+function makePendingDiffController(crepe, key) {
+  let debug = [];
+  const clear = () => {
+    const { view } = currentEditorPieces(crepe);
+    view.dispatch(
+      view.state.tr
+        .setMeta(key, { clear: true })
+        .setMeta('addToHistory', false)
+    );
+    debug = [];
+  };
+
+  const set = (markdown, hunks) => {
+    const proof = buildVerifiedBlockMap(crepe, markdown);
+    if (!proof.mapped) {
+      clear();
+      return { mapped: false, reason: proof.reason, unanchored: hunks?.length || 0 };
+    }
+    const built = buildPendingDecorations(
+      proof.units,
+      hunks,
+      proof.view.state.doc.content.size,
+    );
+    proof.view.dispatch(
+      proof.view.state.tr
+        .setMeta(key, { replace: true, decorations: built.decorations })
+        .setMeta('addToHistory', false)
+    );
+    debug = proof.units.map(unit => ({ ...unit }));
+    return {
+      mapped: true,
+      reason: '',
+      unanchored: built.unanchored,
+      units: debug.length,
+    };
+  };
+
+  return {
+    setPendingDiff: set,
+    clearPendingDiff: clear,
+    debugBlockMap: () => debug.map(unit => ({ ...unit })),
+  };
+}
 
 // Paste/drop or the image toolbar must write a real file before inserting a
 // Markdown image node. Reuse Lantern's existing root-confined upload
@@ -251,6 +469,7 @@ function mountTableToolbar(root, crepe, onStatus) {
 }
 
 async function createVisualMarkdown(root, content, onChange, documentPath, onUploadStatus) {
+  const pendingDiff = makePendingDiffPlugin();
   const crepe = new Crepe({
     root,
     defaultValue: content,
@@ -308,6 +527,7 @@ async function createVisualMarkdown(root, content, onChange, documentPath, onUpl
   });
   crepe.editor.use(imageInlineComponent);
   crepe.editor.use(preserveUntitledImages);
+  crepe.editor.use(pendingDiff.milkdown);
   crepe.on((listener) => {
     // Observe document mutations without serializing multi-megabyte Markdown on every keystroke.
     listener.updated((_ctx, nextDoc, previousDoc) => {
@@ -315,10 +535,14 @@ async function createVisualMarkdown(root, content, onChange, documentPath, onUpl
     });
   });
   await crepe.create();
+  const pending = makePendingDiffController(crepe, pendingDiff.key);
   const unmountCrop = mountImageCrop(root, crepe, documentPath, onUploadStatus);
   const unmountTableToolbar = mountTableToolbar(root, crepe, onUploadStatus);
   return {
     getMarkdown() { return crepe.getMarkdown(); },
+    setPendingDiff(markdown, hunks) { return pending.setPendingDiff(markdown, hunks); },
+    clearPendingDiff() { return pending.clearPendingDiff(); },
+    debugBlockMap() { return pending.debugBlockMap(); },
     destroy() { unmountTableToolbar(); unmountCrop(); return crepe.destroy(); },
     focus() { root.querySelector('[contenteditable="true"]')?.focus(); },
   };
