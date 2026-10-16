@@ -718,6 +718,39 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_source_changes_stay_off_disk_until_explicit_save(self):
+        initial = "# Save only\n\nOriginal disk text.\n"
+        changed = "# Save only\n\nPending browser draft.\n"
+        path = self.root / "save-only-source.md"
+        path.write_text(initial, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1180, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=save-only-source.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(state="visible")
+            source.fill(changed)
+            page.wait_for_function("() => window.__lanternMdVisual?.state?.dirty === true")
+            # Old autosave fired at about 2.4 seconds. Waiting longer proves that
+            # typing now persists only to the local recovery draft, not disk.
+            page.wait_for_timeout(3400)
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+            self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
+
+            page.keyboard.press("Control+S")
+            page.wait_for_function(
+                "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty; }",
+                timeout=8000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), changed)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
 
 if __name__ == "__main__":
     unittest.main()

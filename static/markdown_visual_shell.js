@@ -44,8 +44,8 @@
     loading: false, instance: null, version: null,
     dirty: false, revision: 0, savedRevision: 0, saving: false, conflict: false,
     baseline: '', lastSaved: '', roundtripSafe: false, approvedReformat: false,
-    saveTimer: 0, draftTimer: 0, checkTimer: 0, host: null, status: null,
-    saveButton: null, closeButton: null, details: null, requestAgain: false,
+    draftTimer: 0, checkTimer: 0, host: null, status: null,
+    saveButton: null, closeButton: null, details: null,
     savedSincePreview: false, switchingFromPaged: false,
   };
   const key = location.origin + ':' + path;
@@ -131,22 +131,17 @@
     clearTimeout(view.draftTimer);
     view.draftTimer = setTimeout(saveDraft, 900);
   };
-  const queueSave = (delay = 2400) => {
-    clearTimeout(view.saveTimer);
-    if (view.conflict || !view.roundtripSafe && !view.approvedReformat) return;
-    view.saveTimer = setTimeout(() => { void save(false); }, delay);
-  };
   const changed = () => {
     if (!view.active) return;
     view.dirty = true;
     view.revision += 1;
     status(view.conflict ? 'Conflict: your draft is preserved; do not overwrite another client.' :
       !view.roundtripSafe && !view.approvedReformat
-      ? 'Formatting differs from source. Review before saving.' : 'Unsaved changes…',
+      ? 'Formatting differs from source. Review before saving.' : 'Unsaved changes — press Ctrl+S or Save to commit.',
       view.conflict ? 'error' : 'info');
     // Milkdown features may issue internal document transactions after mount.
     // Compare the actual Markdown after a brief idle gap; only semantic source
-    // changes should cause autosave or durable draft writes.
+    // changes should cause durable local draft writes only. The real file is Save-only.
     clearTimeout(view.checkTimer);
     const observedRevision = view.revision;
     view.checkTimer = setTimeout(() => {
@@ -154,14 +149,12 @@
       if (matchesLastSaved(getEditorText())) {
         view.dirty = false;
         clearTimeout(view.draftTimer);
-        clearTimeout(view.saveTimer);
         if (!view.conflict && !view.saving) status(view.roundtripSafe ?
-          'Ready. Type directly in the document. Autosave enabled.' :
+          'Ready. No pending changes.' :
           'Visual editing ready. Formatting differs; review required before Save.');
         return;
       }
       queueDraft();
-      queueSave();
     }, 260);
   };
   const restoreButtons = () => {
@@ -298,7 +291,7 @@
       if (view.conflict) status('File changed externally. Your draft is retained; download it before reloading.', 'error');
       return;
     }
-    if (view.saving) { view.requestAgain = true; return; }
+    if (view.saving) { status('Save already in progress.', 'info'); return; }
     const text = getEditorText();
     if (matchesLastSaved(text)) {
       view.dirty = false;
@@ -307,7 +300,6 @@
       return;
     }
     if (!view.roundtripSafe && !view.approvedReformat) {
-      if (!manual) { status('Review conversion required before autosave.', 'warn'); return; }
       if (!await showReformatReview()) { status('Save cancelled; draft retained.', 'warn'); return; }
       view.approvedReformat = true;
     }
@@ -331,8 +323,8 @@
         status('Saved ✓');
       } else {
         view.dirty = true;
-        status('Saved; continuing with newer edits…');
-        queueSave(500);
+        await saveDraft().catch(() => {});
+        status('Saved the earlier revision; newer edits are still pending.', 'warn');
       }
     } catch (error) {
       if (error.status === 409 || error.status === 404) {
@@ -345,10 +337,6 @@
     } finally {
       view.saving = false;
       restoreButtons();
-      if (view.requestAgain) {
-        view.requestAgain = false;
-        if (!view.conflict) queueSave(100);
-      }
     }
   }
 
@@ -397,7 +385,6 @@
     const y = scrollY;
     view.loading = true;
     restoreButtons();
-    clearTimeout(view.saveTimer);
     clearTimeout(view.draftTimer);
     clearTimeout(view.checkTimer);
     try {
@@ -420,8 +407,8 @@
       status(view.conflict ? 'Conflict: draft retained; another client changed the file.' :
         wasDirty ? 'Unsaved draft preserved across modes. Save before leaving.' :
         !view.roundtripSafe ? 'Formatting differs: review required before Save.' :
-        kind === 'source' ? 'Source ready. Edits use versioned autosave.' :
-        'Ready. Edit directly in the document.',
+        kind === 'source' ? 'Source ready. Changes stay pending until Ctrl+S or Save.' :
+        'Ready. Changes stay pending until Ctrl+S or Save.',
         view.conflict ? 'error' : view.dirty || !view.roundtripSafe ? 'warn' : 'info');
       view.instance.focus();
       await restorePosition(kind, bookmark, y);
@@ -445,7 +432,6 @@
     const bookmark = requestedBookmark || capturePosition();
     const unsaved = !matchesLastSaved(getEditorText());
     if (unsaved && !confirm('Discard unsaved changes and return to Preview?')) return;
-    clearTimeout(view.saveTimer);
     clearTimeout(view.draftTimer);
     clearTimeout(view.checkTimer);
     // Stop new draft writes while waiting for any in-flight writes to finish.
@@ -565,8 +551,8 @@
       }
       status(view.conflict ? 'Draft restored but disk version differs. Do not overwrite; download draft first.' :
         restoredDraft ? 'Unsaved draft restored.' :
-        kind === 'source' ? 'Source ready. Versioned autosave enabled.' :
-        view.roundtripSafe ? 'Ready. Type directly in the document. Autosave enabled.' :
+        kind === 'source' ? 'Source ready. Changes stay pending until Ctrl+S or Save.' :
+        view.roundtripSafe ? 'Ready. Changes stay pending until Ctrl+S or Save.' :
         'Visual editing ready. Formatting differs; review required before Save.',
         view.conflict ? 'error' : view.roundtripSafe ? 'info' : 'warn');
       restoreButtons();

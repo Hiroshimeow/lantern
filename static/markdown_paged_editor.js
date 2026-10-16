@@ -43,7 +43,7 @@
       this.engine=null; this.rich=null; this.largeEditor=null; this.blockWrap=null; this.generation=0;
       this.lastSaved=''; this.roundtripSafe=false; this.approved=false;
       this.dirty=false; this.saving=false; this.conflict=false; this.revision=0;
-      this.saveTimer=0; this.draftTimer=0; this.changedTimer=0; this.reindex=null;
+      this.draftTimer=0; this.changedTimer=0; this.reindex=null;
       this.active=false; this.loadingPage=false; this.savePromise=null;
       this.pendingDraftWrites=new Set();
       this.draftKey='paged:'+location.origin+':'+path;
@@ -150,25 +150,19 @@
       this.dirty=true; this.revision++;
       this.status(this.conflict?'File changed on another client; draft preserved.' :
         !this.roundtripSafe&&!this.approved?'Review conversion before saving.' :
-        'Unsaved changes…',this.conflict?'error':'info');
+        'Unsaved changes — press Ctrl+S or Save to commit.',this.conflict?'error':'info');
       clearTimeout(this.changedTimer);
       const revision=this.revision;
       this.changedTimer=setTimeout(()=>{
         if(revision!==this.revision || !this.active)return;
         if(this.currentText()===this.lastSaved) {
-          this.dirty=false;clearTimeout(this.draftTimer);clearTimeout(this.saveTimer);
+          this.dirty=false;clearTimeout(this.draftTimer);
           if(!this.conflict&&!this.saving)this.status('Ready. Edit directly in the document.');
           return;
         }
         clearTimeout(this.draftTimer);
         this.draftTimer=setTimeout(()=>{void this.draftWrite();},700);
-        this.queueSave();
       },260);
-    }
-    queueSave(delay=2400) {
-      clearTimeout(this.saveTimer);
-      if(this.conflict||!this.roundtripSafe&&!this.approved)return;
-      this.saveTimer=setTimeout(()=>{void this.save(false);},delay);
     }
     initUI() {
       const shell=document.createElement('section');
@@ -313,7 +307,6 @@
         return true;
       }
       if(!this.roundtripSafe&&!this.approved){
-        if(!manual){this.status('Review formatting before autosave.','warn');return false;}
         if(!await this.review(this.pageOriginal,current)){
           this.status('Save cancelled; local draft kept.','warn');
           await this.draftWrite();return false;
@@ -346,8 +339,8 @@
             this.status('Saved ✓');
           } else {
             this.dirty=true;
-            this.status('Saved; continuing with newer edits…');
-            this.queueSave(800);
+            await this.draftWrite();
+            this.status('Saved the earlier revision; newer edits are still pending.','warn');
           }
           // Reparse edited block boundaries off-thread before the next page jump.
           this.reindex=this.workerIndex(this.source).catch(err=>{
@@ -374,8 +367,8 @@
       if(!Number.isFinite(num))return false;
       if(num===this.pageNumber&&!restore)return true;
       if(this.saving&&!await this.savePromise)return false;
-      if(this.hasUnsaved()&&!await this.save(true))return false;
-      clearTimeout(this.saveTimer);clearTimeout(this.draftTimer);clearTimeout(this.changedTimer);
+      if(this.hasUnsaved()){this.status('Save this section before navigating; pending edits stay local.','warn');return false;}
+      clearTimeout(this.draftTimer);clearTimeout(this.changedTimer);
       this.loadingPage=true;this.updateNav();
       try {
         if(this.reindex) {
@@ -477,7 +470,7 @@
         return false;
       }
       if(unsaved&&!confirm('Discard unsaved changes and return to Preview?'))return false;
-      clearTimeout(this.saveTimer);clearTimeout(this.draftTimer);
+      clearTimeout(this.draftTimer);
       clearTimeout(this.changedTimer);clearTimeout(this.headingSearchTimer);
       // Existing navigation guard blocks a second mode switch until cleanup
       // finishes; a late visibility event must not recreate the draft.
