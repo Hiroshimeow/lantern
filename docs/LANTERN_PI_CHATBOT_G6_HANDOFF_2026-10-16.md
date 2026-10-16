@@ -1,15 +1,16 @@
 # Lantern Native Pi Chatbot — G6 implementation handoff
 
-Date: 2026-10-16 JST  
-Authoritative implementation host for this increment: G6  
+Date: 2026-10-16 JST
+Authoritative implementation host for this increment: G6
 Repo: `E:\git-project\lantern`
 
 ## Current Git state
 
-Verified and pushed:
+Implemented chatbot code baseline, verified and pushed:
 
 ```text
-main/origin-main = 426b8edc3a72702e51b561dd7cd96e29ec55745c
+chatbot code baseline = 426b8edc3a72702e51b561dd7cd96e29ec55745c
+review range = 4deb159..426b8ed
 
 426b8ed fix(chat): flush Markdown drafts before Pi prompts
 da62dd0 fix(chat): resume Pi sessions by session file
