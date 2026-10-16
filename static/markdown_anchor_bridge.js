@@ -129,11 +129,15 @@
       .filter(x => x.tagName === bookmark.blockTag && normalize(x.textContent) === bookmark.text);
     return matching.length === 1 ? matching[0] : matching[bookmark.ordinal] || null;
   }
-  function visualAnchorFromElement(element, host, preview, paged = null) {
+  function visualAnchorFromElement(element, host, preview, paged = null, locate = null) {
     if (!element?.closest || !host?.contains(element)) return null;
     if (element.closest('[data-md-diff-ghost]')) return null;
     const block = element.closest(SELECTOR);
     if (!block || !host.contains(block)) return null;
+    if (locate) {
+      const line = locate(block);
+      return line ? {line} : null;
+    }
     const text = normalize(block.textContent);
     if (!text || text.length > 512) return null;
     const local = [...host.querySelectorAll(SELECTOR)]
@@ -156,23 +160,31 @@
     const selection = globalThis.getSelection?.();
     const node = selection?.anchorNode;
     const origin = node?.nodeType === 1 ? node : node?.parentElement;
+    const instance = !paged?.active && globalThis.__lanternMdVisual?.state?.instance;
+    const hasLocator = typeof instance?.sourceLineLocator === 'function';
+    const locate = hasLocator ? instance.sourceLineLocator() : null;
+    // No proved block map means pixel fallback, never a guessed source line.
+    if (hasLocator && !locate) return null;
+    const toolbarBottom = document.querySelector('.md-bar')?.getBoundingClientRect().bottom || 72;
     if (origin && host.contains(origin)) {
-      const bookmark = visualAnchorFromElement(origin, host, preview, paged);
-      if (bookmark) {
-        const selected = normalize(selection.toString());
-        if (selected && selected.length <= 512) bookmark.selectedText = selected;
-        // Clicking a sticky mode button may scroll the page before its
-        // pointerdown handler. A real editor selection remains authoritative.
-        if (!selection?.isCollapsed || document.activeElement === host) return bookmark;
-        const box = origin.getBoundingClientRect();
-        if (box.bottom > 72 && box.top < innerHeight) return bookmark;
+      const block = origin.closest(SELECTOR);
+      const box = block?.getBoundingClientRect();
+      // A focused editor can retain a caret many screens above the viewport.
+      // Prefer the text the user is looking at, not an off-screen stale caret.
+      if (box && box.bottom > toolbarBottom && box.top < innerHeight) {
+        const bookmark = visualAnchorFromElement(origin, host, preview, paged, locate);
+        if (bookmark) {
+          const selected = normalize(selection.toString());
+          if (selected && selected.length <= 512) bookmark.selectedText = selected;
+          return bookmark;
+        }
       }
     }
     for (const node of host.querySelectorAll(SELECTOR)) {
       if (node.closest('[data-md-diff-ghost]')) continue;
       const box = node.getBoundingClientRect();
-      if (box.bottom > 72 && box.top < innerHeight)
-        return visualAnchorFromElement(node, host, preview, paged);
+      if (box.bottom > toolbarBottom && box.top < innerHeight)
+        return visualAnchorFromElement(node, host, preview, paged, locate);
     }
     return null;
   }
@@ -253,6 +265,16 @@
       }
       const host = document.querySelector('.md-visual-host .ProseMirror');
       if (!host) return false;
+      const instance = mode === 'visual' && !paged?.active &&
+        globalThis.__lanternMdVisual?.state?.instance;
+      if (typeof instance?.sourceBlockAtLine === 'function') {
+        const block = instance.sourceBlockAtLine(bookmark.line);
+        if (!block) return false; // Unproved source mapping: preserve pixel fallback.
+        block.scrollIntoView({block:'center', behavior:'instant'});
+        host.focus({preventScroll:true});
+        selectVisualText(block, bookmark.selectedText);
+        return true;
+      }
       const resolved = bookmark.text ? bookmark : previewAnchorAtLine(preview, bookmark)?.bookmark;
       const block = findVisualBlock(host, resolved);
       if (!block) return false;

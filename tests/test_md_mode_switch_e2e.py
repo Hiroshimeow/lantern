@@ -243,6 +243,118 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_visual_scroll_with_stale_caret_preserves_visible_block(self):
+        original = "# Visual scroll\n\n" + "\n\n".join(
+            f"Viewport paragraph {i} is unique." for i in range(180)
+        ) + "\n"
+        path = self.root / "visual-stale-caret-scroll.md"
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=" + path.name,
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            editor.get_by_text("Viewport paragraph 0 is unique.", exact=True).click()
+            target = editor.get_by_text("Viewport paragraph 130 is unique.", exact=True)
+            target.scroll_into_view_if_needed()
+            self.assertGreater(page.evaluate("scrollY"), 1000)
+            # Scrolling does not move the caret, so it must not take priority
+            # over the visibly scrolled block when switching editing modes.
+            bookmark = page.evaluate("() => window.LanternAnchorBridge.capture('visual')")
+            self.assertGreater(bookmark["line"], 200, bookmark)
+
+            page.get_by_role("button", name="Preview", exact=True).click()
+            match = page.locator("article.md-preview").get_by_text(
+                "Viewport paragraph 130 is unique.", exact=True)
+            match.wait_for(state="visible", timeout=12000)
+            box = match.bounding_box()
+            self.assertIsNotNone(box)
+            self.assertGreater(page.evaluate("scrollY"), 1000)
+            self.assertLess(box["y"], 820)
+            self.assertGreater(box["y"], 30)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
+
+    def test_edited_visual_caret_anchors_to_current_source_line(self):
+        original = "# Visual edits\n\n" + "\n\n".join(
+            f"Editor paragraph {i} unique content." for i in range(155)
+        ) + "\n"
+        path = self.root / "visual-edited-anchor.md"
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=" + path.name,
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            editor.get_by_text("Editor paragraph 100 unique content.", exact=True).click()
+            page.keyboard.press("End")
+            page.keyboard.type(" UPDATED")
+            editor.get_by_text("Editor paragraph 100 unique content. UPDATED",
+                               exact=True).wait_for()
+            page.wait_for_function(
+                "() => document.documentElement.dataset.mdVisualDiff === 'mapped'",
+                timeout=10000,
+            )
+            bookmark = page.evaluate("() => window.LanternAnchorBridge.capture('visual')")
+            self.assertIsNotNone(bookmark)
+            self.assertEqual(bookmark["line"], 203, bookmark)
+            page.get_by_role("button", name="Source", exact=True).click()
+            page.get_by_role("textbox", name="Markdown source").wait_for(timeout=12000)
+            line = page.evaluate("""() => {
+              const a=document.querySelector('.md-source-area');
+              return a.value.slice(0,a.selectionStart).split('\\n').length;
+            }""")
+            self.assertEqual(line, 203)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+        finally:
+            context.close()
+
+
+    def test_source_pending_edit_restores_changed_block_in_visual(self):
+        original = "# Source navigation\n\n" + "\n\n".join(
+            f"Source paragraph {i} unique content." for i in range(155)
+        ) + "\n"
+        path = self.root / "source-visual-pending-anchor.md"
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=" + path.name,
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            area = page.get_by_role("textbox", name="Markdown source")
+            area.wait_for(timeout=12000)
+            area.fill(original.replace(
+                "Source paragraph 100 unique content.",
+                "Source paragraph 100 changed by user.",
+            ))
+            page.evaluate("() => window.LanternAnchorBridge.selectLine("
+                          "document.querySelector('.md-source-area'), 203)")
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            target = editor.get_by_text("Source paragraph 100 changed by user.", exact=True)
+            target.wait_for()
+            box = target.bounding_box()
+            self.assertIsNotNone(box)
+            self.assertGreater(page.evaluate("scrollY"), 1000)
+            self.assertLess(box["y"], 820)
+            self.assertGreater(box["y"], 30)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+        finally:
+            context.close()
+
+
     def test_pending_diff_repeated_mode_switch_keeps_deep_location(self):
         original = "# Pending navigation\n\n" + "\n\n".join(
             f"Pending block {i} unique content." for i in range(190)
@@ -1105,6 +1217,105 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_external_disk_edit_visual_save_then_undo_is_pending(self):
+        original = "# External Visual\n\nOriginal text.\n"
+        external = "# External Visual\n\nVS Code changed this file.\n"
+        path = self.root / "external-visual-undo.md"
+        path.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=" + path.name,
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            editor.get_by_text("Original text.", exact=True).click()
+            page.keyboard.press("End")
+            page.keyboard.type(" LOCAL")
+            page.wait_for_function(
+                "() => !!window.__lanternMdVisual.state.workHash",
+                timeout=9000,
+            )
+            path.write_text(external, encoding="utf-8")
+            page.evaluate("() => window.dispatchEvent(new Event('focus'))")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.baseline.includes('VS Code changed')",
+                timeout=9000,
+            )
+            self.assertIn("Original text. LOCAL", editor.inner_text())
+            self.assertEqual(path.read_text(encoding="utf-8"), external)
+            page.keyboard.press("Control+s")
+            page.wait_for_function(
+                "() => document.documentElement.dataset.mdPendingHunks === '0' &&"
+                " !window.__lanternMdVisual.state.saving && "
+                " !window.__lanternMdVisual.state.dirty",
+                timeout=14000,
+            )
+            saved = path.read_text(encoding="utf-8")
+            self.assertIn("Original text. LOCAL", saved)
+            self.assertNotIn("VS Code changed", saved)
+            page.keyboard.press("Control+z")
+            page.wait_for_function(
+                "() => Number(document.documentElement.dataset.mdPendingHunks || 0) > 0",
+                timeout=9000,
+            )
+            current = page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown()"
+            )
+            self.assertNotIn("Original text. LOCAL", current)
+            self.assertEqual(path.read_text(encoding="utf-8"), saved)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
+
+    def test_visual_save_then_undo_reopens_pending_diff_without_disk_write(self):
+        source = "# Save undo\n\nStart paragraph.\n\nEditable paragraph.\n"
+        path = self.root / "visual-undo-save.md"
+        path.write_text(source, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=" + path.name,
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            editor.wait_for(timeout=24000)
+            editor.get_by_text("Editable paragraph.", exact=True).click()
+            page.keyboard.press("End")
+            page.keyboard.type(" NEW")
+            page.wait_for_function(
+                "() => Number(document.documentElement.dataset.mdPendingHunks || 0) > 0",
+                timeout=9000,
+            )
+            page.keyboard.press("Control+s")
+            page.wait_for_function(
+                "() => !window.__lanternMdVisual.state.saving && "
+                "document.documentElement.dataset.mdPendingHunks === '0'",
+                timeout=14000,
+            )
+            saved = path.read_text(encoding="utf-8")
+            self.assertIn("Editable paragraph. NEW", saved)
+            self.assertEqual(editor.locator(".md-visual-diff-add,.md-visual-diff-mod").count(), 0)
+            page.keyboard.press("Control+z")
+            page.wait_for_function(
+                "() => Number(document.documentElement.dataset.mdPendingHunks || 0) > 0",
+                timeout=9000,
+            )
+            current = page.evaluate("() => window.__lanternMdVisual.state.instance.getMarkdown()")
+            self.assertNotIn("Editable paragraph. NEW", current)
+            self.assertEqual(path.read_text(encoding="utf-8"), saved)
+            self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
+
     def test_visual_pending_diff_is_decorative_editable_and_not_serialized(self):
         baseline = (
             "# Visual diff\n\n"
@@ -1152,6 +1363,16 @@ class MarkdownModesE2E(unittest.TestCase):
             ghost = editor.locator(".md-visual-deletion[data-md-diff-ghost=true]")
             self.assertGreater(mod.count(), 0)
             self.assertTrue(any("New value." in text for text in mod.all_inner_texts()))
+            # Presence of a ProseMirror decoration is insufficient if theme CSS
+            # renders it invisible. Assert the real Edge-computed highlight.
+            page.wait_for_function("""() => {
+              const node=document.querySelector('.md-visual-host .md-visual-diff-mod');
+              if (!node) return false;
+              const css=getComputedStyle(node);
+              return css.backgroundColor !== 'rgba(0, 0, 0, 0)'
+                && css.backgroundColor !== 'transparent'
+                && css.boxShadow !== 'none';
+            }""", timeout=8000)
             self.assertGreater(added.count(), 0)
             self.assertTrue(any("Added end." in text for text in added.all_inner_texts()))
             ghost_text = "\n".join(ghost.all_inner_texts())

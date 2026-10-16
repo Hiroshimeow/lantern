@@ -253,6 +253,34 @@ function makePendingDiffController(crepe, key) {
   };
 }
 
+// One verified PM block -> source line lookup per navigation, not an ordinal
+// text search against the hidden, potentially stale Preview DOM.
+function sourceLineLocator(crepe) {
+  const proof = buildVerifiedBlockMap(crepe, crepe.getMarkdown());
+  if (!proof.mapped) return null;
+  return element => {
+    if (!element || !proof.view.dom.contains(element)) return null;
+    try {
+      const pos = proof.view.posAtDOM(element, 0);
+      const block = proof.units.find(unit => pos > unit.from && pos < unit.to);
+      return block ? block.lineStart + 1 : null;
+    } catch {
+      return null;
+    }
+  };
+}
+
+function sourceBlockAtLine(crepe, line) {
+  const proof = buildVerifiedBlockMap(crepe, crepe.getMarkdown());
+  if (!proof.mapped) return null;
+  const requested = Math.trunc(Number(line)) - 1;
+  const unit = proof.units.find(item =>
+    requested >= item.lineStart && requested < item.lineEnd);
+  if (!unit) return null;
+  const element = proof.view.nodeDOM(unit.from);
+  return element instanceof Element && proof.view.dom.contains(element) ? element : null;
+}
+
 // Paste/drop or the image toolbar must write a real file before inserting a
 // Markdown image node. Reuse Lantern's existing root-confined upload
 // endpoint; never persist data: or blob: URLs into the document.
@@ -543,6 +571,8 @@ async function createVisualMarkdown(root, content, onChange, documentPath, onUpl
     setPendingDiff(markdown, hunks) { return pending.setPendingDiff(markdown, hunks); },
     clearPendingDiff() { return pending.clearPendingDiff(); },
     debugBlockMap() { return pending.debugBlockMap(); },
+    sourceLineLocator() { return sourceLineLocator(crepe); },
+    sourceBlockAtLine(line) { return sourceBlockAtLine(crepe, line); },
     destroy() { unmountTableToolbar(); unmountCrop(); return crepe.destroy(); },
     focus() { root.querySelector('[contenteditable="true"]')?.focus(); },
   };
