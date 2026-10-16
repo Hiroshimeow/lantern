@@ -2482,6 +2482,7 @@ class Handler(SimpleHTTPRequestHandler):
             if route == "/api/upload": return self.api_upload(parsed.query)
             if route == "/api/image/overwrite": return self.api_image_overwrite(parsed.query)
             if route == "/api/save": return self.api_save()
+            if route == "/api/md/render": return self.api_md_render()
             if route == "/api/md/save": return self.api_md_save()
             if route == "/api/mkdir": return self.api_mkdir()
             if route == "/api/newfile": return self.api_newfile()
@@ -2967,6 +2968,27 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(200, {"ok": True, "path": rel_url_for_path(target), **result})
         except MarkdownEditorError as exc:
             self.send_json(exc.status, {"error": str(exc), **exc.details})
+
+    def api_md_render(self) -> None:
+        data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 5)
+        rel = data.get("path")
+        content = data.get("content")
+        if not isinstance(rel, str) or not rel:
+            self.send_json(400, {"error": "Markdown path required"}); return
+        if not isinstance(content, str):
+            self.send_json(400, {"error": "Markdown content must be text"}); return
+        if len(content.encode("utf-8")) > MAX_MARKDOWN_EDITOR_BYTES:
+            self.send_json(413, {"error": "Markdown draft exceeds editor size limit"}); return
+        if LAN_PLUGIN is None or not hasattr(LAN_PLUGIN, "render_markdown_draft"):
+            self.send_json(503, {"error": "Markdown preview plugin unavailable"}); return
+        target = safe_join("/" + quote_path(rel))
+        if not target.is_file() or target.suffix.lower() not in {".md", ".markdown"}:
+            self.send_json(404, {"error": "Markdown file not found"}); return
+        try:
+            body = LAN_PLUGIN.render_markdown_draft(content, target, CONFIG.root)
+            self.send_json(200, {"ok": True, "html": body})
+        except (ValueError, OSError) as exc:
+            self.send_json(400, {"error": str(exc)})
 
     def api_md_save(self) -> None:
         data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 5)

@@ -469,9 +469,15 @@ def _hide_md_html_comments(text: str) -> str:
     return "".join(result)
 
 
-def _render_markdown(path: Path, root: Path, *, anchors: bool = False) -> Tuple[str, str]:
-    data, truncated = _read_limited_bytes(path)
-    text = _decode_text(data).replace("\x00", "")
+def _render_markdown_text(
+    text: str,
+    path: Path,
+    root: Path,
+    *,
+    anchors: bool = False,
+    truncated: bool = False,
+) -> Tuple[str, str]:
+    text = str(text).replace("\x00", "")
     if len(text) > MAX_TEXT_CHARS:
         text = text[:MAX_TEXT_CHARS]
         truncated = True
@@ -661,6 +667,21 @@ def _render_markdown(path: Path, root: Path, *, anchors: bool = False) -> Tuple[
     if truncated:
         note += "<div class='note'>Preview truncated to keep the UI bounded.</div>"
     return "Markdown preview", note + "<article class='md-preview'>" + "\n".join(out) + "</article>"
+
+
+def _render_markdown(path: Path, root: Path, *, anchors: bool = False) -> Tuple[str, str]:
+    data, truncated = _read_limited_bytes(path)
+    text = _decode_text(data)
+    return _render_markdown_text(text, path, root, anchors=anchors, truncated=truncated)
+
+
+def render_markdown_draft(content: str, path: Path | str, root: Path | str) -> str:
+    """Render an unsaved Markdown draft using the same safe parser and source anchors."""
+    p = Path(path).resolve()
+    rootp = Path(root).resolve()
+    p.relative_to(rootp)
+    _title, body = _render_markdown_text(content, p, rootp, anchors=True)
+    return body
 
 
 def _render_csv(path: Path) -> Tuple[str, str]:
