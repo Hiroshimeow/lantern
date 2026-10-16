@@ -53,6 +53,7 @@ class ChatUiTests(unittest.TestCase):
             "__lanternMdVisual",
             "selectedArray",
             "currentPath",
+            "flushCurrentDraft",
             "New chat",
             "Stop",
         ):

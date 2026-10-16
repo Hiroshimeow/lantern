@@ -498,14 +498,30 @@
     }
   }
 
-  function sendPrompt() {
+  async function flushCurrentDraft() {
+    if (document.body?.dataset?.lanternChatKind !== 'markdown') return true;
+    const editor = globalThis.__lanternMdVisual;
+    const state = editor?.state;
+    if (!state?.active || !state.dirty) return true;
+    if (state.conflict) throw new Error('Markdown has a disk conflict. Resolve or download the draft before asking Pi to edit it.');
+    setStatus('Saving current Markdown before Pi reads it…');
+    await editor.save();
+    const next = editor?.state;
+    if (next?.conflict) throw new Error('Markdown changed on disk while saving. Pi prompt was not sent.');
+    if (next?.dirty) throw new Error('Markdown is still unsaved. Save or resolve the draft before asking Pi.');
+    return true;
+  }
+
+  async function sendPrompt() {
     const input = q('#lanternChatInput');
     if (!input || input.disabled || S.streaming) return;
     const message = input.value.trim();
     if (!message) return;
-    const context = captureContext();
-    refreshContextLabel();
     try {
+      input.disabled = true;
+      await flushCurrentDraft();
+      const context = captureContext();
+      refreshContextLabel();
       appendMessage('user', message);
       sendRaw({
         type: 'chat_prompt',
@@ -520,6 +536,9 @@
     } catch (error) {
       setStreaming(false);
       appendSystem(String(error?.message || error), 'error');
+      setStatus(String(error?.message || error), 'error');
+    } finally {
+      input.disabled = !S.connected || S.authenticated === false;
     }
   }
 
@@ -564,6 +583,7 @@
       open: () => setOpen(true),
       close: () => setOpen(false),
       captureContext,
+      flushCurrentDraft,
       refreshContext: refreshContextLabel,
     };
   }
