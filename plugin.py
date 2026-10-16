@@ -1269,6 +1269,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_anchor_bridge.js" defer></script>'
     if visual_markdown:
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_table_interactions.js" defer></script>'
+        helper_script += f'<script nonce="{h(nonce)}" src="/static/chatbot.js" defer></script>'
     visual_script = (
         f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'
         if visual_markdown else ""
@@ -1296,6 +1297,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
     )
     table_style = ('<link rel="stylesheet" href="/static/markdown_table_interactions.css">'
                    if visual_markdown else '')
+    chat_style = ('<link rel="stylesheet" href="/static/chatbot.css">' if visual_markdown else '')
     edit_actions = (
         '<div class="md-edit-actions" data-md-edit-actions hidden>'
         '<button class="btn primary" type="button" data-action="md-save">Save</button>'
@@ -1319,8 +1321,8 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
     )
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
-{mermaid_script}{table_style}{helper_script}{visual_script}</head>
-<body>
+{mermaid_script}{table_style}{chat_style}{helper_script}{visual_script}</head>
+<body{" data-lantern-chat-kind=\"markdown\" data-lantern-chat-path=\"" + h(rel) + "\"" if visual_markdown else ""}>
 <div class="bar{' md-bar' if visual_markdown else ''}">{header}</div>
 <div class="content" data-doc-name="{h(p.stem)}"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
 </body></html>"""

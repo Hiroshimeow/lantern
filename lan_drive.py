@@ -1515,6 +1515,21 @@ function softRefresh(){return requestListUpdate('refresh')}
 function refreshFolder(){clearFolderCache();softRefresh()}
 const MEDIA_KINDS = new Set(['image','video','audio']);
 const mediaState = {kind:null,current:null,items:[],index:-1,busy:false,cropActive:false,touchX:0,touchY:0};
+window.LanternChatContext={
+  capture(){
+    const folder=currentPath();
+    const viewed=$('#modal')?.classList.contains('show')&&mediaState.current?.rel?String(mediaState.current.rel):'';
+    if(viewed)return{kind:'file',path:viewed,folder};
+    const chosen=selectedArray();
+    if(chosen.length===1){
+      const card=document.querySelector(`.card[data-rel="${CSS.escape(chosen[0])}"]`);
+      return card?.dataset.isdir==='1'
+        ?{kind:'folder',folder:String(chosen[0])}
+        :{kind:'file',path:String(chosen[0]),folder};
+    }
+    return{kind:'folder',folder};
+  }
+};
 function isTypingTarget(el){return el&&['INPUT','TEXTAREA','SELECT'].includes(el.tagName)}
 function isMediaKind(kind){return MEDIA_KINDS.has(kind)}
 function findLoadedItem(rel){return state.items.find(it=>!it.special&&it.rel===rel)||null}
@@ -2041,6 +2056,8 @@ def page_shell(title: str, body: str, current_path: str = "/") -> bytes:
     xterm_js = asset_url("vendor/xterm.js")
     fit_js = asset_url("vendor/addon-fit.js")
     terminal_js = asset_url("terminal_scm.js")
+    chat_css = asset_url("chatbot.css")
+    chat_js = asset_url("chatbot.js")
     app = {
         "currentPath": current_path.strip("/"),
         "title": CONFIG.title,
@@ -2080,6 +2097,7 @@ def page_shell(title: str, body: str, current_path: str = "/") -> bytes:
 <style>{CSS}</style>
 <link rel="stylesheet" href="{xterm_css}">
 <link rel="stylesheet" href="{terminal_css}">
+<link rel="stylesheet" href="{chat_css}">
 </head>
 <body>
 {body}
@@ -2088,6 +2106,7 @@ def page_shell(title: str, body: str, current_path: str = "/") -> bytes:
 <script src="{xterm_js}"></script>
 <script src="{fit_js}"></script>
 <script src="{terminal_js}"></script>
+<script src="{chat_js}"></script>
 </body>
 </html>"""
     return html_doc.encode("utf-8", "surrogateescape")
