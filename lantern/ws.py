@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import queue
@@ -270,6 +271,7 @@ def upgrade(handler, hub, terminal, scm, access=None, chat=None):
     handler.end_headers()
 
     peer = WebSocketPeer(handler)
+    peer.client_ip = str(handler.client_address[0] or "")
     # Cookie is captured at handshake; every command/broadcast checks the
     # current expiry/revocation with the same immutable request credentials.
     peer.auth_token = access.cookie_token(handler.headers.get("Cookie", "")) if access else ""
@@ -354,6 +356,14 @@ def _terminal_error_reply(message, error):
     return reply
 
 
+def _chat_scope(peer) -> str:
+    raw = str(getattr(peer, "client_ip", "") or "")
+    try:
+        return "local" if ipaddress.ip_address(raw).is_loopback else "lan"
+    except ValueError:
+        return "lan"
+
+
 def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
     if not isinstance(msg, dict):
         raise ValueError("message must be an object")
@@ -364,12 +374,13 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
     if typ.startswith("chat_") and chat is None:
         raise RuntimeError("LanternBot is not initialized")
     if typ == "chat_sync":
-        state = chat.bootstrap_state()
+        scope = _chat_scope(peer)
+        state = chat.bootstrap_state(scope)
         peer.send({
             "type": "chat_state",
             "state": state,
-            "summary": chat.summary(),
-            "models": chat.available_models(),
+            "summary": chat.summary(scope),
+            "models": chat.available_models(scope),
             "messages": chat.get_messages(),
         })
         return
@@ -380,6 +391,7 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
             str(msg.get("message") or ""),
             context,
             work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
+            scope=_chat_scope(peer),
         )
         peer.send({"type": "chat_prompt_accepted", "reqId": msg.get("reqId")})
         return
@@ -388,14 +400,16 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
         peer.send({"type": "chat_aborted"})
         return
     if typ == "chat_new":
-        state = chat.new_session()
-        peer.send({"type": "chat_state", "state": state, "summary": chat.summary(),
-                   "models": chat.available_models(), "messages": []})
+        scope = _chat_scope(peer)
+        state = chat.new_session(scope)
+        peer.send({"type": "chat_state", "state": state, "summary": chat.summary(scope),
+                   "models": chat.available_models(scope), "messages": []})
         return
     if typ == "chat_set_model":
-        chat.set_model(str(msg.get("provider") or ""), str(msg.get("modelId") or ""))
+        scope = _chat_scope(peer)
+        chat.set_model(str(msg.get("provider") or ""), str(msg.get("modelId") or ""), scope)
         peer.send({"type": "chat_model_changed", "state": chat.get_state(),
-                   "summary": chat.summary()})
+                   "summary": chat.summary(scope)})
         return
     if typ == "terminal_client_v2":
         peer.protocol = "v2"

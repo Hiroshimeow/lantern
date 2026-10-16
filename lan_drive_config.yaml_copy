@@ -38,3 +38,44 @@ folder_preview_include_video: true
 upload_auto_start: false
 upload_parallel: 3
 upload_conflict: "ask"
+# LanternBot uses Pi's native provider/model on localhost.
+# Remote LAN clients can be independently filtered or locked below.
+lantern_bot:
+  enabled: true
+  access:
+    localhost:
+      provider_mode: "all"       # all | whitelist | blacklist
+      providers: []
+      model_mode: "all"          # all | whitelist | blacklist
+      models: []
+      bypass_models: []
+      selection:
+        provider: null
+        model: null
+        lock_provider: false
+        lock_model: false
+    lan:
+      provider_mode: "all"       # switch to whitelist/blacklist as needed
+      providers: []
+      model_mode: "all"
+      models: []
+      # Fully-qualified provider/model globs here bypass both lists.
+      bypass_models: []
+      selection:
+        # null/null = keep the current allowed Pi model.
+        # To lock LAN to one model, set both values and both lock flags true.
+        provider: null
+        model: null
+        lock_provider: false
+        lock_model: false
+  policy:
+    max_prompts_per_day: null
+    max_tokens_per_day: null
+  greeting: >-
+    🦸 Tôi là LanternBot — một thành viên của biệt đội Lantern.
+    Ở đâu có Lantern, ở đó có ánh sáng; file nào tối nghĩa cứ đưa đây, tôi soi cho.
+  lantern_context: |-
+    You are LanternBot, the assistant embedded in Lantern.
+    The newest <lantern_context> block is authoritative for the user's current location.
+    For an active document with workingPath, read and edit only workingPath.
+    logicalPath is the saved project location and must not be written directly.

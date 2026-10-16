@@ -6,9 +6,10 @@ from lantern.ws import WebSocketHub, dispatch, _terminal_error_reply
 
 
 class Peer:
-    def __init__(self, allowed=True):
+    def __init__(self, allowed=True, client_ip="127.0.0.1"):
         self.messages = []
         self.can_terminal = lambda: allowed
+        self.client_ip = client_ip
         self.protocol = "v2"
         self.subscriptions = set()
 
@@ -22,31 +23,37 @@ class FakeChat:
         self.models_set = []
         self.aborted = 0
         self.new_count = 0
+        self.scope_calls = []
 
     def get_state(self):
         return {"sessionId": "session-1", "model": {"provider": "p", "id": "m"}}
 
-    def bootstrap_state(self):
+    def bootstrap_state(self, scope="local"):
+        self.scope_calls.append(("bootstrap", scope))
         return self.get_state()
 
-    def summary(self):
+    def summary(self, scope="local"):
+        self.scope_calls.append(("summary", scope))
         return {"running": True, "streaming": False, "sessionId": "session-1",
                 "model": {"provider": "p", "id": "m"}, "terminalId": "lantern_bot",
                 "name": "LanternBot",
                 "policy": {"enabled": True, "greeting": "hello"},
                 "usage": {"date": "2026-10-16", "prompts": 0, "tokens": 0}}
 
-    def available_models(self):
+    def available_models(self, scope="local"):
+        self.scope_calls.append(("models", scope))
         return [{"provider": "p", "id": "m", "name": "m"}]
 
     def get_messages(self):
         return [{"role": "assistant", "content": "hello"}]
 
-    def prompt(self, message, context, work_hash=None):
+    def prompt(self, message, context, work_hash=None, scope="local"):
+        self.scope_calls.append(("prompt", scope))
         self.prompts.append((message, context, work_hash))
         return {"success": True}
 
-    def new_session(self):
+    def new_session(self, scope="local"):
+        self.scope_calls.append(("new", scope))
         self.new_count += 1
         return {"sessionId": "session-new"}
 
@@ -54,7 +61,8 @@ class FakeChat:
         self.aborted += 1
         return {"success": True}
 
-    def set_model(self, provider, model_id):
+    def set_model(self, provider, model_id, scope="local"):
+        self.scope_calls.append(("set_model", scope))
         self.models_set.append((provider, model_id))
         return {"success": True}
 
@@ -93,6 +101,29 @@ class PiChatWebSocketTests(unittest.TestCase):
         self.assertEqual(peer.messages[0]["state"]["sessionId"], "session-1")
         self.assertEqual(peer.messages[0]["models"][0]["id"], "m")
         self.assertEqual(peer.messages[0]["messages"][0]["content"], "hello")
+
+    def test_chat_scope_comes_from_websocket_client_ip(self):
+        local = Peer(client_ip="127.0.0.1")
+        lan = Peer(client_ip="192.168.1.55")
+        chat = FakeChat()
+
+        dispatch(local, {"type": "chat_sync"}, object(), None, chat=chat)
+        self.assertIn(("bootstrap", "local"), chat.scope_calls)
+        self.assertIn(("models", "local"), chat.scope_calls)
+
+        chat.scope_calls.clear()
+        dispatch(lan, {"type": "chat_sync"}, object(), None, chat=chat)
+        self.assertIn(("bootstrap", "lan"), chat.scope_calls)
+        self.assertIn(("summary", "lan"), chat.scope_calls)
+        self.assertIn(("models", "lan"), chat.scope_calls)
+
+        chat.scope_calls.clear()
+        dispatch(
+            lan,
+            {"type": "chat_prompt", "reqId": "lan-1", "message": "hello"},
+            object(), None, chat=chat,
+        )
+        self.assertIn(("prompt", "lan"), chat.scope_calls)
 
     def test_chat_prompt_and_controls(self):
         peer = Peer()

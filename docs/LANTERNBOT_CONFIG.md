@@ -1,31 +1,60 @@
 # LanternBot configuration
 
-LanternBot uses the machine's native Pi runtime internally. By default it does **not**
-force a provider or model: the provider/model already selected by Pi on that machine
-is inherited.
+LanternBot uses the machine's native Pi runtime internally. Provider/model policy is
+scoped by the **actual WebSocket client IP**:
+
+- `127.0.0.1` / `::1` -> `localhost`
+- every other client IP -> `lan`
+
+Lantern does not trust `X-Forwarded-For` for this decision.
+
+The recommended default is **localhost = full native Pi inventory** while LAN is
+filtered or locked independently.
 
 ```yaml
 lantern_bot:
   enabled: true
 
-  selection:
-    # null = inherit the native Pi provider/model on this machine.
-    provider: null
-    model: null
+  access:
+    localhost:
+      provider_mode: all          # all | whitelist | blacklist
+      providers: []
+      model_mode: all             # all | whitelist | blacklist
+      models: []
+      bypass_models: []
+      selection:
+        # null/null = inherit whatever provider/model native Pi is using.
+        provider: null
+        model: null
+        lock_provider: false
+        lock_model: false
 
-    # Set either lock independently, or lock both.
-    lock_provider: false
-    lock_model: false
+    lan:
+      provider_mode: whitelist
+      providers:
+        - "cliproxy-*"
+
+      model_mode: whitelist
+      models:
+        - "cliproxy-2080/gpt-6.1-sol"
+        - "cliproxy-2080/gpt-6-luna"
+
+      # Bypasses the provider/model list filters only.
+      # A hard selection lock below always wins over bypass_models.
+      bypass_models:
+        - "github-copilot/gpt-5"
+
+      selection:
+        # Optional LAN default. null/null keeps the current allowed Pi model.
+        provider: "cliproxy-2080"
+        model: "gpt-6.1-sol"
+
+        # Set both true to hard-lock LAN to exactly the pair above.
+        lock_provider: false
+        lock_model: false
 
   policy:
-    # Empty lists mean "do not filter the native inventory".
-    allowed_providers: []
-    allowed_models: []
-
-    # Fully-qualified or glob patterns that bypass the allow lists.
-    bypass_models: []
-
-    # null = unlimited. Enforcement is server-side and persisted per local day.
+    # null = unlimited. Enforced server-side and persisted per local day.
     max_prompts_per_day: null
     max_tokens_per_day: null
 
@@ -38,41 +67,63 @@ lantern_bot:
     The newest <lantern_context> block is authoritative.
 ```
 
-Examples:
+## Provider/model modes
+
+`provider_mode` and `model_mode` are independent:
+
+- `all`: do not filter that dimension.
+- `whitelist`: only matching entries are allowed.
+- `blacklist`: matching entries are denied.
+
+Provider entries are glob patterns such as `cliproxy-*`. Model entries can be either
+fully-qualified `provider/model` patterns or bare model globs such as `gpt-*`.
+
+`bypass_models` can cross both provider and model list filters. It **cannot** cross
+`lock_provider` or `lock_model`.
+
+## Hard-locking LAN
+
+To force LAN users onto one exact model:
 
 ```yaml
-# Inherit native Pi selection, but only expose selected models.
 lantern_bot:
-  selection:
-    provider: null
-    model: null
-  policy:
-    allowed_models:
-      - "github-copilot/gpt-*"
-      - "cliproxy-2080/claude-*"
-    bypass_models:
-      - "cliproxy-2080/gpt-6.1-sol"
+  access:
+    localhost:
+      provider_mode: all
+      model_mode: all
+      selection:
+        provider: null
+        model: null
+        lock_provider: false
+        lock_model: false
+
+    lan:
+      provider_mode: all
+      model_mode: all
+      selection:
+        provider: "cliproxy-2080"
+        model: "gpt-6.1-sol"
+        lock_provider: true
+        lock_model: true
 ```
 
-```yaml
-# Force and lock one model on a managed machine.
-lantern_bot:
-  selection:
-    provider: "github-copilot"
-    model: "gpt-5"
-    lock_provider: true
-    lock_model: true
-```
+The backend validates the locked model against Pi's live
+`get_available_models` inventory. If it is unavailable, LanternBot reports the
+configuration error instead of silently falling back.
 
-Policy is evaluated against Pi's live `get_available_models` inventory. If a
-configured/locked model is unavailable, LanternBot reports the configuration error
-instead of silently falling back. If an inherited native model is excluded by policy,
-LanternBot selects the first model allowed by the policy before accepting a prompt.
+## Native defaults
 
-The browser selector never replaces backend enforcement. Provider/model locks,
-allow-lists, prompt limits and token limits are checked server-side.
+When a scope has no configured provider/model, Lantern does not pass a hardcoded model
+to Pi. The native Pi provider/model on that machine is inherited as long as policy
+allows it. This is why FJP can naturally use `cliproxy-2080`, while another machine
+can naturally use GitHub Copilot without changing Lantern code.
+
+If the inherited native model is forbidden by that scope's policy, LanternBot switches
+to the first allowed model before accepting the prompt.
+
+The browser selector is only presentation. Provider/model filters, locks, prompt
+limits and token limits are enforced server-side for every chat command.
 
 Selected file chips in the Lantern file manager are sent only inside
 `<lantern_context>` as attachment paths; they are not copied into the visible user
-message or loaded wholesale into the prompt. LanternBot reads a selected file only if
-it is useful for the request.
+message or loaded wholesale into the prompt.

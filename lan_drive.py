@@ -352,18 +352,29 @@ def write_config_file(cfg: "AppConfig") -> None:
         data["terminal_password_hash"] = cfg.terminal_password_hash
 
     bot = cfg.lantern_bot
+
+    def access_yaml(access):
+        return {
+            "provider_mode": access.provider_mode,
+            "providers": list(access.providers),
+            "model_mode": access.model_mode,
+            "models": list(access.models),
+            "bypass_models": list(access.bypass_models),
+            "selection": {
+                "provider": access.provider or None,
+                "model": access.model or None,
+                "lock_provider": access.lock_provider,
+                "lock_model": access.lock_model,
+            },
+        }
+
     data["lantern_bot"] = {
         "enabled": bot.enabled,
-        "selection": {
-            "provider": bot.provider or None,
-            "model": bot.model or None,
-            "lock_provider": bot.lock_provider,
-            "lock_model": bot.lock_model,
+        "access": {
+            "localhost": access_yaml(bot.local_access),
+            "lan": access_yaml(bot.lan_access),
         },
         "policy": {
-            "allowed_providers": list(bot.allowed_providers),
-            "allowed_models": list(bot.allowed_models),
-            "bypass_models": list(bot.bypass_models),
             "max_prompts_per_day": bot.max_prompts_per_day,
             "max_tokens_per_day": bot.max_tokens_per_day,
         },

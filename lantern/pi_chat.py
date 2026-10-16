@@ -58,7 +58,7 @@ class LanternBotManager:
         self.usage = LanternBotUsage(
             usage_path or (Path.home() / ".lantern" / "lanternbot-usage.json")
         )
-        self.selection_applied = False
+        self.selection_initialized: set[str] = set()
         self.lock = threading.RLock()
         self.write_lock = threading.Lock()
         self.turn_lock = threading.RLock()
@@ -358,12 +358,13 @@ class LanternBotManager:
             return [item for item in data["messages"] if isinstance(item, dict)]
         return []
 
-    def available_models(self) -> list[dict[str, Any]]:
+    def available_models(self, scope: str = "local") -> list[dict[str, Any]]:
         response = self.request({"type": "get_available_models"})
         data = response.get("data") if isinstance(response.get("data"), dict) else {}
         raw = data.get("models") if isinstance(data.get("models"), list) else []
         selected: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
+        policy = self.bot_config.access_policy(scope)
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -371,11 +372,7 @@ class LanternBotManager:
             model_id = str(item.get("id") or "")
             if not provider or not model_id:
                 continue
-            if not self.bot_config.allows_model(provider, model_id):
-                continue
-            if self.bot_config.lock_provider and provider != self.bot_config.provider:
-                continue
-            if self.bot_config.lock_model and model_id != self.bot_config.model:
+            if not policy.allows_model(provider, model_id):
                 continue
             key = (provider, model_id)
             if key in seen:
@@ -398,9 +395,10 @@ class LanternBotManager:
         self,
         state: dict[str, Any],
         models: list[dict[str, Any]],
+        policy,
     ) -> dict[str, Any] | None:
-        provider = self.bot_config.provider
-        model_id = self.bot_config.model
+        provider = policy.provider
+        model_id = policy.model
         if not provider and not model_id:
             return None
 
@@ -409,7 +407,7 @@ class LanternBotManager:
         current_id = str(current.get("id") or "")
         if ((not provider or current_provider == provider)
                 and (not model_id or current_id == model_id)
-                and self.bot_config.allows_model(current_provider, current_id)):
+                and policy.allows_model(current_provider, current_id)):
             return self._model_public(current)
 
         matches = [
@@ -424,59 +422,66 @@ class LanternBotManager:
             )
         return matches[0]
 
-    def bootstrap_state(self) -> dict[str, Any]:
+    def bootstrap_state(self, scope: str = "local") -> dict[str, Any]:
         state = self.get_state()
-        if self.selection_applied:
-            return state
-        models = self.available_models()
-        target = self._configured_target(state, models)
+        policy = self.bot_config.access_policy(scope)
+        models = self.available_models(scope)
         current = state.get("model") if isinstance(state.get("model"), dict) else {}
         current_provider = str(current.get("provider") or "")
         current_id = str(current.get("id") or "")
-        current_allowed = (
-            bool(current_provider and current_id)
-            and self.bot_config.allows_model(current_provider, current_id)
-            and (not self.bot_config.lock_provider or current_provider == self.bot_config.provider)
-            and (not self.bot_config.lock_model or current_id == self.bot_config.model)
+        current_allowed = policy.allows_model(current_provider, current_id)
+
+        should_apply_selection = (
+            scope not in self.selection_initialized
+            or policy.lock_provider
+            or policy.lock_model
         )
+        target = self._configured_target(state, models, policy) if should_apply_selection else None
         if target is None and not current_allowed:
             if not models:
-                raise RuntimeError("LanternBot policy allows no model available on this machine")
+                raise RuntimeError(
+                    f"LanternBot {scope} policy allows no model available on this machine"
+                )
             target = models[0]
-        if target is not None:
-            if current_provider != target["provider"] or current_id != target["id"]:
-                self.request({
-                    "type": "set_model",
-                    "provider": target["provider"],
-                    "modelId": target["id"],
-                })
-                state = self.get_state()
-        self.selection_applied = True
+
+        if target is not None and (
+            current_provider != target["provider"] or current_id != target["id"]
+        ):
+            self.request({
+                "type": "set_model",
+                "provider": target["provider"],
+                "modelId": target["id"],
+            })
+            state = self.get_state()
+        self.selection_initialized.add(scope)
         return state
 
-    def set_model(self, provider: str, model_id: str) -> dict[str, Any]:
+    def set_model(self, provider: str, model_id: str, scope: str = "local") -> dict[str, Any]:
         provider = str(provider or "").strip()
         model_id = str(model_id or "").strip()
         if not provider or not model_id:
             raise ValueError("provider and modelId are required")
-        if self.bot_config.lock_provider and provider != self.bot_config.provider:
-            raise PermissionError("LanternBot provider is locked by configuration")
-        if self.bot_config.lock_model and model_id != self.bot_config.model:
-            raise PermissionError("LanternBot model is locked by configuration")
+        policy = self.bot_config.access_policy(scope)
+        if policy.lock_provider and provider != policy.provider:
+            raise PermissionError("LanternBot provider is locked for this access scope")
+        if policy.lock_model and (provider != policy.provider or model_id != policy.model):
+            raise PermissionError("LanternBot model is locked for this access scope")
         allowed = {
             (item["provider"], item["id"])
-            for item in self.available_models()
+            for item in self.available_models(scope)
         }
         if (provider, model_id) not in allowed:
             raise PermissionError("LanternBot provider/model is not allowed by configuration")
         response = self.request({"type": "set_model", "provider": provider, "modelId": model_id})
         self.last_state = {}
         self.get_state()
+        self.selection_initialized.add(scope)
         return response
 
-    def new_session(self) -> dict[str, Any]:
-        response = self.request({"type": "new_session"})
-        state = self.get_state()
+    def new_session(self, scope: str = "local") -> dict[str, Any]:
+        self.request({"type": "new_session"})
+        self.selection_initialized.clear()
+        state = self.bootstrap_state(scope)
         self.emit({"type": "chat_session_changed", "state": state})
         return state
 
@@ -560,6 +565,7 @@ class LanternBotManager:
         message: str,
         context: Optional[dict[str, Any]] = None,
         work_hash: Optional[str] = None,
+        scope: str = "local",
     ) -> dict[str, Any]:
         raw_message = str(message or "").strip()
         if not raw_message:
@@ -568,11 +574,11 @@ class LanternBotManager:
             raise ValueError("Chat message is too large")
         if not self.bot_config.enabled:
             raise PermissionError("LanternBot is disabled by configuration")
-        state = self.bootstrap_state()
+        state = self.bootstrap_state(scope)
         current = state.get("model") if isinstance(state.get("model"), dict) else {}
         provider = str(current.get("provider") or "")
         model_id = str(current.get("id") or "")
-        if not provider or not model_id or not self.bot_config.allows_model(provider, model_id):
+        if not provider or not model_id or not self.bot_config.allows_model(provider, model_id, scope=scope):
             raise PermissionError("LanternBot current provider/model is not allowed by configuration")
         self.usage.assert_prompt_allowed(
             max_prompts=self.bot_config.max_prompts_per_day,
@@ -616,7 +622,7 @@ class LanternBotManager:
         self._emit_work_update(final=True)
         return response
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self, scope: str = "local") -> dict[str, Any]:
         state = dict(self.last_state)
         model = state.get("model") if isinstance(state.get("model"), dict) else {}
         with self.lock:
@@ -628,7 +634,7 @@ class LanternBotManager:
             "model": self._model_public(model) if model else None,
             "terminalId": "lantern_bot",
             "name": "LanternBot",
-            "policy": self.bot_config.public_policy(),
+            "policy": self.bot_config.public_policy(scope),
             "usage": self.usage.snapshot(),
         }
 

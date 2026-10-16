@@ -92,7 +92,7 @@ class LanternBotManagerTests(unittest.TestCase):
             }),
         )
         try:
-            state = manager.bootstrap_state()
+            state = manager.bootstrap_state("lan")
             self.assertTrue(state["model"]["id"].startswith("claude-"))
             self.assertNotEqual(state["model"]["id"], "gpt-6.1-sol")
         finally:
