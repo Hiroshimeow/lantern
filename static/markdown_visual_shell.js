@@ -44,8 +44,9 @@
     loading: false, instance: null, version: null,
     dirty: false, revision: 0, savedRevision: 0, saving: false, conflict: false,
     baseline: '', lastSaved: '', roundtripSafe: false, approvedReformat: false,
-    draftTimer: 0, checkTimer: 0, host: null, status: null,
+    draftTimer: 0, diffTimer: 0, checkTimer: 0, host: null, status: null,
     saveButton: null, closeButton: null, details: null,
+    sourceArea: null, sourceBackdrop: null, sourceDeletions: null, hunks: [],
     savedSincePreview: false, switchingFromPaged: false,
   };
   const key = location.origin + ':' + path;
@@ -117,6 +118,70 @@
   // so compare against the normalized baseline without rewriting disk bytes.
   const matchesLastSaved = text => text === (view.mode === 'source'
     ? view.lastSaved.replace(/\r\n?/g, '\n') : view.lastSaved);
+  const diffApi = () => globalThis.LanternMarkdownDiff;
+  const diffBaseline = () => view.mode === 'source'
+    ? String(view.baseline || '').replace(/\r\n?/g, '\n')
+    : String(view.lastSaved || '');
+  const syncSourceBackdrop = () => {
+    if (!view.sourceArea || !view.sourceBackdrop) return;
+    view.sourceBackdrop.style.transform =
+      'translate(' + (-view.sourceArea.scrollLeft) + 'px,' + (-view.sourceArea.scrollTop) + 'px)';
+  };
+  const renderSourceDiff = (hunks, draftText) => {
+    if (!view.sourceArea || !view.sourceBackdrop || !view.sourceDeletions) return;
+    const lines = String(draftText || '').replace(/\r\n?/g, '\n').split('\n');
+    const classes = Array.from({length: Math.max(1, lines.length)}, () => new Set());
+    const deletions = [];
+    for (const hunk of hunks) {
+      if (hunk.kind === 'add' || hunk.kind === 'mod') {
+        for (let i = hunk.draftStart; i < hunk.draftEnd; i++) {
+          if (classes[i]) classes[i].add(hunk.kind === 'add' ? 'md-diff-add' : 'md-diff-mod');
+        }
+      }
+      if (hunk.baseText?.length) {
+        const at = Math.max(0, Math.min(classes.length - 1, hunk.draftStart));
+        classes[at].add('md-diff-delete-anchor');
+        deletions.push(hunk);
+      }
+    }
+    view.sourceBackdrop.textContent = '';
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < classes.length; i++) {
+      const line = document.createElement('span');
+      line.className = 'md-source-diff-line ' + [...classes[i]].join(' ');
+      line.textContent = lines[i] || ' ';
+      fragment.append(line);
+    }
+    view.sourceBackdrop.append(fragment);
+    view.sourceDeletions.textContent = '';
+    for (const hunk of deletions) {
+      const row = document.createElement('div');
+      row.className = 'md-source-deletion';
+      const label = document.createElement('span');
+      label.className = 'md-source-deletion-label';
+      label.textContent = 'Removed near line ' + (hunk.draftStart + 1);
+      const old = document.createElement('pre');
+      old.textContent = hunk.baseText.join('\n');
+      row.append(label, old);
+      view.sourceDeletions.append(row);
+    }
+    view.sourceDeletions.hidden = !deletions.length;
+    syncSourceBackdrop();
+  };
+  const renderDraftDiff = () => {
+    const diff = diffApi();
+    if (!diff || !view.instance) return [];
+    const text = getEditorText();
+    const hunks = diff.diffLines(diffBaseline(), text);
+    view.hunks = hunks;
+    if (view.mode === 'source') renderSourceDiff(hunks, text);
+    document.documentElement.dataset.mdPendingHunks = String(hunks.length);
+    return hunks;
+  };
+  const queueDiff = () => {
+    clearTimeout(view.diffTimer);
+    view.diffTimer = setTimeout(renderDraftDiff, 120);
+  };
   const saveDraft = async () => {
     if (!view.active || !view.instance) return true;
     const text = getEditorText();
@@ -149,12 +214,14 @@
       if (matchesLastSaved(getEditorText())) {
         view.dirty = false;
         clearTimeout(view.draftTimer);
+        renderDraftDiff();
         if (!view.conflict && !view.saving) status(view.roundtripSafe ?
           'Ready. No pending changes.' :
           'Visual editing ready. Formatting differs; review required before Save.');
         return;
       }
       queueDraft();
+      queueDiff();
     }, 260);
   };
   const restoreButtons = () => {
@@ -220,6 +287,9 @@
 
   function renderToolbar(kind, sourceText = '') {
     ensureShellStyle();
+    view.sourceArea = null;
+    view.sourceBackdrop = null;
+    view.sourceDeletions = null;
     const shell = document.createElement('section');
     shell.className = 'md-visual-shell';
     // Editing actions and status belong to the fixed page header.
@@ -227,6 +297,13 @@
     editorHost.className = 'md-visual-host';
     editorHost.id = 'md-visual-edit-' + escapeCss(path);
     if (kind === 'source') {
+      const wrap = document.createElement('div');
+      wrap.className = 'md-source-diff-wrap';
+      const backdrop = document.createElement('div');
+      backdrop.className = 'md-source-diff-backdrop';
+      const backdropContent = document.createElement('div');
+      backdropContent.className = 'md-source-diff-backdrop-content';
+      backdrop.append(backdropContent);
       const area = document.createElement('textarea');
       area.className = 'md-source-area';
       area.setAttribute('aria-label', 'Markdown source');
@@ -234,7 +311,15 @@
       area.wrap = 'off';
       area.value = sourceText;
       area.addEventListener('input', changed);
-      editorHost.append(area);
+      area.addEventListener('scroll', syncSourceBackdrop, {passive: true});
+      const deleted = document.createElement('div');
+      deleted.className = 'md-source-deletions';
+      deleted.hidden = true;
+      wrap.append(backdrop, area);
+      editorHost.append(wrap, deleted);
+      view.sourceArea = area;
+      view.sourceBackdrop = backdropContent;
+      view.sourceDeletions = deleted;
       view.instance = { getMarkdown: () => area.value, focus: () => area.focus(), destroy: () => {} };
     }
     shell.append(editorHost);
@@ -296,6 +381,7 @@
     if (matchesLastSaved(text)) {
       view.dirty = false;
       await drafts.clear().catch(() => {});
+      renderDraftDiff();
       if (manual) status('Already saved');
       return;
     }
@@ -317,6 +403,7 @@
       view.lastSaved = text;
       view.baseline = text;
       view.savedSincePreview = true;
+      renderDraftDiff();
       if (view.revision === revision) {
         view.dirty = false;
         await drafts.clear().catch(() => {});
@@ -386,6 +473,7 @@
     view.loading = true;
     restoreButtons();
     clearTimeout(view.draftTimer);
+    clearTimeout(view.diffTimer);
     clearTimeout(view.checkTimer);
     try {
       await view.instance?.destroy?.();
@@ -411,6 +499,7 @@
         'Ready. Changes stay pending until Ctrl+S or Save.',
         view.conflict ? 'error' : view.dirty || !view.roundtripSafe ? 'warn' : 'info');
       view.instance.focus();
+      renderDraftDiff();
       await restorePosition(kind, bookmark, y);
     } catch (error) {
       // Never discard the draft written above on a failed mode transition.
@@ -433,6 +522,7 @@
     const unsaved = !matchesLastSaved(getEditorText());
     if (unsaved && !confirm('Discard unsaved changes and return to Preview?')) return;
     clearTimeout(view.draftTimer);
+    clearTimeout(view.diffTimer);
     clearTimeout(view.checkTimer);
     // Stop new draft writes while waiting for any in-flight writes to finish.
     const previousMode = view.mode;
@@ -556,6 +646,7 @@
         'Visual editing ready. Formatting differs; review required before Save.',
         view.conflict ? 'error' : view.roundtripSafe ? 'info' : 'warn');
       restoreButtons();
+      renderDraftDiff();
       view.instance.focus();
       await restorePosition(kind, bookmark);
       window.__lanternMdMetrics = { loadMs: Math.round(performance.now() - start), editorBytes: doc.bytes };

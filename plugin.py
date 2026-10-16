@@ -1269,6 +1269,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_anchor_bridge.js" defer></script>'
     if visual_markdown:
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_table_interactions.js" defer></script>'
+        helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_draft_diff.js" defer></script>'
         helper_script += f'<script nonce="{h(nonce)}" src="/static/chatbot.js" defer></script>'
     visual_script = (
         f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'

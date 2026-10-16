@@ -751,6 +751,68 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_source_pending_diff_is_visual_only_and_clears_after_save(self):
+        initial = (
+            "# Diff review\n"
+            "keep\n"
+            "delete me\n"
+            "anchor\n"
+            "change me\n"
+            "end\n"
+        )
+        changed = (
+            "# Diff review\n"
+            "keep\n"
+            "anchor\n"
+            "changed\n"
+            "end\n"
+            "added line\n"
+        )
+        path = self.root / "source-pending-diff.md"
+        path.write_text(initial, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1180, "height": 850})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=source-pending-diff.md",
+                      wait_until="domcontentloaded")
+            page.get_by_role("button", name="Source", exact=True).click()
+            source = page.get_by_role("textbox", name="Markdown source")
+            source.wait_for(state="visible")
+            source.fill(changed)
+            page.wait_for_function(
+                "() => Number(document.documentElement.dataset.mdPendingHunks || 0) >= 3",
+                timeout=8000,
+            )
+
+            self.assertGreater(page.locator(".md-source-diff-line.md-diff-add").count(), 0)
+            self.assertGreater(page.locator(".md-source-diff-line.md-diff-mod").count(), 0)
+            deletion = page.locator(".md-source-deletion")
+            self.assertGreater(deletion.count(), 0)
+            deletion_text = "\n".join(deletion.all_inner_texts())
+            self.assertIn("delete me", deletion_text)
+
+            # Diff chrome is outside the draft value and never serializes.
+            self.assertEqual(source.input_value(), changed)
+            self.assertNotIn("Removed near line", source.input_value())
+            self.assertEqual(path.read_text(encoding="utf-8"), initial)
+
+            page.keyboard.press("Control+S")
+            page.wait_for_function(
+                "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty; }",
+                timeout=8000,
+            )
+            page.wait_for_function(
+                "() => Number(document.documentElement.dataset.mdPendingHunks || 0) === 0",
+                timeout=5000,
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), changed)
+            self.assertEqual(page.locator(".md-source-deletion").count(), 0)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
 
 if __name__ == "__main__":
     unittest.main()
