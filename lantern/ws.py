@@ -202,7 +202,8 @@ class WebSocketHub:
         with self.lock:
             peers = list(self.peers)
         for peer in peers:
-            if (str(message.get("type") or "").startswith("terminal_")
+            msg_type = str(message.get("type") or "")
+            if ((msg_type.startswith("terminal_") or msg_type.startswith("chat_"))
                     and not getattr(peer, "can_terminal", lambda: True)()):
                 continue
             if (message.get("type") == "terminal_output" and getattr(peer, "protocol", "v2") != "legacy"
@@ -238,7 +239,7 @@ def _legacy_snapshot_payload(terminal):
             "output": {k: s[-20000:] for k, s in output.items()}}, truncated
 
 
-def upgrade(handler, hub, terminal, scm, access=None):
+def upgrade(handler, hub, terminal, scm, access=None, chat=None):
     if not same_origin(handler):
         handler.send_error(403, "WebSocket Origin must match Host")
         return
@@ -314,7 +315,7 @@ def upgrade(handler, hub, terminal, scm, access=None):
             received = None
             try:
                 received = json.loads(raw)
-                dispatch(peer, received, terminal, scm, hub)
+                dispatch(peer, received, terminal, scm, hub, chat=chat)
             except Exception as exc:
                 try:
                     peer.send(_terminal_error_reply(received, exc))
@@ -333,10 +334,11 @@ def upgrade(handler, hub, terminal, scm, access=None):
 
 
 def _terminal_error_reply(message, error):
-    reply = {"type": "terminal_error", "error": str(error)}
+    operation = message.get("type") if isinstance(message, dict) else ""
+    is_chat = str(operation or "").startswith("chat_")
+    reply = {"type": "chat_error" if is_chat else "terminal_error", "error": str(error)}
     if not isinstance(message, dict):
         return reply
-    operation = message.get("type")
     if isinstance(error, PermissionError) and str(error).startswith("Terminal locked"):
         reply["code"] = "terminal_auth_required"
         reply["operation"] = str(operation or "")
@@ -352,12 +354,42 @@ def _terminal_error_reply(message, error):
     return reply
 
 
-def dispatch(peer, msg, terminal, scm, hub=None):
+def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
     if not isinstance(msg, dict):
         raise ValueError("message must be an object")
     typ = str(msg.get("type") or "")
-    if typ.startswith("terminal_") and not getattr(peer, "can_terminal", lambda: True)():
+    if ((typ.startswith("terminal_") or typ.startswith("chat_"))
+            and not getattr(peer, "can_terminal", lambda: True)()):
         raise PermissionError("Terminal locked: enter the password on the host-issued sign-in form")
+    if typ.startswith("chat_") and chat is None:
+        raise RuntimeError("Pi chat is not initialized")
+    if typ == "chat_sync":
+        peer.send({
+            "type": "chat_state",
+            "state": chat.get_state(),
+            "summary": chat.summary(),
+            "models": chat.available_models(),
+            "messages": chat.get_messages(),
+        })
+        return
+    if typ == "chat_prompt":
+        context = msg.get("context") if isinstance(msg.get("context"), dict) else {}
+        chat.prompt(str(msg.get("message") or ""), context)
+        peer.send({"type": "chat_prompt_accepted", "reqId": msg.get("reqId")})
+        return
+    if typ == "chat_abort":
+        chat.abort()
+        peer.send({"type": "chat_aborted"})
+        return
+    if typ == "chat_new":
+        state = chat.new_session()
+        peer.send({"type": "chat_state", "state": state, "summary": chat.summary(),
+                   "models": chat.available_models(), "messages": []})
+        return
+    if typ == "chat_set_model":
+        chat.set_model(str(msg.get("provider") or ""), str(msg.get("modelId") or ""))
+        peer.send({"type": "chat_model_changed", "state": chat.get_state()})
+        return
     if typ == "terminal_client_v2":
         peer.protocol = "v2"
         return

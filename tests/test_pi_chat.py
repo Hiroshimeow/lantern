@@ -74,12 +74,13 @@ class PiChatManagerTests(unittest.TestCase):
         self.assertTrue(self.manager.summary()["running"])
 
     def test_prompt_wraps_latest_lantern_context_and_streams_events(self):
+        target = self.root / "docs" / "spec.md"
         self.manager.prompt(
             "Fix this paragraph",
             {
                 "kind": "markdown",
-                "path": r"E:\docs\spec.md",
-                "folder": r"E:\docs",
+                "path": str(target.relative_to(self.root)),
+                "folder": "docs",
                 "markdownMode": "source",
                 "line": 243,
                 "selectedText": "old text",
@@ -89,7 +90,8 @@ class PiChatManagerTests(unittest.TestCase):
         messages = self.manager.get_messages()
         prompt = messages[0]["content"]
         self.assertIn("<lantern_context>", prompt)
-        self.assertIn(r"path: E:\docs\spec.md", prompt)
+        self.assertIn("path: " + str(target.resolve()), prompt)
+        self.assertIn("folder: " + str((self.root / "docs").resolve()), prompt)
         self.assertIn("markdownMode: source", prompt)
         self.assertIn("line: 243", prompt)
         self.assertIn("selectedText:\nold text", prompt)
@@ -106,6 +108,10 @@ class PiChatManagerTests(unittest.TestCase):
     def test_selected_text_is_bounded(self):
         prompt = self.manager.build_prompt("go", {"selectedText": "x" * 9000})
         self.assertLess(prompt.count("x"), 8100)
+
+    def test_context_cannot_escape_lantern_root(self):
+        with self.assertRaisesRegex(ValueError, "inside the configured root"):
+            self.manager.normalize_context({"kind": "file", "path": "../outside.txt"})
 
 
 if __name__ == "__main__":

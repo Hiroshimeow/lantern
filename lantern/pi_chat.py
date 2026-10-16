@@ -326,6 +326,47 @@ class PiChatManager:
         self.emit({"type": "chat_session_changed", "state": state})
         return state
 
+    def normalize_context(self, context: Optional[dict[str, Any]]) -> dict[str, Any]:
+        source = context if isinstance(context, dict) else {}
+        result: dict[str, Any] = {}
+        kind = str(source.get("kind") or "unknown").strip().lower()
+        result["kind"] = kind if kind in {"folder", "file", "markdown"} else "unknown"
+
+        def canonical(value: Any) -> str:
+            raw = str(value or "").strip()
+            if not raw:
+                return ""
+            cleaned = raw.replace("\\", os.sep).replace("/", os.sep)
+            candidate = Path(cleaned)
+            if not candidate.is_absolute():
+                candidate = self.root / cleaned.lstrip("\\/")
+            candidate = candidate.resolve()
+            try:
+                candidate.relative_to(self.root)
+            except ValueError as exc:
+                raise ValueError("Chat context path must stay inside the configured root") from exc
+            return str(candidate)
+
+        for key in ("path", "folder"):
+            value = canonical(source.get(key))
+            if value:
+                result[key] = value
+
+        mode = str(source.get("markdownMode") or "").strip().lower()
+        if mode in {"preview", "visual", "source"}:
+            result["markdownMode"] = mode
+        if source.get("line") not in (None, ""):
+            try:
+                line = int(source["line"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Chat context line must be an integer") from exc
+            if line > 0:
+                result["line"] = min(line, 10_000_000)
+        selected = str(source.get("selectedText") or "")
+        if selected:
+            result["selectedText"] = selected[:8000]
+        return result
+
     @staticmethod
     def build_prompt(message: str, context: Optional[dict[str, Any]] = None) -> str:
         text = str(message or "").strip()
@@ -346,7 +387,7 @@ class PiChatManager:
         return f"<lantern_context>\n{block}\n</lantern_context>\n\n<user_request>\n{text}\n</user_request>"
 
     def prompt(self, message: str, context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        wrapped = self.build_prompt(message, context)
+        wrapped = self.build_prompt(message, self.normalize_context(context))
         return self.request({"type": "prompt", "message": wrapped})
 
     def abort(self) -> dict[str, Any]:

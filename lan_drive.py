@@ -71,6 +71,7 @@ except Exception:
     LAN_PLUGIN = None  # lan_drive.py must remain standalone
 from http.server import SimpleHTTPRequestHandler
 from lantern.terminal import TerminalManager
+from lantern.pi_chat import PiChatManager
 from lantern.scm import ScmService
 from lantern.terminal_auth import TerminalAccess, hash_password, update_password_yaml
 from lantern.ws import WebSocketHub, same_origin, upgrade as upgrade_websocket
@@ -2304,6 +2305,7 @@ def _image_crop_target(rel: str) -> Path:
 WS_HUB = WebSocketHub()
 TERMINAL_ACCESS: Optional[TerminalAccess] = None
 TERM_MANAGER: Optional[TerminalManager] = None
+CHAT_MANAGER: Optional[PiChatManager] = None
 SCM_SERVICE: Optional[ScmService] = None
 
 
@@ -2397,7 +2399,7 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == "/ws":
                 if TERM_MANAGER is None or SCM_SERVICE is None or TERMINAL_ACCESS is None:
                     self.send_error(503, "runtime not initialized"); return
-                return upgrade_websocket(self, WS_HUB, TERM_MANAGER, SCM_SERVICE, TERMINAL_ACCESS)
+                return upgrade_websocket(self, WS_HUB, TERM_MANAGER, SCM_SERVICE, TERMINAL_ACCESS, CHAT_MANAGER)
             if parsed.path.startswith("/static/"):
                 return self.serve_app_asset(parsed.path)
             if parsed.path == "/api/terminal/auth":
@@ -3509,7 +3511,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
 
 
 def main() -> None:
-    global CONFIG, TERMINAL_ACCESS, TERM_MANAGER, SCM_SERVICE
+    global CONFIG, TERMINAL_ACCESS, TERM_MANAGER, CHAT_MANAGER, SCM_SERVICE
     args = parse_args()
     if args.set_terminal_password:
         # No password on argv, stdout, process metadata, or in shell history.
@@ -3529,6 +3531,7 @@ def main() -> None:
     effective_hash = "" if args.no_password else CONFIG.terminal_password_hash
     TERMINAL_ACCESS = TerminalAccess(effective_hash, local_bypass=CONFIG.terminal_local_bypass)
     TERM_MANAGER = TerminalManager(CONFIG.root, WS_HUB.broadcast, enabled=CONFIG.terminal_enabled, max_live=CONFIG.terminal_max_sessions, max_output=CONFIG.terminal_max_buffer_chars)
+    CHAT_MANAGER = PiChatManager(CONFIG.root, WS_HUB.broadcast)
     SCM_SERVICE = ScmService(CONFIG.root, WS_HUB.broadcast)
     if not CONFIG.root.exists():
         print(f"Root does not exist: {CONFIG.root}", file=sys.stderr)
@@ -3568,6 +3571,8 @@ def main() -> None:
         finally:
             if SCM_SERVICE is not None:
                 SCM_SERVICE.close()
+            if CHAT_MANAGER is not None:
+                CHAT_MANAGER.close()
             if TERM_MANAGER is not None:
                 TERM_MANAGER.kill_all()
 
