@@ -111,7 +111,7 @@
     const nearEdge = event => {
       const cell = event.target.closest?.('th');
       if (!cell || !table.contains(cell) || !headerCells().includes(cell)) return null;
-      return Math.abs(cell.getBoundingClientRect().right - event.clientX) <= 10 ? cell : null;
+      return Math.abs(cell.getBoundingClientRect().right - event.clientX) <= 18 ? cell : null;
     };
     let resizing = null;
     port.addEventListener('pointermove', event => {

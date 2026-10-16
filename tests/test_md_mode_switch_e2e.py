@@ -243,6 +243,92 @@ class MarkdownModesE2E(unittest.TestCase):
         finally:
             context.close()
 
+    def test_pending_diff_repeated_mode_switch_keeps_deep_location(self):
+        original = "# Pending navigation\n\n" + "\n\n".join(
+            f"Pending block {i} unique content." for i in range(190)
+        ) + "\n"
+        target = self.root / "pending-mode-anchor.md"
+        target.write_text(original, encoding="utf-8")
+        context = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=pending-mode-anchor.md",
+                      wait_until="domcontentloaded")
+            marker_node = page.locator(".md-preview p").nth(126)
+            marker_node.scroll_into_view_if_needed()
+            page.evaluate("getSelection().removeAllRanges()")
+            expected = page.evaluate(
+                "() => window.LanternAnchorBridge.capture('preview').line")
+            self.assertGreater(expected, 200)
+
+            page.get_by_role("button", name="Source", exact=True).click()
+            area = page.get_by_role("textbox", name="Markdown source")
+            area.wait_for(timeout=12000)
+            source = area.input_value()
+            source = source.replace(
+                "Pending block 126 unique content.",
+                "Pending block 126 changed pending content.",
+                1,
+            )
+            area.fill(source)
+            page.wait_for_function(
+                "() => !!window.__lanternMdVisual?.state?.workHash",
+                timeout=10000,
+            )
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+            # Put the Source viewport/caret back at the changed block before the
+            # repeated mode switches.
+            page.evaluate("""line => {
+              const area=document.querySelector('.md-source-area');
+              window.LanternAnchorBridge.selectLine(area,line,{line});
+            }""", expected)
+
+            for cycle in range(3):
+                page.get_by_role("button", name="Preview", exact=True).click()
+                preview = page.locator("article.md-preview")
+                preview.wait_for(state="visible", timeout=12000)
+                changed = preview.get_by_text(
+                    "Pending block 126 changed pending content.", exact=True)
+                changed.wait_for(timeout=12000)
+                rect = changed.bounding_box()
+                self.assertGreater(page.evaluate("scrollY"), 400,
+                                   f"Preview jumped to top on cycle {cycle}")
+                self.assertIsNotNone(rect)
+                self.assertGreater(rect["y"], 40)
+                self.assertLess(rect["y"], 820)
+
+                page.get_by_role("button", name="Edit visually", exact=True).click()
+                editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+                editor.wait_for(timeout=24000)
+                changed_visual = editor.get_by_text(
+                    "Pending block 126 changed pending content.", exact=True)
+                changed_visual.wait_for(timeout=12000)
+                vrect = changed_visual.bounding_box()
+                self.assertIsNotNone(vrect)
+                self.assertGreater(page.evaluate("scrollY"), 400,
+                                   f"Visual jumped to top on cycle {cycle}")
+                self.assertLess(vrect["y"], 820)
+
+                page.get_by_role("button", name="Source", exact=True).click()
+                area.wait_for(timeout=12000)
+                pos = page.evaluate("""() => {
+                  const a=document.querySelector('.md-source-area');
+                  return {
+                    line:a.value.slice(0,a.selectionStart).split('\\n').length,
+                    top:a.scrollTop,
+                  };
+                }""")
+                self.assertGreater(pos["line"], 200)
+                self.assertGreater(pos["top"], 800)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_repeated_mode_roundtrip_keeps_same_preview_anchor(self):
         original = "# Roundtrip\n\n" + "\n\n".join(
             f"Unique block {i} for repeated mode navigation." for i in range(180)) + "\n"

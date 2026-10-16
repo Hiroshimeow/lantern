@@ -12,6 +12,6 @@
 .lantern-table-pan.lantern-panning{cursor:grabbing}
 .lantern-table-pan[hidden]{display:none}
 .lantern-table-near-edge th{cursor:col-resize}
-.lantern-table-resize-marker{position:absolute;top:0;width:2px;background:#7eaaff;pointer-events:none}
+.lantern-table-resize-marker{position:absolute;top:0;width:6px;margin-left:-3px;border-radius:3px;background:rgba(126,170,255,.88);box-shadow:0 0 0 1px rgba(16,27,42,.75);pointer-events:none}
 .lantern-table-resize-marker[hidden]{display:none}
 @media print{.lantern-table-overlay{display:none}}

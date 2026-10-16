@@ -23,10 +23,15 @@
   const anchorKey = 'lantern-md-anchor:' + path;
   const capturePosition = () => anchorBridge?.capture(view.mode, preview) || null;
   let pointerBookmark = null;
-  const takeBookmark = () => {
-    const selected = pointerBookmark || capturePosition();
+  let pointerScrollY = null;
+  const takePosition = () => {
+    const snapshot = {
+      bookmark: pointerBookmark || capturePosition(),
+      y: pointerScrollY ?? scrollY,
+    };
     pointerBookmark = null;
-    return selected;
+    pointerScrollY = null;
+    return snapshot;
   };
   async function restorePosition(mode, bookmark, y = null) {
     // Position mapping is best effort. A stale or unresolvable bookmark must
@@ -736,9 +741,10 @@
 
   // Swap editing surfaces without changing documents or making a second
   // controller for Source. Both editors share draft, version and save state.
-  async function switchEditor(kind, requestedBookmark = null) {
+  async function switchEditor(kind, requestedBookmark = null, requestedY = null) {
     if (!view.active || view.loading || view.saving || kind === view.mode) return;
     const bookmark = requestedBookmark || capturePosition();
+    const y = requestedY ?? scrollY;
     const contentNow = getEditorText();
     // Milkdown may emit a mount transaction without changing Markdown.
     // Compare content, not its transient dirty flag, before switching modes.
@@ -772,7 +778,6 @@
     let engine = null;
     try { if (kind === 'visual') engine = await loadBundle(); }
     catch (error) { status('Cannot load Visual editor: ' + error.message, 'error'); return; }
-    const y = scrollY;
     view.loading = true;
     restoreButtons();
     clearTimeout(view.draftTimer);
@@ -865,15 +870,15 @@
     }
   }
 
-  async function close(requestedBookmark = null) {
+  async function close(requestedBookmark = null, requestedY = null) {
     if (!view.active || view.saving || view.loading) return;
     const bookmark = requestedBookmark || capturePosition();
+    const y = requestedY ?? scrollY;
     const text = getEditorText();
     if (!(await flushWorkingCopy(text))) return;
     clearTimeout(view.draftTimer);
     clearTimeout(view.diffTimer);
     clearTimeout(view.checkTimer);
-    const y = scrollY;
     const previousMode = view.mode;
     view.mode = 'preview';
     view.loading = true;
@@ -898,10 +903,11 @@
     }
   }
 
-  async function start(kind = 'visual', requestedBookmark = null) {
-    if (view.active) return switchEditor(kind, requestedBookmark);
+  async function start(kind = 'visual', requestedBookmark = null, requestedY = null) {
+    if (view.active) return switchEditor(kind, requestedBookmark, requestedY);
     if (view.loading) return;
     const bookmark = requestedBookmark || capturePosition();
+    const y = requestedY ?? scrollY;
     const pagedNow = window.__lanternMdPaged;
     if (pagedNow?.active) {
       view.switchingFromPaged = true;
@@ -955,7 +961,7 @@
         });
         view.mode = 'paged';
         restoreButtons();
-        await restorePosition('visual', bookmark);
+        await restorePosition('visual', bookmark, y);
         return;
       }
       const engine = kind === 'visual' ? await loadBundle() : null;
@@ -1002,7 +1008,7 @@
       restoreButtons();
       renderDraftDiff();
       view.instance.focus();
-      await restorePosition(kind, bookmark);
+      await restorePosition(kind, bookmark, y);
       window.__lanternMdMetrics = { loadMs: Math.round(performance.now() - start), editorBytes: doc.bytes };
     } catch (error) {
       if (view.instance) view.instance.destroy();
@@ -1025,22 +1031,32 @@
   draftHeader?.addEventListener('click', downloadDraft);
   backHeader?.addEventListener('click', () => { void close(); });
   for (const button of [trigger, sourceTrigger, previewTrigger])
-    button.addEventListener('pointerdown', () => { pointerBookmark = capturePosition(); }, true);
-  trigger.addEventListener('click', () => { void start('visual', takeBookmark()); });
-  sourceTrigger.addEventListener('click', () => { void start('source', takeBookmark()); });
+    button.addEventListener('pointerdown', () => {
+      pointerBookmark = capturePosition();
+      pointerScrollY = scrollY;
+    }, true);
+  trigger.addEventListener('click', () => {
+    const pos = takePosition();
+    void start('visual', pos.bookmark, pos.y);
+  });
+  sourceTrigger.addEventListener('click', () => {
+    const pos = takePosition();
+    void start('source', pos.bookmark, pos.y);
+  });
   previewTrigger.addEventListener('click', () => {
-    const bookmark = takeBookmark();
+    const pos = takePosition();
+    const bookmark = pos.bookmark;
     if (window.__lanternMdPaged?.active) {
       if (bookmark) sessionStorage.setItem(anchorKey, JSON.stringify(bookmark));
       void window.__lanternMdPaged.close().then(() => {
         if (!preview.hidden) {
-          void restorePosition('preview', bookmark);
+          void restorePosition('preview', bookmark, pos.y);
           sessionStorage.removeItem(anchorKey);
         }
       });
       return;
     }
-    if (view.active) void close(bookmark);
+    if (view.active) void close(bookmark, pos.y);
   });
   document.addEventListener('keydown', e => {
     if (!view.active || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;

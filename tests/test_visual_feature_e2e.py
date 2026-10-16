@@ -107,6 +107,46 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in folder.iterdir()),['sample.png'])
         finally:context.close()
 
+    def test_real_visual_table_column_resize_handle_and_drag(self):
+        columns = 8
+        source = '# Resize Table\n\n|' + '|'.join(f'Column_{i}' for i in range(columns)) + '|\n'
+        source += '|' + '|'.join('---' for _ in range(columns)) + '|\n'
+        source += '|' + '|'.join(f'Value_{i}' for i in range(columns)) + '|\n'
+        target = self.root / 'resize-table-e2e.md'
+        target.write_text(source, encoding='utf-8')
+        context = self.browser.new_context(viewport={'width': 1050, 'height': 850})
+        page = context.new_page()
+        errors = []
+        page.on('pageerror', lambda err: errors.append(str(err)))
+        try:
+            page.goto(self.base + '/api/plugin/preview?p=resize-table-e2e.md',
+                      wait_until='domcontentloaded')
+            page.get_by_role('button', name='Edit visually').click()
+            first = page.locator('.md-visual-host .milkdown-table-block th').first
+            first.wait_for(timeout=30000)
+            before = first.bounding_box()
+            self.assertIsNotNone(before)
+            # The resize affordance must be forgiving, not a 2px precision target.
+            edge_x = before['x'] + before['width'] - 14
+            edge_y = before['y'] + before['height'] / 2
+            page.mouse.move(edge_x, edge_y)
+            marker_node = page.locator('.md-visual-host .lantern-table-resize-marker')
+            marker_node.wait_for(state='visible', timeout=5000)
+            self.assertTrue(page.locator('.md-visual-host .milkdown-table-block')
+                            .first.evaluate("e=>e.classList.contains('lantern-table-near-edge')"))
+
+            page.mouse.down()
+            page.mouse.move(edge_x + 48, edge_y, steps=6)
+            page.mouse.up()
+            page.wait_for_timeout(150)
+            after = first.bounding_box()
+            self.assertIsNotNone(after)
+            self.assertGreater(after['width'], before['width'] + 30)
+            self.assertEqual(target.read_text(encoding='utf-8'), source)
+            self.assertEqual(errors, [])
+        finally:
+            context.close()
+
     def test_30_column_table_horizontal_scroll_and_last_column_controls(self):
         columns=30
         source='# Wide Table\n\n|'+ '|'.join('Column_%02d'%i for i in range(columns))+'|\n'
