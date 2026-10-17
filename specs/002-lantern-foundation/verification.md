@@ -27,7 +27,7 @@ First HTTP run (legacy then refactor): file-list p95 `227.552 -> 258.364 ms` (13
 
 In-process 35 alternating comparisons of exact same file-list response: median `348.314 -> 356.449 ms` (2.3% slower); p95 `483.984 -> 523.075 ms` (8.1% slower).
 
-One reverse-order HTTP run overlaps with other tests and is **invalid as a non-degradation proof**. Repeat on a quiet host, agree a measurable performance budget and reject a statistically meaningful regression; avoid changing behavior for synthetic speed.
+An additional reverse-order HTTP run overlapped with other tests and was rejected as confounded. A later three-round, order-balanced run without deliberate E2E concurrency still fluctuated: file-list p95 ratios (new/old) **0.867, 1.012, 1.465**, Markdown Preview **1.008, 1.271, 1.159**, info **0.815, 0.927, 1.043**. The variable results do **not** prove non-degradation. Establish a repeatable perf budget and isolate external load before acceptance; do not optimize against single noisy samples.
 
 ## Independent review
 
@@ -35,7 +35,7 @@ M365 FJP review packet prepared at `%LOCALAPPDATA%\Temp\lantern_foundation_g6_re
 
 ## Outstanding gates
 
-1. Measure performance at rest; compare repeated latency/memory samples and explain any reproducible slowdown.
+1. Explain benchmark variation and verify non-inferiority under an agreed latency/memory budget. No current performance approval.
 2. Independent Sonnet 5.5 architectural debate; resolve confirmed blockers only, do not introduce unrelated feature changes.
-3. Run final Windows smoke and Linux smoke where available; verify single CLI entrypoint and installer on an isolated checkout.
-4. Reviewer sign-off; commit and checkpoint refactor on its own branch. Merge to `main` and push only when approved.
+3. Windows worktree CLI + HTTP/two-instance smoke passed (3 tests, 21 subtests). Linux smoke **not completed**: Ubuntu WSL Python 3.10 is below minimum; Debian WSL Python 3.13 lacks PyYAML and venv tooling. Do not install global packages as part of this refactor.
+4. Refactor checkpoint **3461d9c** exists on `refactor/lantern-foundation-20261017` in `.wt/foundation-refactor`; both it and main are clean. Reviewer sign-off is still required before merge/push/deploy.
