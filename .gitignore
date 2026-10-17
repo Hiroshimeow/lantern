@@ -37,6 +37,9 @@ node_modules/
 /.plan/
 /docs/reviews/
 
+# Git worktrees live only under the owning repository
+/.wt/
+
 # Host OS generated files
 .DS_Store
 Thumbs.db

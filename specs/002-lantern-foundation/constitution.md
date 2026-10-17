@@ -18,6 +18,7 @@ Ngày: 2026-10-17. Áp dụng cho nền tảng, Markdown, Pi TUI. KHÔNG cho ph�
 - Không giả vị trí dòng, node hay hình ảnh khi không chứng minh được; fail-visible và bảo toàn dữ liệu.
 - Trước khi tự viết giải pháp, đọc upstream và đánh giá đầy đủ edge cases, các tính năng có thể suy giảm.
 - Ưu tiên hành vi thực tế, test độc lập và benchmark. Không thay đổi oracle cùng lúc với refactor để tự chứng minh bản mới.
+- Worktree phát triển chỉ đặt trong `<repo>/.wt/<branch>` và phải được Git ignore. Không tạo worktree ngang hàng trong `E:\git-project`; quản lý/di chuyển/xóa worktree bằng `git worktree`, không xoá thủ công.
 - Trước khi phát triển nhánh: fetch/rebase trên main đã sạch; trước merge: rebase, chạy đủ contract/E2E, review độc lập, fast-forward.
 - Pi TUI nguyên bản, không xây trình dựng tin nhắn /commands/extension song song bằng HTML.
 - Trợ lý bảo trì tự động là giai đoạn sau: chỉ dành hợp đồng sự kiện, không tự triển khai sửa ứng dụng.
