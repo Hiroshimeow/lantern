@@ -32,6 +32,12 @@
 - AC2: LAN model/provider whitelist/blacklist, tools, token/call ngân sách là yêu cầu tương lai; bản thiết kế có điểm kiểm soát lúc spawn và trước provider/tool boundary. KHÔNG tuyên bố system prompt hoặc Pi --models chỉ là cơ chế hạn mức an toàn.
 - AC3: KHÔNG triển khai cơ chế bảo mật mới trong thay đổi này. Nếu native TUI không thể hạn chế LAN đúng yêu cầu khi chưa có boundary thực thi, không đưa native bot ra LAN trước một quyết định riêng.
 
+## UX acceptance — bổ sung từ ảnh và audit 2026-10-17
+- [CHAT_UX_AUDIT_2026-10-17.md](CHAT_UX_AUDIT_2026-10-17.md) đánh giá panel cũ theo Hallmark và hành trình end-user, phân biệt quan sát với giả thuyết. HTML chatbot trước/sau refactor 002 trùng SHA, không phải nhiệm vụ hotfix.
+- **PI-US6 / P1 — Pi là workspace cạnh editor, không phải bubble chat giả.** Session/context rõ ràng, native TUI đầy đủ, tool/response đúng thứ tự, không che vùng gõ/diff. Panel dock/expand/fullscreen, trạng thái và focus/IME dễ hiểu; viewport hẹp phải chuyển layout thay vì đè lên Source.
+- **PI-FR13:** không phục hồi transcript/tool call qua snapshot HTML sessionStorage thứ hai; native PTY/Pi session giữ output, thứ tự, trạng thái và reconnect. Shell chỉ hiển thị session/kind/path và điều khiển.
+- **PI-SC07:** ba luồng: Pi sửa doc và quan sát diff không che editor; F5 giữa tool call không lặp output/nhập lại; hai tab A/B giữ session/context độc lập. Kiểm 390/1280/1920 px, focus, contrast, reduced motion, CJK/IME, keyboard shortcuts.
+
 ## Functional Requirements
 - PI-FR01: Có một PiSessionRegistry sở hữu Pi process/PTYS và metadata, keyed by sessionId; mỗi session có Pi-native session file. Tab/view chỉ attach.
 - PI-FR02: Pi chạy interactive (không rpc), trên cwd của dự án đang làm việc; truyền provider/model bằng CLI Pi hiện hành khi người dùng thực sự chọn, mặc định tôn trọng config Pi.

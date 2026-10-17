@@ -3,6 +3,12 @@
 **Depends:** 002-foundation approved and merged. **Owner:** feat/lantern-bot.
 **No implementation before user approval.**
 
+## UI/UX ownership và nghiệm thu
+
+Đọc [CHAT_UX_AUDIT_2026-10-17.md](CHAT_UX_AUDIT_2026-10-17.md) trước Phase 0/2. Panel HTML cũ dựng transcript thủ công, width cố định 440px, hiện JSON tool args và giữ sessionStorage replay. **Không sửa UI cũ** để mô phỏng Pi thêm lần nữa; giữ native PTY/xterm, chỉ thiết kế shell session/context/dock.
+
+Làm baseline ảnh 390/1280/1920 px; kiểm luồng end-user: chỉnh Source trong khi bot mở, F5 giữa tool call, hai tab riêng file. Chốt layout không che caret/diff và thao tác Pi, focus/IME, running/reconnecting, keyboard navigation. Ranh giới: Markdown owner quyết layout editor và diff; bot owner chỉ shell/TUI. Test trước merge với PI-T000/PI-T016.
+
 ## Summary
 Thay chatbot RPC dựng HTML riêng bằng terminal Pi tương tác bản địa, chạy qua PTY/ConPTY và xterm.js/WebSocket mà Lantern đã có. Giao diện bot là shell/drawer có header, chọn session, mở rộng/fullscreen; thân nội dung hiển thị đúng Pi TUI. Mỗi sessionId là một Pi process/session file riêng, độc lập tab. Không xây observer JSONL hoặc lớp đối chiếu Markdown của bot.
 

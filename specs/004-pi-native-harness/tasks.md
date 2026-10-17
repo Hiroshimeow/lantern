@@ -2,6 +2,7 @@
 Nguồn: specs/004-pi-native-harness/spec.md và plan.md. Phụ thuộc gói nền tảng 002 được duyệt/merge. Owner worktree: feat/lantern-bot.
 
 ## Phase 0: Characterization & feasibility (blocking)
+- [ ] **PI-T000 [PI-US6/FR13] UX baseline và native shell review.** Dùng [CHAT_UX_AUDIT](CHAT_UX_AUDIT_2026-10-17.md) và ảnh hiện trạng, kiểm hành trình người dùng thực trên desktop/mobile; chụp 390/1280/1920px, trạng thái toolbar/session/path, focus/caret/scroll khi bot mở. Thiết kế panel dock/expand/fullscreen chứa Pi native terminal, không đầu tư HTML transcript cũ.
 - [ ] **PI-T001 [PI-FR02] Exact Pi CLI reference baseline.** Trên FJP, ghi `pi --version`/`pi --help` và cấu hình extension ở chế độ chỉ đọc; không gửi prompt AI/không cài package; lập parity matrix trong docs, xác minh /model,/settings,/goal, shell, skills, extensions, custom UI.
 - [ ] **PI-T002 [PI-FR03] PTY native parity POC.** Sử dụng `lantern/terminal.py` hiện có để spawn Pi interactive trên cwd tạm; E2E test WinConPty xterm.js với 12 thao tác native, Ctrl/IME/paste/image/Alt, assert screen/cursor. Test file `tests/test_pi_tui_e2e.py`; không viết ANSI emulator mới.
 - [ ] **PI-T003 [PI-FR04/06] Lossless replay proof.** `tests/test_pi_reconnect_e2e.py`: stream, alternate screen, F5 during tool, reconnect, two window widths, clipboard/input echo, sequences broken at chunk boundary; compare snapshot screen cell/cursor/modes before/after. Đánh giá xterm serialize/screen model upstream; STOP nếu không đạt.
@@ -22,6 +23,7 @@ Nguồn: specs/004-pi-native-harness/spec.md và plan.md. Phụ thuộc gói n�
 - [ ] **PI-T012 [PI-SC04/05] Remove old duplicated bot runtime only after full replacement passes.** Kiểm chứng `lantern/pi_chat.py` RPC process, `static/chatbot.js` manual tool-log handling no longer active or retained; no compatibility shims. Regression `tests/test_chat_ui.py`, normal terminal/SCM and Markdown E2E.
 - [ ] **PI-T013 [PI-US4/US5] Document future seam only.** Lưu docs hợp đồng AppContextEvent/SessionPolicySpec và LAN limitations; KHÔNG tạo PolicyGate code, auto-maintenance extension, observer, new network/auth/proxy.
 - [ ] **PI-T014 [PI-SC01–06] Live FJP/Edge and resource acceptance.** Kiểm replay, resizing, Unicode/UniKey/AltGr, paste image, CLI parity and unchanged ordinary terminal; latency/CPU/RSS; fail if uncertain claims.
+- [ ] **PI-T016 [PI-US6/SC07] UX/accessibility release gate.** End-user phải hoàn thành 3 flow: bot sửa file và tiếp tục Source không bị che, F5 giữa tool call đúng thứ tự không lặp, tab A/B không trộn path/session. Kiểm 390/1280/1920, tabindex/focus, CJK/IME/AltGr, reduced motion/contrast, output dài/picker/30-col và không HTML replay; lưu ảnh/video + lỗi ưu tiên và sign-off.
 - [ ] **PI-T015 [PI-SC01–06] Independent review, rebase and FF.** trước coding và trước merge rebase main; only feature files, no code Markdown; commit meaningful checkpoints; push/merge chỉ khi user approve.
 
 ## Dependency graph

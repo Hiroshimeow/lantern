@@ -38,6 +38,13 @@
 - AC2: bảng dài/rộng thao tác thêm/xóa và resize đúng cột cuối, mobile viewport 390px không mất nút; diff action không phủ ô.
 - AC3: popup và badge chọn vị trí khi đổi mode có thể nhìn trong 0.5 s, không gây nhảy lên đầu trang.
 
+## UX/performance acceptance — bổ sung từ đối chứng 2026-10-17
+- **Nguồn:** [SOURCE_UX_PERFORMANCE_AUDIT_2026-10-17.md](SOURCE_UX_PERFORMANCE_AUDIT_2026-10-17.md). A/B Edge chứng minh Source lag đã tồn tại trước refactor, không phải hồi quy nền tảng 002.
+- **MD-US6 / P1 — Gõ Source mượt, không “reload giả”.** Với 5.500 dòng, p95 thao tác gõ < 40 ms, không dựng lại toàn bộ dòng trong backdrop mỗi phím; không navigation/nhảy caret/focus. POC CodeMirror 6 trưởng thành bắt buộc trước quyết định kỹ thuật. Với 500 KB và 5 MB, chỉ chốt ngưỡng sau POC và không kém reference đã duyệt.
+- **MD-FR13:** diff Source trình bày bằng editor/decorations theo vùng nhìn thấy và hunks liên quan; không làm diff toàn văn bản + tái tạo DOM vô điều kiện khi gõ. ACK từ lần ghi của chính mình không gây vòng render thứ hai nếu revision không thay đổi.
+- **MD-FR14:** giữ write-through vào file .md sau debounce ngắn, md_temp chỉ cập nhật bằng Accept/Save. Không loại bỏ hunk/đổi semantics để tăng tốc. Phải giữ keyboard input, Undo/Redo, IME tiếng Nhật/Việt, clipboard, VS Code concurrency và Preview/Edit.
+- **MD-SC07:** kiểm trên Edge với 900 / 5.500 dòng + 500 KB / 5 MB; ghi input→paint, p95 key wall time, DOM nodes, số navigation, file writes và checksum. Baseline/bản mới chạy cùng fixture; không diễn giải 1 lượt đo là chứng minh thống kê tổng quát.
+
 ## Functional Requirements
 - MD-FR01: Dữ liệu bản gốc trên đĩa là nguồn sửa và so sánh; md_temp immutable giữa hai lần Accept/Save.
 - MD-FR02: Ghi dùng CAS revision; phản hồi stale bảo tồn dữ liệu người dùng và nêu đúng nguồn xung đột.

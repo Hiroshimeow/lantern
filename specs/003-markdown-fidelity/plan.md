@@ -2,6 +2,12 @@
 **Spec:** specs/003-markdown-fidelity/spec.md | **Parent:** specs/002-lantern-foundation | **Owner:** main
 Tất cả bước dưới đây yêu cầu chủ sở hữu phê duyệt trước khi viết mã. Không cài package trong vòng Spec-Kit.
 
+## Performance-first input từ kiểm toán 2026-10-17
+
+Trước bất kỳ sửa UX Source nào, đọc [SOURCE_UX_PERFORMANCE_AUDIT_2026-10-17.md](SOURCE_UX_PERFORMANCE_AUDIT_2026-10-17.md). Mã frontend trước/sau 002 trùng Git SHA. Edge A/B chứng minh 5.500 dòng và 9 phím dựng lại 99.054 DOM node trên cả hai bản; không có page navigation lặp. Đây là **baseline defect** cần giải quyết trong feature 003.
+
+**Chuỗi thử:** fixture 900/5.500 dòng, 500KB/5MB và 30-col/CJK; CodeMirror 6 merge/unified decorations upstream; viewport virtualization và cập nhật vùng đổi; benchmark input→paint/DOM/CAS/IME. Giữ hành vi khi Source và VS Code/LanternBot viết cùng file. Không dùng debounce dài hoặc tắt diff để che lỗi. Tham chiếu MD-T000 và MD-T017.
+
 ## Summary
 Giữ file .md thật làm dữ liệu sửa; md_temp chỉ là snapshot. Thay đổi được theo dõi từ bất kỳ editor/bot nào bằng revision và file notification. Diff canonical ở mức byte/line, render độc lập vào Preview, Milkdown/ProseMirror và Source; không tự tạo văn bản sai do serializer. Nâng CropperJS đang có thành trải nghiệm hình nhúng trong cả Preview/Edit, không copy lại UI/encoder.
 
