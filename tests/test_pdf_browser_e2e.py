@@ -72,7 +72,7 @@ class PdfNativeBrowserE2E(unittest.TestCase):
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             server = subprocess.Popen(
-                [sys.executable, str(ROOT / "lan_drive.py"),
+                [sys.executable, str(ROOT / "main.py"),
                  "--root", str(root), "--host", "127.0.0.1", "--port", str(port)],
                 cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )

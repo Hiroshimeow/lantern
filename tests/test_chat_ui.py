@@ -3,17 +3,19 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-import lan_drive
 import plugin
+from lantern.config import AppConfig
+from lantern.filesystem import FileService
+from lantern.media import MediaService
+from lantern.views import ViewService
 
 
 class ChatUiTests(unittest.TestCase):
     def test_file_manager_shell_loads_shared_chat_assets(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            cfg = lan_drive.AppConfig(
+            cfg = AppConfig(
                 root=root,
                 port=9999,
                 host="127.0.0.1",
@@ -21,8 +23,9 @@ class ChatUiTests(unittest.TestCase):
                 cache_dir=root / ".cache",
                 config_path=root / "config.yaml",
             )
-            with patch.object(lan_drive, "CONFIG", cfg, create=True):
-                html = lan_drive.page_shell("Lantern Test", "<main>body</main>", "/docs").decode("utf-8")
+            files = FileService(cfg, plugin)
+            views = ViewService(cfg, files, MediaService(cfg, files))
+            html = views.page_shell("Lantern Test", "<main>body</main>", "/docs").decode("utf-8")
         self.assertIn('/static/chatbot.css?v=', html)
         self.assertIn('/static/chatbot.js?v=', html)
         self.assertIn('"currentPath":"docs"', html)

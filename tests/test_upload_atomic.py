@@ -25,7 +25,7 @@ class UploadAtomicTests(unittest.TestCase):
             self.port = sock.getsockname()[1]
         self.base = f"http://127.0.0.1:{self.port}"
         self.proc = subprocess.Popen(
-            [sys.executable, str(ROOT / "lan_drive.py"), "--root", str(self.root),
+            [sys.executable, str(ROOT / "main.py"), "--root", str(self.root),
              "--host", "127.0.0.1", "--port", str(self.port)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + 10

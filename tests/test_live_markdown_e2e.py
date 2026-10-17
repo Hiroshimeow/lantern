@@ -16,7 +16,7 @@ class LiveMarkdownE2E(unittest.TestCase):
         sock=socket.socket();sock.bind(("127.0.0.1",0));cls.port=sock.getsockname()[1];sock.close()
         cls.base=f"http://127.0.0.1:{cls.port}"
         env=dict(os.environ,LANTERN_WORK_DIR=str(Path(cls.tmp.name)/"work"))
-        cls.proc=subprocess.Popen([sys.executable,str(ROOT/"lan_drive.py"),"--root",str(cls.root),
+        cls.proc=subprocess.Popen([sys.executable,str(ROOT/"main.py"),"--root",str(cls.root),
             "--host","127.0.0.1","--port",str(cls.port)],cwd=ROOT,env=env,
             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         for _ in range(130):

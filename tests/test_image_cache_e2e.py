@@ -59,7 +59,7 @@ class ImageCacheBrowserE2E(unittest.TestCase):
                 encoding="utf-8",
             )
             server = subprocess.Popen(
-                [sys.executable, str(ROOT / "lan_drive.py"), "--config", str(config)],
+                [sys.executable, str(ROOT / "main.py"), "--config", str(config)],
                 cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             try:

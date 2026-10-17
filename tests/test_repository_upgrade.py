@@ -81,7 +81,7 @@ class ProductionConfigUpgradeTests(unittest.TestCase):
                         sock.bind(("127.0.0.1", 0))
                         port = sock.getsockname()[1]
                     command = [
-                        sys.executable, str(ROOT / "lan_drive.py"),
+                        sys.executable, str(ROOT / "main.py"),
                         "--config", str(config), "--root", str(temp),
                         "--host", "127.0.0.1", "--port", str(port),
                     ]

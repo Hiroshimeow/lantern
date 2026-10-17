@@ -47,7 +47,7 @@ class MarkdownDraftRenderApiTests(unittest.TestCase):
             )
 
             proc = subprocess.Popen(
-                [sys.executable, str(ROOT / "lan_drive.py"), "--config", str(config)],
+                [sys.executable, str(ROOT / "main.py"), "--config", str(config)],
                 cwd=ROOT,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

@@ -41,7 +41,7 @@ def main():
             (root/f'doc-{size}.md').write_text(make_document(size),encoding='utf-8')
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
-        proc=subprocess.Popen([sys.executable,str(ROOT/'lan_drive.py'),'--host','127.0.0.1',
+        proc=subprocess.Popen([sys.executable,str(ROOT/'main.py'),'--host','127.0.0.1',
              '--root',str(root),'--port',str(port)],cwd=ROOT,
              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:

@@ -1,6 +1,6 @@
 # Lantern System Architecture & Function Flows
 
-> Source-grounded architecture document for the current Lantern repository.
+> Historical one-file architecture diagrams, retained to compare previous behavior. The authoritative post-refactor module owners are in [FOUNDATION_CURRENT.md](FOUNDATION_CURRENT.md).
 >
 > Scope: file manager, HTTP routing, plugin preview, Markdown/Mermaid rendering, terminal/PTY, WebSocket transport, Git/SCM, media preview, configuration, security boundaries, and lifecycle.
 >

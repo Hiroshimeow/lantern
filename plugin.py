@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Optional document preview plugin for LAN Drive.
 
-This file is intentionally dependency-light. lan_drive.py must keep working when
+This file is intentionally dependency-light. main.py must keep working when
 this plugin is absent or broken. The public surface is small:
   - can_preview(path, config_path=None)
   - render_preview_page(path, root, config_path=None, app_title='LAN Drive')

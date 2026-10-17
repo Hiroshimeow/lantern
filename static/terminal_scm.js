@@ -62,7 +62,7 @@ function updateAuthUI(){
     if(hint){
       hint.textContent=S.auth.configured
         ?'Password is created on the Lantern host. This unlocks Terminal only.'
-        :'Terminal password not configured. On the host run: python lan_drive.py --set-terminal-password, then restart Lantern.';
+        :'Terminal password not configured. On the host run: python main.py --set-terminal-password, then restart Lantern.';
       if(location.protocol==='http:'&&!['localhost','127.0.0.1','[::1]'].includes(location.hostname))
         hint.textContent+=' Use an encrypted Tailscale link or HTTPS; ordinary LAN HTTP exposes passwords in transit.';
     }

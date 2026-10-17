@@ -27,7 +27,7 @@ class WindowsRunLauncherTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.repo = Path(self.temp.name) / "clone with spaces"
         (self.repo / "tools").mkdir(parents=True)
-        (self.repo / "lan_drive.py").write_text("# fixture marker\n", encoding="utf-8")
+        (self.repo / "main.py").write_text("# fixture marker\n", encoding="utf-8")
         shutil.copy2(ROOT / "run.bat", self.repo / "run.bat")
         shutil.copy2(ROOT / "tools" / "run_lantern.ps1", self.repo / "tools" / "run_lantern.ps1")
         with socket.socket() as server:
@@ -95,7 +95,7 @@ class WindowsRunLauncherTests(unittest.TestCase):
         # A fully isolated clone, port and data directory. Do not touch the
         # production service, its YAML or any running terminal.
         files = (
-            "lan_drive.py", "plugin.py", "requirements.txt",
+            "main.py", "plugin.py", "requirements.txt",
         )
         for name in files:
             shutil.copy2(ROOT / name, self.repo / name)

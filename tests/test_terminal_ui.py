@@ -11,7 +11,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "lan_drive.py"
+SOURCE = ROOT / "lantern" / "http" / "server.py"
+ENTRY = ROOT / "main.py"
 CLIENT = ROOT / "static" / "terminal_scm.js"
 
 
@@ -244,7 +245,7 @@ class TerminalUiParityTests(unittest.TestCase):
         proc = subprocess.Popen(
             [
                 sys.executable,
-                str(SOURCE),
+                str(ENTRY),
                 "--root",
                 str(ROOT),
                 "--host",
@@ -285,7 +286,7 @@ class TerminalUiParityTests(unittest.TestCase):
         proc = subprocess.Popen(
             [
                 sys.executable,
-                str(SOURCE),
+                str(ENTRY),
                 "--root",
                 str(ROOT),
                 "--host",

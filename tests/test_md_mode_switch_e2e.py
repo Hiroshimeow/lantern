@@ -31,7 +31,7 @@ class MarkdownModesE2E(unittest.TestCase):
         env = dict(os.environ)
         env["LANTERN_WORK_DIR"] = str(cls.root / ".lantern-work")
         cls.proc = subprocess.Popen(
-            [sys.executable, str(ROOT / "lan_drive.py"),
+            [sys.executable, str(ROOT / "main.py"),
              "--root", str(cls.root), "--host", "127.0.0.1", "--port", str(cls.port)],
             cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )

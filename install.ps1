@@ -117,8 +117,8 @@ try {
     Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
 
     $sourceDir = Get-ChildItem -LiteralPath $extract -Directory | Select-Object -First 1
-    if (-not $sourceDir -or -not (Test-Path (Join-Path $sourceDir.FullName "lan_drive.py"))) {
-        throw "Downloaded archive does not contain lan_drive.py."
+    if (-not $sourceDir -or -not (Test-Path (Join-Path $sourceDir.FullName "main.py"))) {
+        throw "Downloaded archive does not contain main.py."
     }
 
     if (Test-Path $appDir) {
@@ -183,12 +183,12 @@ upload_conflict: "ask"
 @echo off
 setlocal
 cd /d "%~dp0app"
-"%~dp0.venv\Scripts\python.exe" lan_drive.py --config "%~dp0lan_drive_config.local.yaml"
+"%~dp0.venv\Scripts\python.exe" main.py --config "%~dp0lan_drive_config.local.yaml"
 "@
     Set-Content -LiteralPath $runBat -Value $runContent -Encoding ASCII
 
     Write-Step "Validating installation..."
-    & $pythonExe (Join-Path $appDir "lan_drive.py") --help *> $null
+    & $pythonExe (Join-Path $appDir "main.py") --help *> $null
     if ($LASTEXITCODE -ne 0) { throw "Lantern validation failed." }
 
     $urlHost = if ($HostAddress -eq "0.0.0.0") { "127.0.0.1" } else { $HostAddress }

@@ -33,7 +33,7 @@ class VisualMarkdownBrowserE2E(unittest.TestCase):
             cls.port = sock.getsockname()[1]
         cls.base = f"http://127.0.0.1:{cls.port}"
         cls.proc = subprocess.Popen(
-            [sys.executable, str(ROOT / "lan_drive.py"), "--root", str(cls.root),
+            [sys.executable, str(ROOT / "main.py"), "--root", str(cls.root),
              "--host", "127.0.0.1", "--port", str(cls.port)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         until = time.monotonic() + 12

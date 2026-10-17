@@ -24,7 +24,7 @@ class CropOverwriteTests(unittest.TestCase):
             s.bind(('127.0.0.1', 0))
             port = s.getsockname()[1]
         self.base=f'http://127.0.0.1:{port}'
-        self.proc = subprocess.Popen([sys.executable,str(ROOT/'lan_drive.py'),
+        self.proc = subprocess.Popen([sys.executable,str(ROOT/'main.py'),
                      '--root',str(self.root),'--host','127.0.0.1','--port',str(port)],
                      cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         for i in range(120):
@@ -200,7 +200,8 @@ class CropReplaceRetryTests(unittest.TestCase):
     def test_transient_windows_file_lock_retries(self):
         import os
         from unittest.mock import patch
-        import lan_drive
+        from lantern.crop import CropService
+        from lantern.filesystem import FileService
         with tempfile.TemporaryDirectory() as td:
             target=Path(td)/"original.png"
             temporary=Path(td)/"new.png"
@@ -211,16 +212,18 @@ class CropReplaceRetryTests(unittest.TestCase):
                 attempts[0]+=1
                 if attempts[0]<=2:raise PermissionError("sharing violation")
                 return real_replace(src,dst)
-            with patch.object(lan_drive.os,"replace",side_effect=flaky):
-                result=lan_drive._replace_crop_with_retry(
-                    temporary,target,lan_drive._image_version(b"original"))
+            crop=CropService(FileService(type("Config",(),{"root":Path(td)})(),None))
+            with patch("lantern.crop.os.replace",side_effect=flaky):
+                result=crop._replace_crop_with_retry(
+                    temporary,target,crop._image_version(b"original"))
             self.assertEqual(result,"ok")
             self.assertEqual(attempts[0],3)
             self.assertEqual(target.read_bytes(),b"edited")
 
     def test_retry_never_overwrites_new_external_version(self):
         from unittest.mock import patch
-        import lan_drive
+        from lantern.crop import CropService
+        from lantern.filesystem import FileService
         with tempfile.TemporaryDirectory() as td:
             target=Path(td)/"original.png"
             temporary=Path(td)/"new.png"
@@ -228,9 +231,10 @@ class CropReplaceRetryTests(unittest.TestCase):
             def external_edit(src,dst):
                 target.write_bytes(b"external edit")
                 raise PermissionError("locked by external writer")
-            with patch.object(lan_drive.os,"replace",side_effect=external_edit):
-                result=lan_drive._replace_crop_with_retry(
-                    temporary,target,lan_drive._image_version(b"original"))
+            crop=CropService(FileService(type("Config",(),{"root":Path(td)})(),None))
+            with patch("lantern.crop.os.replace",side_effect=external_edit):
+                result=crop._replace_crop_with_retry(
+                    temporary,target,crop._image_version(b"original"))
             self.assertEqual(result,"stale")
             self.assertEqual(target.read_bytes(),b"external edit")
 

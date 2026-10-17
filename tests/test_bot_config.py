@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import lan_drive
+from lantern import config as app_config
 from lantern.bot_config import LanternBotConfig
 
 
@@ -161,7 +161,7 @@ lantern_bot:
 """,
                 encoding="utf-8",
             )
-            loaded = lan_drive.load_simple_yaml(path)
+            loaded = app_config.load_simple_yaml(path)
             cfg = LanternBotConfig.from_mapping(loaded["lantern_bot"])
             self.assertEqual(cfg.lan_access.provider_mode, "whitelist")
             self.assertEqual(cfg.lan_access.model_mode, "whitelist")
@@ -194,7 +194,7 @@ lantern_bot:
                 "greeting": "HELLO",
                 "lantern_context": "SYSTEM\nLINE2",
             })
-            cfg = lan_drive.AppConfig(
+            cfg = app_config.AppConfig(
                 root=Path(td),
                 port=9999,
                 host="127.0.0.1",
@@ -203,8 +203,8 @@ lantern_bot:
                 config_path=path,
                 lantern_bot=bot,
             )
-            lan_drive.write_config_file(cfg)
-            loaded = lan_drive.load_simple_yaml(path)
+            app_config.write_config_file(cfg)
+            loaded = app_config.load_simple_yaml(path)
             restored = LanternBotConfig.from_mapping(loaded["lantern_bot"])
             self.assertEqual(restored.lan_access.provider_mode, "whitelist")
             self.assertEqual(restored.lan_access.providers, ("cliproxy-*",))

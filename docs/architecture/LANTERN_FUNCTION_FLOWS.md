@@ -1,5 +1,7 @@
 # Lantern Detailed Function Flows
 
+> Historical one-file function ownership labels are retained for comparison. Current Python module boundaries: [FOUNDATION_CURRENT.md](FOUNDATION_CURRENT.md).
+
  continuation of [LANTERN_SYSTEM_ARCHITECTURE.md](LANTERN_SYSTEM_ARCHITECTURE.md).
  file starts at the media/security/function-level layers so both documents remain within Lantern's 24-Mermaid-per-page rendering cap.
 

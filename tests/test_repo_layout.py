@@ -1,6 +1,6 @@
 """Guard Lantern's clean source layout and backwards-compatible launch entrypoints.
 
-Do not move lan_drive.py (CLI/installer) or plugin.py (optional preview API).
+Do not move main.py (CLI/installer) or plugin.py (optional preview API).
 Internal runtime code belongs under the lantern package.
 """
 from __future__ import annotations
@@ -26,24 +26,24 @@ class RepositoryLayoutTests(unittest.TestCase):
                 self.assertTrue(Path(imported.__file__).resolve().is_relative_to(
                     (ROOT / "lantern").resolve()))
 
-    def test_original_cli_and_plugin_api_remain_root_accessible(self):
-        self.assertTrue((ROOT / "lan_drive.py").is_file())
+    def test_canonical_cli_and_domain_modules_are_importable(self):
+        self.assertTrue((ROOT / "main.py").is_file())
+        self.assertFalse((ROOT / "lan_drive.py").exists())
         self.assertTrue((ROOT / "plugin.py").is_file())
-        import lan_drive
         import plugin
-        from lantern.terminal import TerminalManager
-        from lantern.scm import ScmService
-        from lantern.terminal_auth import TerminalAccess
-        from lantern.ws import WebSocketHub
-        from lantern.md_editor import MarkdownEditorError
-        self.assertIs(lan_drive.TerminalManager, TerminalManager)
-        self.assertIs(lan_drive.ScmService, ScmService)
-        self.assertIs(lan_drive.TerminalAccess, TerminalAccess)
-        self.assertIs(lan_drive.WebSocketHub, WebSocketHub)
-        self.assertIs(lan_drive.MarkdownEditorError, MarkdownEditorError)
+        from lantern.application import make_application
+        from lantern.config import AppConfig
+        from lantern.filesystem import FileService
+        from lantern.media import MediaService
+        from lantern.views import ViewService
+        from lantern.crop import CropService
+        from lantern.http.server import Handler
+        for item in (make_application, AppConfig, FileService, MediaService,
+                     ViewService, CropService, Handler):
+            self.assertTrue(callable(item))
         self.assertTrue(callable(plugin.render_preview_page))
         proc = subprocess.run(
-            [sys.executable, str(ROOT / "lan_drive.py"), "--help"],
+            [sys.executable, str(ROOT / "main.py"), "--help"],
             cwd=ROOT, capture_output=True, text=True, timeout=20)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--no-password", proc.stdout)

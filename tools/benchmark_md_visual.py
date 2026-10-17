@@ -30,7 +30,7 @@ def main() -> None:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         base = f'http://127.0.0.1:{port}'
-        proc = subprocess.Popen([sys.executable, str(ROOT / 'lan_drive.py'),
+        proc = subprocess.Popen([sys.executable, str(ROOT / 'main.py'),
                                   '--root', str(dest), '--host', '127.0.0.1', '--port', str(port)],
                                 cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:

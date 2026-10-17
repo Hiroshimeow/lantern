@@ -45,7 +45,7 @@ class ListRefreshE2E(unittest.TestCase):
         cls.server_log = open(Path(cls.temp.name) / "server.log", "w", encoding="utf-8")
         cls.addClassCleanup(cls.server_log.close)
         cls.server = subprocess.Popen(
-            [sys.executable, str(ROOT / "lan_drive.py"), "--config", str(config)],
+            [sys.executable, str(ROOT / "main.py"), "--config", str(config)],
             cwd=ROOT, stdout=cls.server_log, stderr=subprocess.STDOUT,
         )
         cls.addClassCleanup(cls.stop_server)

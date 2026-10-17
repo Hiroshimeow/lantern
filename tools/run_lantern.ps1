@@ -133,7 +133,7 @@ function Open-Lantern([string]$Url) {
 
 function Main {
     $repo = [IO.Path]::GetFullPath($RepoRoot)
-    if (-not (Test-Path -LiteralPath (Join-Path $repo "lan_drive.py") -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $repo "main.py") -PathType Leaf)) {
         throw "Not a Lantern checkout: $repo"
     }
     Set-Location -LiteralPath $repo
@@ -250,7 +250,7 @@ function Main {
     }
 
     $python = Ensure-Python $repo
-    $script = Join-Path $repo "lan_drive.py"
+    $script = Join-Path $repo "main.py"
     $args = '-u "' + $script + '" --config "' + $config + '"'
     $start = @{
         FilePath = $python

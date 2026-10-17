@@ -27,7 +27,7 @@ class TerminalLifecycleBrowserE2E(unittest.TestCase):
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             server = subprocess.Popen(
-                [sys.executable, str(ROOT / "lan_drive.py"), "--root", tmp,
+                [sys.executable, str(ROOT / "main.py"), "--root", tmp,
                  "--host", "127.0.0.1", "--port", str(port)],
                 cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )

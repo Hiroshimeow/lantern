@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 from lantern.terminal_auth import TerminalAccess, hash_password, password_matches, update_password_yaml
 from lantern.ws import WebSocketHub, dispatch, _terminal_error_reply
-import lan_drive
+from lantern import config as app_config
+from lantern import application
+from lantern.filesystem import FileService
 
 
 class TerminalPasswordTests(unittest.TestCase):
@@ -57,11 +59,11 @@ class TerminalPasswordTests(unittest.TestCase):
                 'root: "D:/Test"\nport: 9999\n# preserve comment\n'
                 'terminal_password_hash: "' + hash_password("old-long-password") + '"\n',
                 encoding="utf-8")
-            with patch.object(sys, "argv", ["lan_drive.py", "--config", str(config),
+            with patch.object(sys, "argv", ["main.py", "--config", str(config),
                                              "--set-terminal-password"]):
-                with patch("lan_drive.getpass.getpass", side_effect=["", ""]):
-                    lan_drive.main()
-            data=lan_drive.load_simple_yaml(config)
+                with patch("lantern.application.getpass.getpass", side_effect=["", ""]):
+                    application.main()
+            data=app_config.load_simple_yaml(config)
             self.assertEqual(data["terminal_password_hash"], "")
             self.assertIn("# preserve comment", config.read_text(encoding="utf-8"))
             self.assertFalse(TerminalAccess(data["terminal_password_hash"]).required("100.99.88.77"))
@@ -72,7 +74,7 @@ class TerminalPasswordTests(unittest.TestCase):
             update_password_yaml(config, "no-password")
             self.assertIn('terminal_password_hash: "no-password"',
                           config.read_text(encoding="utf-8"))
-            self.assertFalse(TerminalAccess(lan_drive.load_simple_yaml(config)["terminal_password_hash"])
+            self.assertFalse(TerminalAccess(app_config.load_simple_yaml(config)["terminal_password_hash"])
                              .required("192.168.0.50"))
 
     def test_local_cli_setup_writes_yaml_without_starting_server(self):
@@ -80,12 +82,12 @@ class TerminalPasswordTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             config=Path(temp)/"lan_drive_config.yaml"
             config.write_text('root: "D:/Test"\nport: 9999\n',encoding="utf-8")
-            with patch.object(sys,"argv",["lan_drive.py","--config",str(config),
+            with patch.object(sys,"argv",["main.py","--config",str(config),
                                           "--set-terminal-password"]):
-                with patch("lan_drive.getpass.getpass",side_effect=[
+                with patch("lantern.application.getpass.getpass",side_effect=[
                     "cli-generated-long-password","cli-generated-long-password"]):
-                    lan_drive.main()
-            data=lan_drive.load_simple_yaml(config)
+                    application.main()
+            data=app_config.load_simple_yaml(config)
             self.assertTrue(password_matches(
                 "cli-generated-long-password",data["terminal_password_hash"]))
             self.assertEqual(data["port"],9999)
@@ -169,12 +171,12 @@ class ConfigProtectionTests(unittest.TestCase):
             path = root / "lan_drive_config.yaml"
             path.write_text("terminal_password_hash: \"secret-hash\"\n", encoding="utf-8")
             config = SimpleNamespace(root=root, config_path=path, show_hidden=True)
-            with patch.object(lan_drive, "CONFIG", config, create=True):
-                with self.assertRaises(PermissionError):
-                    lan_drive.safe_join("/lan_drive_config.yaml")
-                with self.assertRaises(PermissionError):
-                    lan_drive.ensure_under_root(path)
-                self.assertTrue(lan_drive.should_hide_entry(root, "lan_drive_config.yaml"))
+            files=FileService(config, None)
+            with self.assertRaises(PermissionError):
+                files.safe_join("/lan_drive_config.yaml")
+            with self.assertRaises(PermissionError):
+                files.ensure_under_root(path)
+            self.assertTrue(files.should_hide_entry(root, "lan_drive_config.yaml"))
 
     def test_parent_folder_copy_and_recursive_overwrite_cannot_expose_config(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -186,13 +188,13 @@ class ConfigProtectionTests(unittest.TestCase):
             destination=root/"copies"
             destination.mkdir()
             cfg=SimpleNamespace(root=root,config_path=config_path,show_hidden=True)
-            with patch.object(lan_drive,"CONFIG",cfg,create=True):
-                with self.assertRaises(PermissionError):
-                    lan_drive.copy_item(parent,destination,conflict="rename")
-                self.assertFalse((destination/"app").exists())
-                with self.assertRaises(PermissionError):
-                    lan_drive.remove_existing_target(parent)
-                self.assertTrue(config_path.exists())
+            files=FileService(cfg, None)
+            with self.assertRaises(PermissionError):
+                files.copy_item(parent,destination,conflict="rename")
+            self.assertFalse((destination/"app").exists())
+            with self.assertRaises(PermissionError):
+                files.remove_existing_target(parent)
+            self.assertTrue(config_path.exists())
 
 
 if __name__ == "__main__":

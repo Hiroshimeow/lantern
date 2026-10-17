@@ -443,7 +443,8 @@ assert.deepEqual(writes,['<reset>','A','B','C']);
 class LanPreviewConcurrencyTests(unittest.TestCase):
     def test_pdf_native_viewer_does_not_consume_heavy_parser_slots(self):
         """Even when DOCX/XLSX parsers are busy, PDF pages open immediately."""
-        import lan_drive
+        from lantern.http.routes.plugin import PluginRoutes
+        from lantern.filesystem import FileService
         import time
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -468,13 +469,12 @@ class LanPreviewConcurrencyTests(unittest.TestCase):
             path.write_bytes(b"%PDF-1.4" + b"x" * (2 * 1024 * 1024))
             stub = Stub()
             config = SimpleNamespace(root=root, cache_dir=root, title="Lantern Test")
-            with (
-                patch.object(lan_drive, "CONFIG", config, create=True),
-                patch.object(lan_drive, "HEAVY_PREVIEW_SLOTS", BusySlots()),
-                patch.object(plugin, "_pdftotext_bounded", side_effect=AssertionError("eager parse")),
-            ):
+            stub.app = SimpleNamespace(config=config, plugin=plugin,
+                                       files=FileService(config,plugin),
+                                       heavy_preview_slots=BusySlots())
+            with patch.object(plugin, "_pdftotext_bounded", side_effect=AssertionError("eager parse")):
                 begin = time.monotonic()
-                lan_drive.Handler.api_plugin_preview(stub, "p=PDF%20100%25%20%23print.pdf")
+                PluginRoutes.api_plugin_preview(stub, "p=PDF%20100%25%20%23print.pdf")
                 elapsed = time.monotonic() - begin
             self.assertEqual(stub.response[0], 200, stub.response)
             self.assertIn(b'class="pdf-native"', stub.response[1])
@@ -483,7 +483,8 @@ class LanPreviewConcurrencyTests(unittest.TestCase):
     def test_per_server_heavy_preview_slots_cover_separate_clients(self):
         """Four concurrent clients: two parsers run, two reject without waiting."""
         import time
-        import lan_drive
+        from lantern.http.routes.plugin import PluginRoutes
+        from lantern.filesystem import FileService
         from types import SimpleNamespace
 
         class Stub:
@@ -510,12 +511,16 @@ class LanPreviewConcurrencyTests(unittest.TestCase):
                 return b"<html>Test preview</html>"
 
             config = SimpleNamespace(root=root, cache_dir=root, title="Test Lantern")
+            app=SimpleNamespace(config=config, plugin=plugin,
+                                files=FileService(config,plugin),
+                                heavy_preview_slots=threading.BoundedSemaphore(2))
+            for stub in clients: stub.app=app
             def handle(stub):
                 begin.wait(3)
-                lan_drive.Handler.api_plugin_preview(stub, "p=file.pdf&view=text")
+                PluginRoutes.api_plugin_preview(stub, "p=file.pdf&view=text")
 
             from unittest.mock import patch
-            with patch.object(lan_drive, "CONFIG", config, create=True), patch.object(lan_drive.LAN_PLUGIN, "render_preview_page", side_effect=render):
+            with patch.object(plugin, "render_preview_page", side_effect=render):
                 jobs = [threading.Thread(target=handle, args=(stub,)) for stub in clients]
                 for job in jobs: job.start()
                 begin.set()

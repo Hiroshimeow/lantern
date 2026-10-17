@@ -1,0 +1,194 @@
+{
+  "accept": {
+    "saved_updated": true,
+    "state": "clean",
+    "status": 200,
+    "top_keys": [
+      "bytes",
+      "ok",
+      "state",
+      "tempPath",
+      "version"
+    ]
+  },
+  "before_accept": {
+    "md_temp_unchanged": true,
+    "state": "pending"
+  },
+  "browse": {
+    "accept_ranges": "",
+    "cache_control": "",
+    "content_type": "text/html; charset=utf-8",
+    "has_chat_script": true,
+    "status": 200
+  },
+  "chat_asset": {
+    "accept_ranges": "bytes",
+    "cache_control": "no-cache",
+    "content_type": "text/javascript",
+    "sha256": "6698408405c8e86f5427504fa3d6626ed8083681391caef5b8b381cb3e93839a",
+    "status": 200
+  },
+  "direct_file": {
+    "accept_ranges": "bytes",
+    "cache_control": "",
+    "content_type": "text/plain",
+    "sha256": "fdea7c6590fc2976ee4315e85f147bba10b6d058ac167d4d8b6abcdf8edef45e",
+    "status": 200
+  },
+  "info": {
+    "accept_ranges": "",
+    "app": "LAN Drive OneFile",
+    "cache_control": "",
+    "content_type": "application/json; charset=utf-8",
+    "defaults": {
+      "default_sort": "name-asc",
+      "default_view": "grid",
+      "folder_preview_animation": "fade",
+      "folder_preview_enabled": true,
+      "folders_first": true,
+      "page_limit": 220,
+      "search_debounce_ms": 240,
+      "terminal_enabled": true,
+      "terminal_max_buffer_chars": 204800,
+      "terminal_mobile_extra_keys": true,
+      "terminal_start_height_px": 380,
+      "thumb_fit": "contain",
+      "upload_conflict": "ask",
+      "upload_parallel": 3
+    },
+    "plugin_enabled": true,
+    "status": 200,
+    "terminal": {
+      "enabled": true,
+      "pty": "conpty",
+      "renderer": "xterm.js",
+      "transport": "websocket"
+    },
+    "top_keys": [
+      "app",
+      "config",
+      "defaults",
+      "ffmpeg",
+      "ffprobe",
+      "pillow",
+      "platform",
+      "plugin",
+      "root",
+      "terminal"
+    ]
+  },
+  "list": {
+    "accept_ranges": "",
+    "cache_control": "",
+    "content_type": "application/json; charset=utf-8",
+    "items_names": [
+      "doc.md",
+      "note.txt"
+    ],
+    "status": 200,
+    "top_keys": [
+      "errors",
+      "folders_first",
+      "hasMore",
+      "items",
+      "nextOffset",
+      "recursive_depth",
+      "sort",
+      "total"
+    ]
+  },
+  "md_document": {
+    "accept_ranges": "",
+    "cache_control": "",
+    "content": "# Test heading\n\nOriginal body.\n",
+    "content_type": "application/json; charset=utf-8",
+    "status": 200,
+    "top_keys": [
+      "bom",
+      "bytes",
+      "content",
+      "newline",
+      "ok",
+      "path",
+      "version"
+    ]
+  },
+  "missing": {
+    "accept_ranges": "",
+    "cache_control": "",
+    "content_type": "text/html;charset=utf-8",
+    "status": 404
+  },
+  "plugin_info": {
+    "accept_ranges": "",
+    "cache_control": "",
+    "content_type": "application/json; charset=utf-8",
+    "status": 200,
+    "top_keys": [
+      "builtin_patterns",
+      "custom_patterns",
+      "enabled",
+      "formats",
+      "notes",
+      "ok",
+      "version"
+    ]
+  },
+  "plugin_preview": {
+    "accept_ranges": "",
+    "cache_control": "",
+    "content_type": "text/html; charset=utf-8",
+    "has_chat_script": true,
+    "status": 200
+  },
+  "range_file": {
+    "accept_ranges": "bytes",
+    "cache_control": "",
+    "content_type": "text/plain",
+    "sha256": "efcd7f0601b7b6b237b2866e9c7a71032c878bc51fe3743b26672a23881a8769",
+    "status": 206
+  },
+  "terminal_auth": {
+    "accept_ranges": "",
+    "cache_control": "no-store",
+    "content_type": "application/json; charset=utf-8",
+    "status": 200,
+    "top_keys": [
+      "authenticated",
+      "configured",
+      "required"
+    ]
+  },
+  "work": {
+    "accept_ranges": "",
+    "cache_control": "",
+    "content": "# Test heading\n\nOriginal body.\n",
+    "content_type": "application/json; charset=utf-8",
+    "state": "clean",
+    "status": 200,
+    "top_keys": [
+      "currentVersion",
+      "live",
+      "ok",
+      "path",
+      "realPath",
+      "saved",
+      "state",
+      "tempPath",
+      "turnActive",
+      "work"
+    ]
+  },
+  "write": {
+    "disk_updated": true,
+    "status": 200,
+    "top_keys": [
+      "currentVersion",
+      "hash",
+      "ok",
+      "state",
+      "updatedAt"
+    ]
+  }
+}

@@ -36,7 +36,7 @@ class TerminalRemoteAuthBrowserE2E(unittest.TestCase):
             self.port=sock.getsockname()[1]
         self.url=f"http://127.0.0.1:{self.port}"
         self.proc=subprocess.Popen(
-            [sys.executable,str(ROOT/"lan_drive.py"),"--config",str(self.yaml),
+            [sys.executable,str(ROOT/"main.py"),"--config",str(self.yaml),
              "--root",str(self.root),"--host","127.0.0.1","--port",str(self.port)],
             cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -70,7 +70,7 @@ class TerminalRemoteAuthBrowserE2E(unittest.TestCase):
             port=sock.getsockname()[1]
         url=f"http://127.0.0.1:{port}"
         proc=subprocess.Popen(
-            [sys.executable,str(ROOT/"lan_drive.py"),"--config",str(config),
+            [sys.executable,str(ROOT/"main.py"),"--config",str(config),
              "--root",str(root),"--host","127.0.0.1","--port",str(port)],
             cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:
@@ -121,7 +121,7 @@ class TerminalRemoteAuthBrowserE2E(unittest.TestCase):
             other_port = sock.getsockname()[1]
         other_url = f"http://127.0.0.1:{other_port}"
         other = subprocess.Popen(
-            [sys.executable, str(ROOT / "lan_drive.py"),
+            [sys.executable, str(ROOT / "main.py"),
              "--config", str(self.yaml), "--root", str(self.root),
              "--host", "127.0.0.1", "--port", str(other_port),
              "--no-password"],

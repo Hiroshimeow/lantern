@@ -41,7 +41,7 @@ class WorkingCopyHttpTests(unittest.TestCase):
         cls.proc = subprocess.Popen(
             [
                 sys.executable,
-                str(ROOT / "lan_drive.py"),
+                str(ROOT / "main.py"),
                 "--root",
                 str(cls.root),
                 "--host",

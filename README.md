@@ -168,10 +168,10 @@ You do **not** need to run `--set-terminal-password` unless you want to enable a
 
 ```powershell
 # Port 9999: enforces the saved YAML password (when one is set)
-python lan_drive.py --config lan_drive_config.yaml --host 0.0.0.0 --port 9999
+python main.py --config lan_drive_config.yaml --host 0.0.0.0 --port 9999
 
 # Port 9998: no Terminal password, despite using the same YAML
-python lan_drive.py --config lan_drive_config.yaml --host 0.0.0.0 --port 9998 --no-password
+python main.py --config lan_drive_config.yaml --host 0.0.0.0 --port 9998 --no-password
 ```
 
 The difference is deliberate: `terminal_password_hash: no-password` (or empty/absent hash) disables password protection for **every** process reading that YAML, whereas the `--no-password` flag overrides the hash for **one running process only**. It does not persist in YAML and it cannot be combined with `--set-terminal-password`. Only expose a passwordless LAN port to trusted users.
@@ -179,14 +179,14 @@ The difference is deliberate: `terminal_password_hash: no-password` (or empty/ab
 To enable protection or clear an existing password in the YAML, run this command locally from your Lantern checkout:
 
 ```powershell
-python lan_drive.py --set-terminal-password --config lan_drive_config.yaml
+python main.py --set-terminal-password --config lan_drive_config.yaml
 ```
 
 For the separate Windows installer (`install.bat` / `install.ps1`), the actual config is `%LOCALAPPDATA%\Lantern\lan_drive_config.local.yaml`. Use this PowerShell command instead:
 
 ```powershell
 $lantern = Join-Path $env:LOCALAPPDATA 'Lantern'
-& "$lantern\.venv\Scripts\python.exe" "$lantern\app\lan_drive.py" --config "$lantern\lan_drive_config.local.yaml" --set-terminal-password
+& "$lantern\.venv\Scripts\python.exe" "$lantern\app\main.py" --config "$lantern\lan_drive_config.local.yaml" --set-terminal-password
 ```
 
 Enter a password of at least 12 characters twice **locally** to enable protection. Lantern stores a salted PBKDF2 hash, never the plaintext password. To **disable** an existing password, run the same command and press Enter twice at the password prompts, or set `terminal_password_hash: ""` / `terminal_password_hash: no-password` in the local YAML. **Restart Lantern to apply changes**; restart also invalidates existing Terminal login sessions. There is no remote password-setting API. A malformed hash (other than the explicit passwordless values) stays locked instead of opening access.
@@ -223,7 +223,7 @@ The installer defaults to **127.0.0.1**, port **9999**, and **browser terminal d
 
 ```bash
 python3 -m pip install -r requirements.txt
-python3 lan_drive.py --root "$HOME" --host 127.0.0.1 --port 9999
+python3 main.py --root "$HOME" --host 127.0.0.1 --port 9999
 ```
 
 Or manage the Python environment with `uv`. The browser-side editor, terminal UI and Mermaid resources are vendored — **Node and CDN access are not needed at runtime**.
@@ -236,7 +236,7 @@ Manual setup:
 
 ```powershell
 Copy-Item lan_drive_config.yaml_copy lan_drive_config.yaml
-uv run --with-requirements requirements.txt python lan_drive.py --config lan_drive_config.yaml
+uv run --with-requirements requirements.txt python main.py --config lan_drive_config.yaml
 ```
 
 **Updating an old clone with a modified, previously tracked YAML?** A normal `git pull` can conflict during the one-time transition to `.yaml_copy`. Use the safe fast-forward updater **before** pulling. It backs up the original bytes privately and restores the local YAML:
@@ -249,7 +249,7 @@ uv run --no-project python $helper --repo (Get-Location).Path
 
 Run it from your Lantern checkout root. It refuses staged config changes rather than discarding them. After migration, normal `git pull --ff-only` is sufficient.
 
-CLI overrides: `--root`, `--host`, `--port`, `--config`, `--title`, `--cache-dir`, `--sort`, `--view`, `--page-limit` and `--save-config`. Use `python lan_drive.py --help` for the authoritative list. CLI overrides are runtime-only unless explicitly saved.
+CLI overrides: `--root`, `--host`, `--port`, `--config`, `--title`, `--cache-dir`, `--sort`, `--view`, `--page-limit` and `--save-config`. Use `python main.py --help` for the authoritative list. CLI overrides are runtime-only unless explicitly saved.
 
 ---
 
@@ -272,25 +272,36 @@ Tests cover preview/XSS/CSP boundaries, PDF streaming, Markdown round-trips, sav
 Main source map:
 
 ```text
-lan_drive.py                HTTP server, filesystem, media, config
-plugin.py                   Document preview, Markdown, native PDF shell
-lantern/                    Internal Python runtime package
-  md_editor.py              Markdown save/version/draft contracts
-  terminal.py               PTY / Windows ConPTY
-  terminal_auth.py          Optional remote Terminal authentication
-  ws.py                     WebSocket transport
-  scm.py                    Git/SCM service
-static/                     Browser frontend + offline vendor bundles
-tools/                      Build and safe migration scripts
-tests/                      Unit / integration / Edge browser E2E
-docs/architecture/          System diagrams and function flows
-docs/images/                Actual Lantern UI screenshots
-run.bat                     Three-action Windows launcher
-lan_drive_config.yaml_copy  Git-tracked configuration template
+main.py                    Only executable entrypoint
+lantern/
+  application.py           Application composition and lifecycle
+  config.py                CLI, YAML parsing and AppConfig
+  filesystem.py            Root-scoped filesystem and listing
+  media.py                 Thumbnails, video and subtitles
+  crop.py                  Image revision, format and overwrite
+  views.py                 File manager HTML/CSS/JS shell
+  http/
+    server.py              HTTP dispatch and request/response handling
+    routes/                App, files, media, crop, Markdown, plugin
+  live_markdown.py         Original .md and md_temp CAS store
+  md_editor.py             Markdown save/version contracts
+  pi_chat.py               Current Pi RPC transport (native TUI in future)
+  terminal.py              PTY / Windows ConPTY
+  terminal_auth.py         Existing terminal authentication
+  ws.py                    WebSocket transport
+  scm.py                   Git/SCM service
+plugin.py                  Document preview and native PDF shell
+static/                    Browser frontend + offline vendor bundles
+tools/                     Build/launcher scripts
+tests/                     Unit / integration / Edge browser E2E
+docs/architecture/         System diagrams and function flows
+docs/images/               Lantern UI screenshots
+run.bat                    Three-action Windows launcher
+lan_drive_config.yaml_copy Git-tracked configuration template
 ```
 
 Want diagrams? We have diagrams about our diagrams:
-[System architecture](docs/architecture/LANTERN_SYSTEM_ARCHITECTURE.md) and
+[Current module boundaries](docs/architecture/FOUNDATION_CURRENT.md), [historical system diagrams](docs/architecture/LANTERN_SYSTEM_ARCHITECTURE.md) and
 [detailed function flows](docs/architecture/LANTERN_FUNCTION_FLOWS.md), with **44 Mermaid diagrams** in total.
 
 Only rebuild the vendored visual Markdown assets when changing frontend build dependencies: `npm ci && npm run build:markdown`. This is a developer step, not a user installation requirement.
