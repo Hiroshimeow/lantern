@@ -27,7 +27,9 @@ First HTTP run (legacy then refactor): file-list p95 `227.552 -> 258.364 ms` (13
 
 In-process 35 alternating comparisons of exact same file-list response: median `348.314 -> 356.449 ms` (2.3% slower); p95 `483.984 -> 523.075 ms` (8.1% slower).
 
-An additional reverse-order HTTP run overlapped with other tests and was rejected as confounded. A later three-round, order-balanced run without deliberate E2E concurrency still fluctuated: file-list p95 ratios (new/old) **0.867, 1.012, 1.465**, Markdown Preview **1.008, 1.271, 1.159**, info **0.815, 0.927, 1.043**. The variable results do **not** prove non-degradation. Establish a repeatable perf budget and isolate external load before acceptance; do not optimize against single noisy samples.
+An additional reverse-order HTTP run overlapped with other tests and was rejected as confounded. A later three-round, order-balanced run without deliberate E2E concurrency still fluctuated: file-list p95 ratios (new/old) **0.867, 1.012, 1.465**, Markdown Preview **1.008, 1.271, 1.159**, info **0.815, 0.927, 1.043**. These batch results alone do **not** prove non-degradation.
+
+A stronger paired A/B on **two concurrent disposable servers** with alternating request order and identical data measured: file-list 150 pairs **p95 455.744 -> 437.298 ms** (new/old 0.960; median 215.875 -> 213.986 ms), Markdown Preview 50 pairs **110.750 -> 111.344 ms** (ratio 1.005), API Info 100 pairs **23.950 -> 16.983 ms** (ratio 0.709). List/Preview response lengths matched exactly (95,024/162,040 bytes). No material degradation detected with this better-controlled method; this does not guarantee zero regression in all operating conditions.
 
 ## Independent review
 
@@ -35,7 +37,7 @@ M365 FJP review packet prepared at `%LOCALAPPDATA%\Temp\lantern_foundation_g6_re
 
 ## Outstanding gates
 
-1. Explain benchmark variation and verify non-inferiority under an agreed latency/memory budget. No current performance approval.
+1. Review paired A/B evidence and agree any release latency/memory budget. No significant slowdown was observed in paired HTTP tests, but formal performance sign-off remains pending.
 2. Independent Sonnet 5.5 architectural debate; resolve confirmed blockers only, do not introduce unrelated feature changes.
 3. Windows worktree CLI + HTTP/two-instance smoke passed (3 tests, 21 subtests). Linux smoke **not completed**: Ubuntu WSL Python 3.10 is below minimum; Debian WSL Python 3.13 lacks PyYAML and venv tooling. Do not install global packages as part of this refactor.
 4. Refactor checkpoint **3461d9c** exists on `refactor/lantern-foundation-20261017` in `.wt/foundation-refactor`; both it and main are clean. Reviewer sign-off is still required before merge/push/deploy.
