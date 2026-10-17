@@ -66,42 +66,21 @@ function Ensure-Uv {
 }
 
 function Ensure-Python([string]$Repo) {
-    $virtual = Join-Path $Repo ".venv"
-    $python = Join-Path $virtual "Scripts\python.exe"
-    $requirements = Join-Path $Repo "requirements.txt"
-    if (-not (Test-Path -LiteralPath $requirements -PathType Leaf)) {
-        throw "requirements.txt is missing; update/clone the complete Lantern repository."
+    $manifest = Join-Path $Repo "pyproject.toml"
+    $lock = Join-Path $Repo "uv.lock"
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $lock -PathType Leaf)) {
+        throw "Lantern requires pyproject.toml and uv.lock. Update the complete repository."
     }
 
-    $uv = $null
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        $uv = Ensure-Uv
-        Say "Preparing Python 3.12 in .venv (first launch may download Python)..."
-        & $uv venv --python 3.12 $virtual
-        if ($LASTEXITCODE -ne 0) { throw "Cannot create the Python environment." }
-    }
+    $uv = Ensure-Uv
+    Say "Synchronizing the locked Python 3.12 runtime..."
+    & $uv sync --project $Repo --locked --python 3.12 --no-dev
+    if ($LASTEXITCODE -ne 0) { throw "Failed to synchronize Lantern's locked Python dependencies." }
 
-    # .NET hashing works on minimal PowerShell installations without Get-FileHash.
-    $hasher = [Security.Cryptography.SHA256]::Create()
-    $stream = [IO.File]::OpenRead($requirements)
-    try { $digest = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '') }
-    finally { $stream.Dispose(); $hasher.Dispose() }
-    $stamp = Join-Path $virtual ".lantern-requirements.sha256"
-    $matches = (Test-Path $stamp) -and ((Get-Content -LiteralPath $stamp -Raw).Trim() -eq $digest)
-    $valid = $false
-    if ($matches) {
-        & $python -c "import watchdog; import winpty" *> $null
-        $valid = ($LASTEXITCODE -eq 0)
-    }
-    if (-not $valid) {
-        if (-not $uv) { $uv = Ensure-Uv }
-        Say "Installing/verifying runtime requirements..."
-        & $uv pip install --python $python -r $requirements
-        if ($LASTEXITCODE -ne 0) { throw "Dependency setup failed; check network or uv output." }
-        & $python -c "import watchdog; import winpty"
-        if ($LASTEXITCODE -ne 0) { throw "pywinpty/watchdog is missing from .venv." }
-        [IO.File]::WriteAllText($stamp, $digest, [Text.UTF8Encoding]::new($false))
-    }
+    $python = Join-Path $Repo ".venv\Scripts\python.exe"
+    & $python -c "import yaml; import watchdog; import winpty" *> $null
+    if ($LASTEXITCODE -ne 0) { throw "Lantern runtime dependencies are missing from .venv." }
     return $python
 }
 

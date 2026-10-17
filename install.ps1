@@ -103,7 +103,6 @@ $work = Join-Path ([IO.Path]::GetTempPath()) ("lantern-install-" + [Guid]::NewGu
 $zip = Join-Path $work "lantern.zip"
 $extract = Join-Path $work "extract"
 $appDir = Join-Path $InstallDir "app"
-$venvDir = Join-Path $InstallDir ".venv"
 $configPath = Join-Path $InstallDir "lan_drive_config.local.yaml"
 $runBat = Join-Path $InstallDir "Run-Lantern.bat"
 $cacheDir = Join-Path $env:LOCALAPPDATA "Lantern\cache"
@@ -127,19 +126,13 @@ try {
     New-Item -ItemType Directory -Force -Path $appDir | Out-Null
     Copy-Item -Path (Join-Path $sourceDir.FullName "*") -Destination $appDir -Recurse -Force
 
-    Write-Step "Preparing managed Python 3.12..."
-    & $uv python install 3.12
-    if ($LASTEXITCODE -ne 0) { throw "uv python install failed." }
+    Write-Step "Preparing the locked Lantern Python 3.12 runtime..."
+    & $uv sync --project $appDir --locked --python 3.12 --no-dev
+    if ($LASTEXITCODE -ne 0) { throw "Locked Lantern dependency synchronization failed." }
 
-    if (Test-Path $venvDir) {
-        Remove-Item -LiteralPath $venvDir -Recurse -Force
-    }
-    & $uv venv --no-project --python 3.12 $venvDir
-    if ($LASTEXITCODE -ne 0) { throw "uv venv failed." }
-
-    $pythonExe = Join-Path $venvDir "Scripts\python.exe"
-    & $uv pip install --python $pythonExe -r (Join-Path $appDir "requirements.txt")
-    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+    $pythonExe = Join-Path $appDir ".venv\Scripts\python.exe"
+    & $pythonExe -c "import yaml; import watchdog; import winpty"
+    if ($LASTEXITCODE -ne 0) { throw "Lantern runtime dependency verification failed." }
 
     $terminalEnabled = if ($EnableTerminal) { "true" } else { "false" }
     $config = @"
@@ -183,7 +176,7 @@ upload_conflict: "ask"
 @echo off
 setlocal
 cd /d "%~dp0app"
-"%~dp0.venv\Scripts\python.exe" main.py --config "%~dp0lan_drive_config.local.yaml"
+"%~dp0app\.venv\Scripts\python.exe" main.py --config "%~dp0lan_drive_config.local.yaml"
 "@
     Set-Content -LiteralPath $runBat -Value $runContent -Encoding ASCII
 

@@ -1,6 +1,6 @@
 """Isolated Edge E2E for section-virtualized Markdown editing.
 
-LANTERN_E2E=1 uv run --with-requirements requirements.txt --with playwright python -m unittest -v tests.test_md_paged_e2e
+LANTERN_E2E=1 uv run --locked --with playwright python -m unittest -v tests.test_md_paged_e2e
 """
 from __future__ import annotations
 import json

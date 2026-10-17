@@ -1,3 +1,0 @@
-pywinpty>=3.0.5; platform_system == "Windows"
-watchdog>=6.0.0
-PyYAML>=6.0.2

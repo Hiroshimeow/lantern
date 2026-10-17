@@ -1,6 +1,6 @@
 """Isolated real-Edge Markdown visual editor benchmark (opt-in, no live Lantern restart).
 
-Run: uv run --with-requirements requirements.txt --with playwright python tools/benchmark_md_visual.py
+Run: uv run --locked --with playwright python tools/benchmark_md_visual.py
 Never writes to the user's real file tree or contacts an external origin.
 """
 from __future__ import annotations

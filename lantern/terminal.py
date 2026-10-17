@@ -136,7 +136,7 @@ class WinConPty(NativePty):
         try:
             from winpty import Backend, PtyProcess
         except ImportError as exc:
-            raise RuntimeError("Windows terminal requires pywinpty in the Python environment running Lantern; with uv use: uv run --with-requirements requirements.txt python main.py ...") from exc
+            raise RuntimeError("Windows terminal requires pywinpty in the Python environment running Lantern; with uv use: uv run main.py ...") from exc
         env = os.environ.copy()
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("LANG", "en_US.UTF-8")

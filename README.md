@@ -222,11 +222,10 @@ The installer defaults to **127.0.0.1**, port **9999**, and **browser terminal d
 ### Linux / macOS
 
 ```bash
-python3 -m pip install -r requirements.txt
-python3 main.py --root "$HOME" --host 127.0.0.1 --port 9999
+uv run --locked main.py --root "$HOME" --host 127.0.0.1 --port 9999
 ```
 
-Or manage the Python environment with `uv`. The browser-side editor, terminal UI and Mermaid resources are vendored — **Node and CDN access are not needed at runtime**.
+The Python environment is managed with `uv`. The browser-side editor, terminal UI and Mermaid resources are vendored — **Node and CDN access are not needed at runtime**.
 
 ### Configuration and existing clones
 
@@ -236,7 +235,7 @@ Manual setup:
 
 ```powershell
 Copy-Item lan_drive_config.yaml_copy lan_drive_config.yaml
-uv run --with-requirements requirements.txt python main.py --config lan_drive_config.yaml
+uv run --locked main.py --config lan_drive_config.yaml
 ```
 
 **Updating an old clone with a modified, previously tracked YAML?** A normal `git pull` can conflict during the one-time transition to `.yaml_copy`. Use the safe fast-forward updater **before** pulling. It backs up the original bytes privately and restores the local YAML:
@@ -249,14 +248,14 @@ uv run --no-project python $helper --repo (Get-Location).Path
 
 Run it from your Lantern checkout root. It refuses staged config changes rather than discarding them. After migration, normal `git pull --ff-only` is sufficient.
 
-CLI overrides: `--root`, `--host`, `--port`, `--config`, `--title`, `--cache-dir`, `--sort`, `--view`, `--page-limit` and `--save-config`. Use `python main.py --help` for the authoritative list. CLI overrides are runtime-only unless explicitly saved.
+CLI overrides: `--root`, `--host`, `--port`, `--config`, `--title`, `--cache-dir`, `--sort`, `--view`, `--page-limit` and `--save-config`. Use `python main.py --help` for the authoritative list. CLI overrides are runtime-only unless explicitly saved. `pyproject.toml` and `uv.lock` are the single source of Python runtime dependencies. `uv run main.py` automatically creates/synchronizes `.venv` and installs PyYAML, watchdog and (on Windows) pywinpty; `run.bat` uses the same locked environment.
 
 ---
 
 ## 🧪 For people who read test output voluntarily
 
 ```powershell
-uv run --with-requirements requirements.txt python -m unittest -q
+uv run --locked python -m unittest -q
 node --test tests/test_md_segmentation.mjs
 ```
 
@@ -264,7 +263,7 @@ Browser E2E tests are opt-in, run against disposable loopback servers, and do no
 
 ```powershell
 $env:LANTERN_E2E = "1"
-uv run --with-requirements requirements.txt --with playwright python -m unittest -v tests.test_md_visual_e2e tests.test_md_paged_e2e tests.test_pdf_browser_e2e
+uv run --locked --with playwright python -m unittest -v tests.test_md_visual_e2e tests.test_md_paged_e2e tests.test_pdf_browser_e2e
 ```
 
 Tests cover preview/XSS/CSP boundaries, PDF streaming, Markdown round-trips, save conflicts, large-file paging, terminal lifecycle, Git parsing, and LAN list/refresh behavior.

@@ -1,6 +1,6 @@
 """Real Edge integration: PDF preview renders browser-native pages without text extraction.
 
-Opt in: LANTERN_E2E=1 uv run --with-requirements requirements.txt --with playwright
+Opt in: LANTERN_E2E=1 uv run --locked --with playwright
         python -m unittest -v tests.test_pdf_browser_e2e
 """
 from __future__ import annotations

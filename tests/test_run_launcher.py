@@ -95,7 +95,7 @@ class WindowsRunLauncherTests(unittest.TestCase):
         # A fully isolated clone, port and data directory. Do not touch the
         # production service, its YAML or any running terminal.
         files = (
-            "main.py", "plugin.py", "requirements.txt",
+            "main.py", "plugin.py", "pyproject.toml", "uv.lock",
         )
         for name in files:
             shutil.copy2(ROOT / name, self.repo / name)
