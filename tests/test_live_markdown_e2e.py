@@ -502,12 +502,21 @@ class LiveMarkdownE2E(unittest.TestCase):
                     else:
                         self.assertIn("Keep recovery text.",
                                       page.locator("article.md-preview").inner_text())
-                    status=page.locator("[data-md-status]").inner_text().lower()
+                    status_node=page.locator("[data-md-status]")
+                    status=status_node.inner_text().lower()
                     self.assertTrue(
                         "unavailable" in status or "missing" in status,
                         status)
+                    self.assertTrue(status_node.is_visible(),status)
                     page.wait_for_timeout(700)
                     self.assertFalse(file.exists())
+                    if action=="rename":
+                        moved.replace(file)
+                        page.evaluate("() => window.dispatchEvent(new Event('focus'))")
+                        page.wait_for_function(
+                            "() => window.__lanternMdVisual.state.conflict === false",
+                            timeout=3000)
+                        self.assertFalse(status_node.is_visible())
                 finally:
                     ctx.close()
                     if moved.exists():

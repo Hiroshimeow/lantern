@@ -65,6 +65,12 @@
       target.dataset.kind = kind;
     }
   };
+  const syncStatusVisibility = () => {
+    if (!topStatus) return;
+    topStatus.hidden = !view.active && view.workState !== 'missing';
+    // Paged documents own a separate status element; never shadow its selector.
+    topStatus.classList.toggle('md-visual-status', view.active);
+  };
   const api = async (url, options = {}) => {
     const res = await fetch(url, { cache: 'no-store', credentials: 'same-origin', ...options });
     let data;
@@ -450,7 +456,8 @@
       if (!state?.saved) return false;
       const currentVersion = state.currentVersion;
       const realText = state.work?.content ?? state.saved.content;
-      if (currentVersion === view.currentVersion && state.saved.version === view.version)
+      const wasMissing = view.workState === 'missing';
+      if (currentVersion === view.currentVersion && state.saved.version === view.version && !wasMissing)
         return false;
       const prevReal = view.ackedText;
       const local = view.active && view.instance ? getEditorText() : prevReal;
@@ -474,6 +481,7 @@
         return flushWorkingCopy(merge.text);
       }
       adoptSavedBaseline(state);
+      syncStatusVisibility();
       view.currentVersion = currentVersion;
       view.workHash = state.work?.hash || null;
       view.lastSaved = realText;
@@ -483,7 +491,10 @@
       } else {
         await renderDraftPreview(realText);
       }
-      if (!quiet) status('Project .md changed externally. Diff reflects the live file.', 'info');
+      if (wasMissing)
+        status('Project .md is available again. Diff reflects the live file.', 'info');
+      else if (!quiet)
+        status('Project .md changed externally. Diff reflects the live file.', 'info');
       return true;
     } catch (error) {
       if (error.status === 404) {
@@ -493,6 +504,7 @@
         if (firstMissing && view.active && view.instance) {
           await drafts.write(getEditorText()).catch(() => {});
         }
+        syncStatusVisibility();
         status('Project .md unavailable; local recovery text retained.', 'error');
       } else if (!quiet) {
         console.warn('Cannot refresh Markdown from disk:', error);
@@ -792,11 +804,7 @@
     }
     if (view.saveButton) view.saveButton.disabled = view.saving;
     if (topActions) topActions.hidden = paged;
-    if (topStatus) {
-      topStatus.hidden = !view.active;
-      // Paged documents own a separate status element; never shadow its selector.
-      topStatus.classList.toggle('md-visual-status', view.active);
-    }
+    syncStatusVisibility();
   };
 
   const ensureShellStyle = () => {
