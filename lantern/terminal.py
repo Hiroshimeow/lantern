@@ -452,54 +452,72 @@ class TerminalManager:
         ):
             raise TypeError("Structured terminal env keys and values must be strings")
         self._validate_id(term_id)
-        with self.lock:
-            if term_id in self.live:
-                return self._info(self.live[term_id])
-            self._ensure_slot(term_id)
-            self.history.pop(term_id, None)
-            safe_cwd = self._safe_cwd(cwd)
-            cols = max(2, int(cols or 80))
-            rows = max(2, int(rows or 24))
-            holder: Dict[str, Any] = {"early_data": []}
+        rollback_entry: Optional[TerminalEntry] = None
+        try:
+            with self.lock:
+                if term_id in self.live:
+                    return self._info(self.live[term_id])
+                self._ensure_slot(term_id)
+                self.history.pop(term_id, None)
+                safe_cwd = self._safe_cwd(cwd)
+                cols = max(2, int(cols or 80))
+                rows = max(2, int(rows or 24))
+                holder: Dict[str, Any] = {"early_data": []}
 
-            def on_data(data: str) -> None:
-                entry = holder.get("entry")
-                if entry is not None:
-                    self._queue_output(entry, data)
+                def on_data(data: str) -> None:
+                    entry = holder.get("entry")
+                    if entry is not None:
+                        self._queue_output(entry, data)
+                    else:
+                        holder["early_data"].append(data)
+
+                def on_exit(code: int) -> None:
+                    entry = holder.get("entry")
+                    if entry is not None:
+                        self._handle_exit(entry, code)
+                    else:
+                        holder["early_exit"] = code
+
+                if argv is None and env is None:
+                    pty_obj = self.pty_factory(term_id, safe_cwd, cols, rows, on_data, on_exit, command)
                 else:
-                    holder["early_data"].append(data)
-
-            def on_exit(code: int) -> None:
-                entry = holder.get("entry")
-                if entry is not None:
-                    self._handle_exit(entry, code)
-                else:
-                    holder["early_exit"] = code
-
-            if argv is None and env is None:
-                pty_obj = self.pty_factory(term_id, safe_cwd, cols, rows, on_data, on_exit, command)
-            else:
-                pty_obj = self.pty_factory(
-                    term_id,
-                    safe_cwd,
-                    cols,
-                    rows,
-                    on_data,
-                    on_exit,
-                    command,
-                    argv=list(argv) if argv is not None else None,
-                    env=dict(env) if env is not None else None,
-                )
-            entry = TerminalEntry(term_id, title.strip() or "Terminal", str(safe_cwd), cols, rows, pty_obj, command=command)
-            holder["entry"] = entry
-            self.live[term_id] = entry
-            for data in holder["early_data"]:
-                self._queue_output(entry, data)
-            if "early_exit" in holder:
-                self._handle_exit(entry, int(holder["early_exit"]))
-            else:
-                self._emit_list()
-            return self._info(entry)
+                    pty_obj = self.pty_factory(
+                        term_id,
+                        safe_cwd,
+                        cols,
+                        rows,
+                        on_data,
+                        on_exit,
+                        command,
+                        argv=list(argv) if argv is not None else None,
+                        env=dict(env) if env is not None else None,
+                    )
+                entry = TerminalEntry(term_id, title.strip() or "Terminal", str(safe_cwd), cols, rows, pty_obj, command=command)
+                holder["entry"] = entry
+                self.live[term_id] = entry
+                try:
+                    for data in holder["early_data"]:
+                        self._queue_output(entry, data)
+                    if "early_exit" in holder:
+                        self._handle_exit(entry, int(holder["early_exit"]))
+                    else:
+                        self._emit_list()
+                    return self._info(entry)
+                except Exception:
+                    if self.live.get(term_id) is entry:
+                        self.live.pop(term_id, None)
+                    if self.history.get(term_id) is entry:
+                        self.history.pop(term_id, None)
+                    entry.running = False
+                    rollback_entry = entry
+                    raise
+        except Exception:
+            if rollback_entry is not None:
+                try:
+                    rollback_entry.pty.close(graceful=False)
+                except Exception:
+                    pass
+            raise
 
     def create_argv(
         self,
@@ -611,6 +629,29 @@ class TerminalManager:
             except Exception:
                 pass
             self._emit_list()
+
+    def kill_if_generation(
+        self,
+        term_id: str,
+        expected_generation: str,
+        *,
+        emit_exit: bool = True,
+    ) -> bool:
+        """Kill a live terminal only when its current generation is the expected one."""
+        with self.lock:
+            entry = self.live.get(term_id)
+            if entry is None or entry.generation != expected_generation:
+                return False
+            self.live.pop(term_id, None)
+            entry.running = False
+        try:
+            entry.pty.close(graceful=True)
+        except Exception:
+            pass
+        if emit_exit:
+            self.emit({"type": "terminal_exit", "terminalId": term_id, "exitCode": None})
+        self._emit_list()
+        return True
 
     def kill_all(self) -> None:
         with self.lock:

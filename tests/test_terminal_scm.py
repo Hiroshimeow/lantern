@@ -416,6 +416,34 @@ class TerminalParityTests(unittest.TestCase):
             self.assertEqual(calls[0][-1], None)
             self.assertEqual(calls[1][-1], "echo hi")
 
+
+    def test_kill_if_generation_never_kills_replacement_generation(self) -> None:
+        spawned = {}
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            p = FakePty(on_data, on_exit)
+            spawned.setdefault(term_id, []).append(p)
+            return p
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(Path(td), lambda _event: None, pty_factory=factory)
+            first = manager.create("same-id", td)
+            manager.kill("same-id")
+            second = manager.create("same-id", td)
+            self.assertNotEqual(first["generation"], second["generation"])
+
+            self.assertFalse(
+                manager.kill_if_generation("same-id", first["generation"]),
+                "stale registry generation must not kill a replacement PTY",
+            )
+            live = {item["id"]: item for item in manager.list()}
+            self.assertTrue(live["same-id"]["running"])
+            self.assertEqual(live["same-id"]["generation"], second["generation"])
+            self.assertFalse(spawned["same-id"][1].closed)
+
+            self.assertTrue(manager.kill_if_generation("same-id", second["generation"]))
+            self.assertTrue(spawned["same-id"][1].closed)
+
     def test_resize_rename_input_and_restart_exited_id(self) -> None:
         events = []
         spawned = {}
