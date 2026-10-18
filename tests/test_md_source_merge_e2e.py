@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = ROOT / ".plan" / "lantern-markdown-main-20261018"
 DEPS = PLAN / "cm6-merge-poc-deps"
-EVIDENCE = PLAN / "dev_turn10_md_source_merge.json"
+EVIDENCE = PLAN / "dev_turn11_md_source_merge.json"
 
 MERGE_VERSION = "6.12.2"
 CM_VERSION = "6.0.2"
@@ -80,14 +80,68 @@ def _valid_utf16_boundary(text: str, offset: int) -> bool:
     )
 
 
+def _utf16_width(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _cm_to_authoritative_utf16_offset(
+    text: str,
+    cm_offset: int,
+) -> int:
+    """Map a CodeMirror offset to the original decoded-source UTF-16 offset.
+
+    CodeMirror's default string parser collapses CRLF (and lone CR) to one
+    logical line break. The authoritative Markdown string keeps its original
+    EOL spelling, so every preceding CRLF adds one extra UTF-16 code unit.
+    """
+    if not isinstance(cm_offset, int) or cm_offset < 0:
+        raise ValueError("invalid CodeMirror offset")
+
+    cm_pos = 0
+    authoritative_pos = 0
+    index = 0
+    while index < len(text):
+        if cm_offset == cm_pos:
+            return authoritative_pos
+
+        if text.startswith("\r\n", index):
+            cm_width = 1
+            authoritative_width = 2
+            source_chars = 2
+        elif text[index] in "\r\n":
+            cm_width = 1
+            authoritative_width = 1
+            source_chars = 1
+        else:
+            cm_width = _utf16_width(text[index])
+            authoritative_width = cm_width
+            source_chars = 1
+
+        if cm_offset < cm_pos + cm_width:
+            # The only integer interior boundary is inside a non-BMP surrogate
+            # pair. Preserve it here so the explicit UTF-16 boundary check can
+            # reject it rather than silently rounding.
+            return authoritative_pos + (cm_offset - cm_pos)
+
+        cm_pos += cm_width
+        authoritative_pos += authoritative_width
+        index += source_chars
+
+    if cm_offset == cm_pos:
+        return authoritative_pos
+    raise ValueError("CodeMirror offset beyond normalized document")
+
+
 def _raw_utf8_span(
     raw: bytes,
-    start_utf16: int,
-    end_utf16: int,
+    start_cm: int,
+    end_cm: int,
 ) -> tuple[int, int]:
     bom = raw.startswith(b"\xef\xbb\xbf")
     payload = raw[3:] if bom else raw
     text = payload.decode("utf-8")
+    start_utf16 = _cm_to_authoritative_utf16_offset(text, start_cm)
+    end_utf16 = _cm_to_authoritative_utf16_offset(text, end_cm)
     if not _valid_utf16_boundary(text, start_utf16):
         raise ValueError("start splits UTF-16 surrogate pair")
     if not _valid_utf16_boundary(text, end_utf16):
@@ -103,14 +157,14 @@ def _raw_utf8_span(
 
 def _raw_patch_utf8(
     raw: bytes,
-    start_utf16: int,
-    end_utf16: int,
+    start_cm: int,
+    end_cm: int,
     insert: str,
 ) -> bytes:
     raw_start, raw_end = _raw_utf8_span(
         raw,
-        start_utf16,
-        end_utf16,
+        start_cm,
+        end_cm,
     )
     return (
         raw[:raw_start]
@@ -135,16 +189,19 @@ const stats={updates:0,docChanges:0,serializations:0};
 const capturedChanges=[];
 let view=null, split=null;
 
-function createUnified(parent, original, current, lineSeparator="\n") {
+function createUnified(parent, original, current, lineSeparator=null) {
   if (view) view.destroy();
   parent.textContent="";
   stats.updates=stats.docChanges=stats.serializations=0;
   capturedChanges.length=0;
+  const separatorExtensions=lineSeparator == null
+    ? []
+    : [EditorState.lineSeparator.of(lineSeparator)];
   view=new EditorView({
     state:EditorState.create({
       doc:current,
       extensions:[
-        EditorState.lineSeparator.of(lineSeparator),
+        ...separatorExtensions,
         history(),
         keymap.of(historyKeymap),
         EditorView.lineWrapping,
@@ -621,7 +678,7 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
                     'a\\r\\nb\\r\\n',
                     '\\r\\n'
                   );
-                  CMPoc.setSelection(1);
+                  CMPoc.setSelection(3);
                   CMPoc.clearCapturedChanges();
                   CMPoc.view.focus();
                 }"""
@@ -633,16 +690,28 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
                   changes:CMPoc.getCapturedChanges()
                 })"""
             )
-            self.assertEqual(crlf["doc"], "aX\r\nb\r\n")
+            self.assertEqual(crlf["doc"], "a\r\nbX\r\n")
             self.assertEqual(
                 crlf["changes"],
                 [{
-                    "from": 1,
-                    "to": 1,
-                    "fromNew": 1,
-                    "toNew": 2,
+                    "from": 3,
+                    "to": 3,
+                    "fromNew": 3,
+                    "toNew": 4,
                     "inserted": "X",
                 }],
+            )
+
+            crlf_raw = b"a\r\nb\r\n"
+            crlf_change = crlf["changes"][0]
+            self.assertEqual(
+                _raw_patch_utf8(
+                    crlf_raw,
+                    crlf_change["from"],
+                    crlf_change["to"],
+                    crlf_change["inserted"],
+                ),
+                b"a\r\nbX\r\n",
             )
 
             split = page.evaluate(
@@ -663,6 +732,7 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
                 "uniformCrlfSliceDocPreserved": True,
                 "uniformCrlfEditPreserved": True,
                 "uniformCrlfCapturedChange": crlf["changes"][0],
+                "uniformCrlfRawPatchPreserved": True,
                 "baselineUpdatePreservesCurrent": True,
             }
             report["splitComparison"] = split
@@ -672,8 +742,8 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
         marker = "EDIT_TARGET"
         replacement = "EDIT_TARGET_X"
         source_text = (
-            "# T\n"
-            "\u65e5\u672c\u8a9e \U0001f3ee\n"
+            "Head CRLF\r\n"
+            "\u65e5\u672c\u8a9e \U0001f3ee LF\n"
             "EDIT_TARGET\r\n"
             "Tail LF\n"
             "Final"
@@ -719,11 +789,29 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
             change["toNew"] - change["fromNew"],
             len(replacement),
         )
+        normalized_source = source_text.replace("\r\n", "\n").replace(
+            "\r",
+            "\n",
+        )
+        self.assertEqual(
+            transaction_result["doc"],
+            normalized_source.replace(marker, replacement, 1),
+        )
+        authoritative_start = _cm_to_authoritative_utf16_offset(
+            decoded,
+            change["from"],
+        )
+        authoritative_end = _cm_to_authoritative_utf16_offset(
+            decoded,
+            change["to"],
+        )
+        self.assertEqual(authoritative_start - change["from"], 1)
+        self.assertEqual(authoritative_end - change["to"], 1)
         self.assertTrue(
-            _valid_utf16_boundary(decoded, change["from"])
+            _valid_utf16_boundary(decoded, authoritative_start)
         )
         self.assertTrue(
-            _valid_utf16_boundary(decoded, change["to"])
+            _valid_utf16_boundary(decoded, authoritative_end)
         )
 
         raw_start, raw_end = _raw_utf8_span(
@@ -773,6 +861,14 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
             "nonBmpBeforeEditCovered": True,
             "surrogateBoundaryPreserved": True,
             "capturedChange": change,
+            "authoritativeUtf16Range": {
+                "from": authoritative_start,
+                "to": authoritative_end,
+            },
+            "normalizedCoordinateShift": {
+                "from": authoritative_start - change["from"],
+                "to": authoritative_end - change["to"],
+            },
             "strategy": (
                 "captured CodeMirror transaction UTF-16 range -> "
                 "authoritative raw UTF-8 byte patch; never whole-document "
