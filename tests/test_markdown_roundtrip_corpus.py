@@ -24,6 +24,8 @@ import unittest
 import urllib.request
 from pathlib import Path
 
+from tests._markdown_characterization_settle import wait_for_stable_markdown_write
+
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures" / "md-fidelity"
 EVIDENCE = ROOT / ".plan" / "lantern-markdown-main-20261018" / "dev_turn6_markdown_roundtrip.json"
@@ -264,13 +266,17 @@ class MarkdownRoundtripCorpusE2E(unittest.TestCase):
             self.assertEqual(value.count("EDIT_TARGET"), 1, fixture_name)
             edited = value.replace("EDIT_TARGET", SOURCE_REPLACEMENT.decode("ascii"), 1)
             area.fill(edited)
-            page.wait_for_function(
-                "() => !!window.__lanternMdVisual?.state?.workHash",
-                timeout=20000,
+            settled = wait_for_stable_markdown_write(
+                page,
+                rel=rel,
+                target=target,
+                expected_content=edited,
+                requests=requests,
+                expected_saved_version=initial_state["saved"]["version"],
+                timeout_s=20.0,
             )
-            page.wait_for_timeout(300)
-            final_state = self._state(page, rel)
-            actual = target.read_bytes()
+            final_state = settled["state"]
+            actual = settled["raw"]
             temp_after = temp_path.read_bytes()
             diff = _diff_summary(
                 original, actual, intended_start, MARKER, SOURCE_REPLACEMENT
@@ -302,6 +308,9 @@ class MarkdownRoundtripCorpusE2E(unittest.TestCase):
                     "saved_md_temp_version": final_state["saved"]["version"],
                     "md_temp_sha256_after": _sha(temp_after),
                     "md_temp_unchanged": temp_after == original,
+                    "write_settled": settled["settled"],
+                    "write_settle_poll_count": settled["poll_count"],
+                    "write_settle_quiet_ms": settled["quiet_ms"],
                     "classification": (
                         "PASS"
                         if diff["outside_intended_identical"] and temp_after == original
@@ -365,13 +374,17 @@ class MarkdownRoundtripCorpusE2E(unittest.TestCase):
             if review_visible:
                 review.get_by_role("button", name="Accept conversion & Save").click()
                 review.wait_for(state="detached", timeout=10000)
-            page.wait_for_function(
-                "() => !!window.__lanternMdVisual?.state?.workHash",
-                timeout=20000,
+            settled = wait_for_stable_markdown_write(
+                page,
+                rel=rel,
+                target=target,
+                expected_content=serialized_after,
+                requests=requests,
+                expected_saved_version=initial_state["saved"]["version"],
+                timeout_s=20.0,
             )
-            page.wait_for_timeout(300)
-            final_state = self._state(page, rel)
-            actual = target.read_bytes()
+            final_state = settled["state"]
+            actual = settled["raw"]
             temp_after = temp_path.read_bytes()
             diff = _diff_summary(
                 original, actual, intended_start, MARKER, VISUAL_REPLACEMENT
@@ -411,6 +424,9 @@ class MarkdownRoundtripCorpusE2E(unittest.TestCase):
                     "saved_md_temp_version": final_state["saved"]["version"],
                     "md_temp_sha256_after": _sha(temp_after),
                     "md_temp_unchanged": temp_after == original,
+                    "write_settled": settled["settled"],
+                    "write_settle_poll_count": settled["poll_count"],
+                    "write_settle_quiet_ms": settled["quiet_ms"],
                     "classification": (
                         "PASS"
                         if diff["outside_intended_identical"] and temp_after == original
@@ -457,6 +473,8 @@ class MarkdownRoundtripCorpusE2E(unittest.TestCase):
             self.assertEqual(item["initial_md_temp_version"], item["original"]["sha256"])
             self.assertEqual(item["edit"]["real_current_version"], item["edit"]["actual_sha256"])
             self.assertEqual(item["edit"]["saved_md_temp_version"], item["original"]["sha256"])
+            self.assertTrue(item["edit"]["write_settled"])
+            self.assertGreaterEqual(item["edit"]["write_settle_quiet_ms"], 600)
             self.assertEqual(item["page_errors"], [])
             no_op = item["no_op"]
             self.assertEqual(

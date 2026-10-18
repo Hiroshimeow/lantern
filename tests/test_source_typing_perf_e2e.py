@@ -24,6 +24,8 @@ import unittest
 import urllib.request
 from pathlib import Path
 
+from tests._markdown_characterization_settle import wait_for_stable_markdown_write
+
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / ".plan" / "lantern-markdown-main-20261018" / "dev_turn6_source_typing_perf.json"
 
@@ -284,33 +286,17 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                 page.wait_for_timeout(330)
 
             final_value = area.input_value()
-            settled_state = None
-            candidate = None
-            settle_polls = 0
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                candidate = page.evaluate(
-                    """name => fetch('/api/work?p=' + encodeURIComponent(name + '.md'))
-                       .then(response => response.json())""",
-                    name,
-                )
-                settle_polls += 1
-                current_raw = target.read_bytes()
-                current = candidate.get("work") or candidate.get("saved") or {}
-                if (
-                    current.get("content") == final_value
-                    and candidate.get("currentVersion") == _sha(current_raw)
-                ):
-                    settled_state = candidate
-                    break
-                page.wait_for_timeout(150)
-            final_state = settled_state or candidate or {}
-            current = final_state.get("work") or final_state.get("saved") or {}
-            write_settled = bool(
-                current.get("content") == final_value
-                and final_state.get("currentVersion") == _sha(target.read_bytes())
+            settled = wait_for_stable_markdown_write(
+                page,
+                rel=name + ".md",
+                target=target,
+                expected_content=final_value,
+                requests=requests,
+                expected_saved_version=state["saved"]["version"],
+                timeout_s=30.0,
             )
-            page.wait_for_timeout(150)
+            final_state = settled["state"]
+            write_settled = settled["settled"]
             observed = page.evaluate(
                 """() => {
                   const data = window.__sourceP0;
@@ -330,12 +316,10 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                   };
                 }"""
             )
-            real_after = self._snapshot(target)
+            stable_raw = settled["raw"]
+            real_after = {"sha256": _sha(stable_raw), "bytes": len(stable_raw)}
             temp_after = self._snapshot(temp_path)
-            post_write = sum(
-                method_name == "POST" and url.endswith("/api/work/write")
-                for method_name, url in requests
-            )
+            post_write = settled["write_post_count"]
             get_work = sum(
                 method_name == "GET" and url.endswith("/api/work")
                 for method_name, url in requests
@@ -397,7 +381,8 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                 "main_document_navigation_count": len(navigations),
                 "write_post_count": post_write,
                 "work_get_count": get_work,
-                "write_settle_poll_count": settle_polls,
+                "write_settle_poll_count": settled["poll_count"],
+                "write_settle_quiet_ms": settled["quiet_ms"],
                 "write_settled": write_settled,
                 "focus_preserved": focus_preserved,
                 "active_class": observed["activeClass"],
@@ -468,6 +453,8 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
             self.assertEqual(case["current_real_version"], case["real_after"]["sha256"])
             self.assertEqual(case["initial_md_temp_version"], case["md_temp_before"]["sha256"])
             self.assertEqual(case["current_md_temp_version"], case["md_temp_after"]["sha256"])
+            self.assertTrue(case["write_settled"])
+            self.assertGreaterEqual(case["write_settle_quiet_ms"], 600)
             self.assertEqual(case["page_errors"], [])
 
 
