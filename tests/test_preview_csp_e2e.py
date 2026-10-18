@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -86,6 +87,61 @@ class PreviewCspBrowserE2E(unittest.TestCase):
                 cls.proc.wait(timeout=5)
             cls.tmp.cleanup()
 
+    def _arm_violation_capture(self, page) -> None:
+        page.add_init_script(
+            """(() => {
+              window.__lanternCspViolations = [];
+              window.addEventListener('securitypolicyviolation', event => {
+                window.__lanternCspViolations.push({
+                  effectiveDirective: event.effectiveDirective,
+                  violatedDirective: event.violatedDirective,
+                  blockedURI: event.blockedURI,
+                  disposition: event.disposition,
+                });
+              });
+            })()"""
+        )
+
+    def _violations(self, page) -> list[dict]:
+        return page.evaluate("() => window.__lanternCspViolations.slice()")
+
+    def _reset_violations(self, page) -> None:
+        page.evaluate("() => { window.__lanternCspViolations = []; }")
+
+    def _assert_expected_violations(
+        self, page, expected: list[tuple[set[str], str]]
+    ) -> None:
+        actual = self._violations(page)
+        self.assertEqual(len(actual), len(expected), actual)
+        unmatched = actual.copy()
+        for directives, uri_fragment in expected:
+            for index, item in enumerate(unmatched):
+                if (
+                    item.get("effectiveDirective") in directives
+                    and uri_fragment in str(item.get("blockedURI") or "")
+                    and item.get("disposition") == "enforce"
+                ):
+                    unmatched.pop(index)
+                    break
+            else:
+                self.fail(
+                    f"missing CSP violation {(directives, uri_fragment)!r}; actual={actual!r}"
+                )
+        self.assertEqual(unmatched, [])
+
+    def _is_app_network_url(self, url: str) -> bool:
+        target = urllib.parse.urlsplit(url)
+        app = urllib.parse.urlsplit(self.base)
+        if target.scheme in {"data", "blob"}:
+            return True
+        if target.scheme == app.scheme and target.netloc == app.netloc:
+            return True
+        return (
+            app.scheme == "http"
+            and target.scheme == "ws"
+            and target.netloc == app.netloc
+        )
+
     def _probe_connections(self, page) -> dict:
         return page.evaluate(
             """async () => {
@@ -107,28 +163,70 @@ class PreviewCspBrowserE2E(unittest.TestCase):
                   worker.onmessage = event => {
                     worker.terminate();
                     const data = event.data || {};
-                    finish(data.ok === true ? 'ready' : 'message-error');
+                    finish({
+                      state: data.ok === true ? 'ready' : 'message-error',
+                      id: data.id,
+                      ok: data.ok,
+                      result: data.result || null,
+                    });
                   };
-                  worker.onerror = () => { worker.terminate(); finish('blocked'); };
+                  worker.onerror = () => {
+                    worker.terminate();
+                    finish({state: 'blocked'});
+                  };
                   worker.postMessage({id: 991, source: '# Worker probe\\n\\nbody\\n'});
-                  setTimeout(() => { worker.terminate(); finish('timeout'); }, 2200);
-                } catch (error) { finish('exception:' + error.name); }
+                  setTimeout(() => {
+                    worker.terminate();
+                    finish({state: 'timeout'});
+                  }, 2200);
+                } catch (error) {
+                  finish({state: 'exception:' + error.name});
+                }
               });
               let sameFetch;
               try {
                 const response = await fetch('/api/info', {cache: 'no-store'});
                 sameFetch = response.ok ? 'ok' : 'http-' + response.status;
               } catch (error) { sameFetch = 'blocked:' + error.name; }
-              let externalFetch;
-              try {
-                await fetch('https://example.invalid/lantern-csp-probe');
-                externalFetch = 'opened';
-              } catch (error) { externalFetch = 'blocked:' + error.name; }
               return {
                 sameFetch,
                 sameWs: await settleWs('ws://' + location.host + '/ws'),
                 sameWorker: await settleWorker('/static/vendor/lantern-md-segment-worker.min.js'),
-                externalFetch,
+              };
+            }"""
+        )
+
+    def _probe_external_connections(self, page) -> dict:
+        return page.evaluate(
+            """async () => {
+              const settleWs = url => new Promise(resolve => {
+                let done = false;
+                const finish = value => { if (!done) { done = true; resolve(value); } };
+                try {
+                  const ws = new WebSocket(url);
+                  ws.onopen = () => { ws.close(); finish('opened'); };
+                  ws.onerror = () => finish('blocked');
+                  setTimeout(() => { try { ws.close(); } catch {} finish('timeout'); }, 1800);
+                } catch (error) { finish('exception:' + error.name); }
+              });
+              const settleWorker = url => new Promise(resolve => {
+                let done = false;
+                const finish = value => { if (!done) { done = true; resolve(value); } };
+                try {
+                  const worker = new Worker(url);
+                  worker.onmessage = () => { worker.terminate(); finish('opened'); };
+                  worker.onerror = () => { worker.terminate(); finish('blocked'); };
+                  worker.postMessage({id: 992, source: '# external'});
+                  setTimeout(() => { worker.terminate(); finish('timeout'); }, 1800);
+                } catch (error) { finish('exception:' + error.name); }
+              });
+              let fetchResult;
+              try {
+                await fetch('https://example.invalid/lantern-csp-probe');
+                fetchResult = 'opened';
+              } catch (error) { fetchResult = 'blocked:' + error.name; }
+              return {
+                externalFetch: fetchResult,
                 externalWs: await settleWs('wss://example.invalid/lantern-csp-probe'),
                 externalWorker: await settleWorker('https://example.invalid/lantern-csp-worker.js'),
               };
@@ -136,40 +234,104 @@ class PreviewCspBrowserE2E(unittest.TestCase):
         )
 
     def test_read_only_blocks_connections_and_markdown_allows_only_same_origin(self) -> None:
-        external_requests: list[str] = []
+        observed_requests: list[str] = []
+        observed_websockets: list[str] = []
         context = self.browser.new_context(viewport={"width": 1280, "height": 800})
-        context.on(
-            "request",
-            lambda request: external_requests.append(request.url)
-            if request.url.startswith(("https://example.invalid/", "wss://example.invalid/"))
-            else None,
-        )
+        context.on("request", lambda request: observed_requests.append(request.url))
         try:
+            with urllib.request.urlopen(self.base + "/probe-evil.js", timeout=3) as response:
+                script_body = response.read().decode("utf-8")
+                self.assertEqual(response.status, 200)
+                self.assertIn("javascript", response.headers.get("Content-Type", "").lower())
+                self.assertIn("__lanternCspEvil", script_body)
+
             read_only = context.new_page()
-            read_console: list[str] = []
-            read_only.on("console", lambda message: read_console.append(message.text) if message.type == "error" else None)
+            self._arm_violation_capture(read_only)
+            read_errors: list[str] = []
+            read_only.on(
+                "console",
+                lambda message: read_errors.append(message.text)
+                if message.type == "error"
+                else None,
+            )
+            read_only.on("websocket", lambda ws: observed_websockets.append(ws.url))
             read_only.goto(self.base + "/api/plugin/preview?p=probe.txt", wait_until="domcontentloaded")
+            read_only.wait_for_timeout(200)
+            self.assertEqual(self._violations(read_only), [])
+            self.assertEqual(read_errors, [])
+
             strict = self._probe_connections(read_only)
             self.assertTrue(strict["sameFetch"].startswith("blocked:"), strict)
             self.assertEqual(strict["sameWs"], "blocked", strict)
-            self.assertIn(strict["sameWorker"], {"blocked", "exception:SecurityError"}, strict)
-            self.assertTrue(strict["externalFetch"].startswith("blocked:"), strict)
-            self.assertIn(strict["externalWs"], {"blocked", "exception:SecurityError"}, strict)
-            self.assertIn(strict["externalWorker"], {"blocked", "exception:SecurityError"}, strict)
-            self.assertTrue(any("Content Security Policy" in line for line in read_console), read_console)
+            self.assertIn(
+                strict["sameWorker"]["state"],
+                {"blocked", "exception:SecurityError"},
+                strict,
+            )
+            self._assert_expected_violations(
+                read_only,
+                [
+                    ({"connect-src"}, self.base + "/api/info"),
+                    ({"connect-src"}, "ws://127.0.0.1:"),
+                    ({"worker-src", "script-src"}, "/static/vendor/lantern-md-segment-worker.min.js"),
+                ],
+            )
+            self._reset_violations(read_only)
+            read_external = self._probe_external_connections(read_only)
+            self.assertTrue(read_external["externalFetch"].startswith("blocked:"), read_external)
+            self.assertIn(read_external["externalWs"], {"blocked", "exception:SecurityError"}, read_external)
+            self.assertEqual(
+                read_external["externalWorker"],
+                "exception:SecurityError",
+                read_external,
+            )
+            self._assert_expected_violations(
+                read_only,
+                [
+                    ({"connect-src"}, "https://example.invalid/lantern-csp-probe"),
+                    ({"connect-src"}, "wss://example.invalid/lantern-csp-probe"),
+                ],
+            )
+            self.assertTrue(read_errors, "negative probes must emit CSP console errors")
+            self.assertTrue(
+                all("Content Security Policy" in line for line in read_errors),
+                read_errors,
+            )
 
             markdown = context.new_page()
-            md_console: list[str] = []
-            markdown.on("console", lambda message: md_console.append(message.text) if message.type == "error" else None)
+            self._arm_violation_capture(markdown)
+            md_errors: list[str] = []
+            markdown.on(
+                "console",
+                lambda message: md_errors.append(message.text)
+                if message.type == "error"
+                else None,
+            )
+            markdown.on("websocket", lambda ws: observed_websockets.append(ws.url))
             markdown.goto(self.base + "/api/plugin/preview?p=probe.md", wait_until="domcontentloaded")
-            markdown.wait_for_function("() => !!window.__lanternMdVisual?.state?.currentVersion", timeout=12000)
+            markdown.wait_for_function(
+                "() => !!window.__lanternMdVisual?.state?.currentVersion",
+                timeout=12000,
+            )
+            self.assertEqual(self._violations(markdown), [])
+            self.assertEqual(md_errors, [])
+
             interactive = self._probe_connections(markdown)
             self.assertEqual(interactive["sameFetch"], "ok", interactive)
             self.assertEqual(interactive["sameWs"], "opened", interactive)
-            self.assertEqual(interactive["sameWorker"], "ready", interactive)
-            self.assertTrue(interactive["externalFetch"].startswith("blocked:"), interactive)
-            self.assertIn(interactive["externalWs"], {"blocked", "exception:SecurityError"}, interactive)
-            self.assertIn(interactive["externalWorker"], {"blocked", "exception:SecurityError"}, interactive)
+            worker = interactive["sameWorker"]
+            self.assertEqual(worker["state"], "ready", worker)
+            self.assertEqual(worker["id"], 991, worker)
+            self.assertIs(worker["ok"], True, worker)
+            result = worker["result"]
+            self.assertIsInstance(result, dict)
+            self.assertGreater(result.get("chars", 0), 0, result)
+            self.assertGreater(result.get("blocks", 0), 0, result)
+            self.assertTrue(result.get("pages"), result)
+            self.assertEqual(result["pages"][0]["start"], 0, result)
+            self.assertGreater(result["pages"][0]["end"], 0, result)
+            self.assertEqual(self._violations(markdown), [])
+            self.assertEqual(md_errors, [])
 
             markdown.evaluate(
                 """() => {
@@ -181,8 +343,41 @@ class PreviewCspBrowserE2E(unittest.TestCase):
             )
             markdown.wait_for_timeout(350)
             self.assertFalse(markdown.evaluate("() => window.__lanternCspEvil"))
-            self.assertTrue(any("Content Security Policy" in line for line in md_console), md_console)
-            self.assertEqual(external_requests, [], external_requests)
+            self._assert_expected_violations(
+                markdown,
+                [({"script-src-elem", "script-src"}, self.base + "/probe-evil.js")],
+            )
+
+            self._reset_violations(markdown)
+            md_external = self._probe_external_connections(markdown)
+            self.assertTrue(md_external["externalFetch"].startswith("blocked:"), md_external)
+            self.assertIn(md_external["externalWs"], {"blocked", "exception:SecurityError"}, md_external)
+            self.assertEqual(
+                md_external["externalWorker"],
+                "exception:SecurityError",
+                md_external,
+            )
+            self._assert_expected_violations(
+                markdown,
+                [
+                    ({"connect-src"}, "https://example.invalid/lantern-csp-probe"),
+                    ({"connect-src"}, "wss://example.invalid/lantern-csp-probe"),
+                ],
+            )
+            self.assertTrue(md_errors, "negative probes must emit CSP console errors")
+            self.assertTrue(
+                all("Content Security Policy" in line for line in md_errors),
+                md_errors,
+            )
+
+            escaped_requests = [
+                url for url in observed_requests if not self._is_app_network_url(url)
+            ]
+            escaped_websockets = [
+                url for url in observed_websockets if not self._is_app_network_url(url)
+            ]
+            self.assertEqual(escaped_requests, [], observed_requests)
+            self.assertEqual(escaped_websockets, [], observed_websockets)
         finally:
             context.close()
 
