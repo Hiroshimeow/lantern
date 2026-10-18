@@ -188,11 +188,11 @@
       const real = state.work?.content ?? before;
       const h = diffApi()?.diffLines(before, real)[index];
       if (!h) return;
-      const lines = text => String(text).replace(/\r\n?/g, '\n').split('\n');
+      const diff = diffApi();
+      if (!diff?.applyHunk) throw new Error('Exact diff hunk application is unavailable');
       let next;
       if (action === 'accept') {
-        const baseLines = lines(before);
-        next = [...baseLines.slice(0, h.baseStart), ...h.draftText, ...baseLines.slice(h.baseEnd)].join('\n');
+        next = diff.applyHunk(before, h, 'forward');
         await api('/api/work/accept-hunk', {
           method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({
@@ -201,8 +201,7 @@
           }),
         });
       } else {
-        const realLines = lines(real);
-        next = [...realLines.slice(0, h.draftStart), ...h.baseText, ...realLines.slice(h.draftEnd)].join('\n');
+        next = diff.applyHunk(real, h, 'reverse');
         await api('/api/work/write', {
           method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({

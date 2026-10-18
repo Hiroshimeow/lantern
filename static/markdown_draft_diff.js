@@ -8,7 +8,42 @@
   'use strict';
 
   const normalize = text => String(text ?? '').replace(/\r\n?/g, '\n');
-  const linesOf = text => normalize(text).split('\n');
+
+  // Line comparison is EOL-insensitive, but source spans always point into the
+  // original decoded JS string (UTF-16 code-unit offsets). This keeps logical
+  // diffing separate from mutation and lets callers preserve exact CR/LF/CRLF.
+  function sourceModel(text) {
+    const source = String(text ?? '');
+    const records = [];
+    const eol = /\r\n|\r|\n/g;
+    let tokenStart = 0;
+    let contentStart = 0;
+    let match;
+    while ((match = eol.exec(source))) {
+      records.push({
+        text: source.slice(contentStart, match.index),
+        tokenStart,
+        contentStart,
+        contentEnd: match.index,
+      });
+      tokenStart = match.index;
+      contentStart = match.index + match[0].length;
+    }
+    records.push({
+      text: source.slice(contentStart),
+      tokenStart,
+      contentStart,
+      contentEnd: source.length,
+    });
+    for (let index = 0; index < records.length; index++) {
+      records[index].tokenEnd = index + 1 < records.length
+        ? records[index + 1].tokenStart
+        : source.length;
+    }
+    return {source, lines: records};
+  }
+
+  const linesOf = text => sourceModel(text).lines.map(line => line.text);
 
   function myers(a, b, maxDistance = 2048) {
     const n = a.length, m = b.length;
@@ -64,9 +99,100 @@
     return ops.reverse();
   }
 
+  function contentSpan(model, start, end) {
+    if (start === end) {
+      const at = start < model.lines.length
+        ? model.lines[start].contentStart
+        : model.source.length;
+      return {start: at, end: at, text: ''};
+    }
+    const first = model.lines[start];
+    const last = model.lines[end - 1];
+    const from = first.contentStart;
+    const to = last.contentEnd;
+    return {start: from, end: to, text: model.source.slice(from, to)};
+  }
+
+  function addSpan(model, start, end, targetLineCount) {
+    // Insertions at EOF need their leading separator. Else the insertion point
+    // is at the next line's content and the replacement includes the separator
+    // that follows the inserted block.
+    if (end === model.lines.length && start === targetLineCount) {
+      const from = model.lines[start]?.tokenStart ?? model.source.length;
+      return {start: from, end: model.source.length, text: model.source.slice(from)};
+    }
+    const from = model.lines[start]?.contentStart ?? model.source.length;
+    const to = end < model.lines.length
+      ? model.lines[end].contentStart
+      : model.source.length;
+    return {start: from, end: to, text: model.source.slice(from, to)};
+  }
+
+  function deleteSpan(model, start, end) {
+    if (start === 0) {
+      const to = end < model.lines.length
+        ? model.lines[end].contentStart
+        : model.source.length;
+      return {start: 0, end: to, text: model.source.slice(0, to)};
+    }
+    if (end === model.lines.length) {
+      const from = model.lines[start].tokenStart;
+      return {start: from, end: model.source.length, text: model.source.slice(from)};
+    }
+    const from = model.lines[start].contentStart;
+    const to = model.lines[end].contentStart;
+    return {start: from, end: to, text: model.source.slice(from, to)};
+  }
+
+  function emptySpan(model, line) {
+    let at;
+    if (line === 0) at = 0;
+    else if (line >= model.lines.length) at = model.source.length;
+    else at = model.lines[line].contentStart;
+    return {start: at, end: at, text: ''};
+  }
+
+  function decorateHunk(hunk, baseModel, draftModel) {
+    const baseCount = hunk.baseEnd - hunk.baseStart;
+    const draftCount = hunk.draftEnd - hunk.draftStart;
+    let baseSpan;
+    let draftSpan;
+
+    if (baseCount && draftCount) {
+      // A modification preserves the target document's outer line separators.
+      // Only the changed line-content region (and internal separators) is
+      // replaced, so a globally normalized editor string cannot rewrite an
+      // otherwise untouched CRLF before/after the hunk.
+      baseSpan = contentSpan(baseModel, hunk.baseStart, hunk.baseEnd);
+      draftSpan = contentSpan(draftModel, hunk.draftStart, hunk.draftEnd);
+    } else if (!baseCount && draftCount) {
+      baseSpan = emptySpan(baseModel, hunk.baseStart);
+      draftSpan = addSpan(
+        draftModel,
+        hunk.draftStart,
+        hunk.draftEnd,
+        baseModel.lines.length,
+      );
+    } else if (baseCount && !draftCount) {
+      baseSpan = deleteSpan(baseModel, hunk.baseStart, hunk.baseEnd);
+      draftSpan = emptySpan(draftModel, hunk.draftStart);
+    } else {
+      baseSpan = emptySpan(baseModel, hunk.baseStart);
+      draftSpan = emptySpan(draftModel, hunk.draftStart);
+    }
+
+    hunk.offsetUnit = 'utf16-code-unit';
+    hunk.baseSpan = baseSpan;
+    hunk.draftSpan = draftSpan;
+    hunk.replacement = draftSpan.text;
+    return hunk;
+  }
+
   function diffLines(baseline, draft, options = {}) {
-    const base = linesOf(baseline);
-    const next = linesOf(draft);
+    const baseModel = sourceModel(baseline);
+    const draftModel = sourceModel(draft);
+    const base = baseModel.lines.map(line => line.text);
+    const next = draftModel.lines.map(line => line.text);
     let prefix = 0;
     while (prefix < base.length && prefix < next.length && base[prefix] === next[prefix]) prefix++;
     let suffix = 0;
@@ -76,25 +202,25 @@
     const a = base.slice(prefix, base.length - suffix);
     const b = next.slice(prefix, next.length - suffix);
     if (!a.length && !b.length) return [];
-    if (!a.length) return [{
+    if (!a.length) return [decorateHunk({
       kind: 'add', baseStart: prefix, baseEnd: prefix,
       draftStart: prefix, draftEnd: prefix + b.length,
       baseText: [], draftText: b.slice(),
-    }];
-    if (!b.length) return [{
+    }, baseModel, draftModel)];
+    if (!b.length) return [decorateHunk({
       kind: 'del', baseStart: prefix, baseEnd: prefix + a.length,
       draftStart: prefix, draftEnd: prefix,
       baseText: a.slice(), draftText: [],
-    }];
+    }, baseModel, draftModel)];
 
     const ops = myers(a, b, options.maxDistance ?? 2048);
-    if (!ops) return [{
+    if (!ops) return [decorateHunk({
       kind: 'mod',
       baseStart: prefix, baseEnd: prefix + a.length,
       draftStart: prefix, draftEnd: prefix + b.length,
       baseText: a.slice(), draftText: b.slice(),
       fallback: true,
-    }];
+    }, baseModel, draftModel)];
 
     let basePos = prefix, draftPos = prefix, current = null;
     const hunks = [];
@@ -104,7 +230,7 @@
       current.draftEnd = draftPos;
       current.kind = current.baseStart === current.baseEnd ? 'add'
         : current.draftStart === current.draftEnd ? 'del' : 'mod';
-      hunks.push(current);
+      hunks.push(decorateHunk(current, baseModel, draftModel));
       current = null;
     };
 
@@ -132,6 +258,43 @@
     return hunks;
   }
 
+  function applyHunk(text, hunk, direction = 'forward') {
+    const source = String(text ?? '');
+    const reverse = direction === 'reverse';
+    if (direction !== 'forward' && !reverse) throw new Error('invalid hunk direction');
+    const from = reverse ? hunk?.draftSpan : hunk?.baseSpan;
+    const to = reverse ? hunk?.baseSpan : hunk?.draftSpan;
+    const fromLines = reverse ? hunk?.draftText : hunk?.baseText;
+    const toLines = reverse ? hunk?.baseText : hunk?.draftText;
+    const startLine = reverse ? hunk?.draftStart : hunk?.baseStart;
+    if (!from || !to || !Number.isInteger(from.start) || !Number.isInteger(from.end))
+      throw new Error('hunk exact source span is unavailable');
+
+    // Same-cardinality modifications replace line content only. Every target
+    // separator stays byte-for-byte as supplied by the target document, even
+    // when the replacement came from a textarea that normalized all EOLs.
+    if (Array.isArray(fromLines) && Array.isArray(toLines) &&
+        fromLines.length > 0 && fromLines.length === toLines.length) {
+      const model = sourceModel(source);
+      for (let index = 0; index < fromLines.length; index++) {
+        if (model.lines[startLine + index]?.text !== fromLines[index])
+          throw new Error('hunk source line no longer matches current text');
+      }
+      let result = source;
+      for (let index = fromLines.length - 1; index >= 0; index--) {
+        const line = model.lines[startLine + index];
+        result = result.slice(0, line.contentStart) +
+          String(toLines[index] ?? '') +
+          result.slice(line.contentEnd);
+      }
+      return result;
+    }
+
+    if (source.slice(from.start, from.end) !== String(from.text ?? ''))
+      throw new Error('hunk source span no longer matches current text');
+    return source.slice(0, from.start) + String(to.text ?? '') + source.slice(from.end);
+  }
+
   function hunkReplacement(hunk) {
     return Array.isArray(hunk.draftText) ? hunk.draftText : [];
   }
@@ -151,9 +314,9 @@
   }
 
   function merge3(baseText, oursText, theirsText) {
-    const base = linesOf(baseText);
-    const ours = diffLines(baseText, oursText);
-    const theirs = diffLines(baseText, theirsText);
+    const base = String(baseText ?? '');
+    const ours = diffLines(base, oursText);
+    const theirs = diffLines(base, theirsText);
     const acceptedTheirs = [];
     const conflicts = [];
 
@@ -175,13 +338,12 @@
     }
 
     const edits = ours.concat(acceptedTheirs).sort((a, b) =>
-      b.baseStart - a.baseStart || b.baseEnd - a.baseEnd);
-    const merged = base.slice();
-    for (const edit of edits) {
-      merged.splice(edit.baseStart, edit.baseEnd - edit.baseStart, ...hunkReplacement(edit));
-    }
+      b.baseSpan.start - a.baseSpan.start ||
+      b.baseSpan.end - a.baseSpan.end);
+    let merged = base;
+    for (const edit of edits) merged = applyHunk(merged, edit, 'forward');
     return {
-      text: merged.join('\n'),
+      text: merged,
       conflicts,
       appliedPiHunks: acceptedTheirs.length,
       oursHunks: ours,
@@ -189,5 +351,14 @@
     };
   }
 
-  return {normalize, linesOf, diffLines, merge3, overlaps, equivalent};
+  return {
+    normalize,
+    linesOf,
+    sourceModel,
+    diffLines,
+    applyHunk,
+    merge3,
+    overlaps,
+    equivalent,
+  };
 });

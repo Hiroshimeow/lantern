@@ -120,6 +120,98 @@ class LiveMarkdownE2E(unittest.TestCase):
             self.assertIn("Last OLD.",file.read_text(encoding="utf-8"))
         finally:ctx.close()
 
+
+    def test_mixed_eol_partial_accept_then_undo_preserves_exact_raw_bytes(self):
+        file=self.root/"mixed-hunks.md"
+        before=(
+            b"# Mixed\r\n\r\n"
+            b"First OLD.\n"
+            b"Middle stable.\r\n\r\n"
+            b"Last OLD."
+        )
+        edited=before.replace(b"First OLD.",b"First NEW.").replace(
+            b"Last OLD.",b"Last NEW.")
+        accepted_first=before.replace(b"First OLD.",b"First NEW.")
+        file.write_bytes(before)
+        ctx=self.browser.new_context(viewport={"width":1250,"height":800})
+        page=ctx.new_page()
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=mixed-hunks.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            page.get_by_role("textbox",name="Markdown source").wait_for(timeout=12000)
+            state=page.evaluate(
+                "async()=>(await(await fetch('/api/work?p=mixed-hunks.md')).json())")
+            temp=Path(state["tempPath"])
+            self.assertEqual(temp.read_bytes(),before)
+
+            file.write_bytes(edited)
+            page.wait_for_function(
+                "() => document.querySelectorAll('.md-source-deletion').length === 2",
+                timeout=9000)
+            page.locator(".md-source-deletion").first.get_by_role(
+                "button",name="Accept").click()
+            page.wait_for_function(
+                "() => document.querySelectorAll('.md-source-deletion').length === 1",
+                timeout=9000)
+            self.assertEqual(file.read_bytes(),edited)
+            self.assertEqual(temp.read_bytes(),accepted_first)
+
+            page.locator(".md-source-deletion").first.get_by_role(
+                "button",name="Undo").click()
+            page.wait_for_function(
+                "() => document.documentElement.dataset.mdPendingHunks === '0'",
+                timeout=9000)
+            self.assertEqual(file.read_bytes(),accepted_first)
+            self.assertEqual(temp.read_bytes(),accepted_first)
+            self.assertIn(b"\r\n",accepted_first)
+            self.assertIn(b"First NEW.\n",accepted_first)
+            self.assertFalse(accepted_first.endswith((b"\n",b"\r")))
+        finally:
+            ctx.close()
+
+    def test_stale_external_write_refuses_rendered_hunk_without_corruption(self):
+        file=self.root/"stale-hunk.md"
+        before=b"# Stale\r\n\r\nOld value.\nTail"
+        first=before.replace(b"Old value.",b"First external.")
+        newer=before.replace(b"Old value.",b"NEWER authoritative.")
+        file.write_bytes(before)
+        ctx=self.browser.new_context(viewport={"width":1250,"height":800})
+        page=ctx.new_page()
+        action_statuses=[]
+        page.on("response",lambda response: action_statuses.append(response.status)
+                if "/api/work/accept-hunk" in response.url else None)
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=stale-hunk.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            page.get_by_role("textbox",name="Markdown source").wait_for(timeout=12000)
+            initial=page.evaluate(
+                "async()=>(await(await fetch('/api/work?p=stale-hunk.md')).json())")
+            temp=Path(initial["tempPath"])
+            self.assertEqual(temp.read_bytes(),before)
+
+            file.write_bytes(first)
+            page.wait_for_function(
+                "() => document.querySelectorAll('.md-source-deletion').length === 1",
+                timeout=9000)
+            rendered_version=page.evaluate(
+                "() => window.__lanternMdVisual.state.currentVersion")
+            file.write_bytes(newer)
+            page.locator(".md-source-deletion").first.get_by_role(
+                "button",name="Accept").click()
+            page.wait_for_function(
+                "(old) => window.__lanternMdVisual.state.currentVersion !== old",
+                arg=rendered_version,timeout=9000)
+            self.assertEqual(file.read_bytes(),newer)
+            self.assertEqual(temp.read_bytes(),before)
+            self.assertTrue(
+                not action_statuses or 409 in action_statuses,
+                action_statuses)
+            self.assertIn(
+                "File changed elsewhere",
+                page.locator("[data-md-status]").inner_text())
+        finally:
+            ctx.close()
+
     def test_context_menu_selection_flashes_for_half_second_in_visual(self):
         file=self.root/"flash.md"
         file.write_text("# Anchor\n\nFirst block.\n\nUnique target text for highlight.\n",
