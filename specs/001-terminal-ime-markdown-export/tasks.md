@@ -130,11 +130,13 @@ Required baseline/adversarial tests:
 
 Structural invariant: parse adversarial rendered HTML with stdlib `html.parser`; every output tag, attribute, and URL scheme is explicitly allowlisted.
 
-Preview/CSP tests must assert exactly:
+Preview/CSP tests must assert exact **server-classified profiles**, not a permissive alternation:
 
-`default-src 'none'; script-src 'nonce-{random}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'`
+- generic read-only and PDF text: `connect-src 'none'` with no `worker-src` or `frame-src`;
+- interactive Markdown: `connect-src 'self'; worker-src 'self'`, with no wildcard/third-party connect source and no `frame-src`;
+- native PDF page view: `connect-src 'none'; frame-src 'self'`, with no `worker-src`.
 
-Also assert CSP nonce equals the nonce on every app script, uploaded same-origin JS without nonce cannot execute, all plugin preview kinds use the same CSP and normal Back button, and `markdown_preview.js` clears `window.opener`.
+Also assert a fresh CSP nonce per response equals the nonce on every app script, uploaded same-origin JS without nonce cannot execute, the normal Back button is used, and `markdown_preview.js` clears `window.opener`. Browser evidence must verify read-only fetch/WS/Worker attempts are blocked, interactive Markdown same-origin fetch/WS/Worker are functional while third-party attempts are blocked, and the native PDF iframe actually loads.
 
 ## T4 — Implement bounded Markdown parser + shared preview CSP
 
@@ -145,7 +147,7 @@ Steps:
 1. Implement URL normalization/allowlist and server-side relative rewrite; never emit `<base>`.
 2. Remove NUL before parsing; parse images before links; stash generated link/image HTML and restore reverse/recursive.
 3. Add bounded table/task/image/fence metadata and Mermaid placeholders.
-4. Generate per-response nonce with Python `secrets`; apply exact nonce CSP to every plugin preview kind and nonce every app-owned script.
+4. Generate per-response nonce with Python `secrets`; apply the exact server-classified CSP profile (strict read-only, interactive Markdown, or native PDF frame) and nonce every app-owned script. Do not infer privilege from UI text.
 5. Replace `javascript:history.back()` with a normal button.
 6. Keep remote/data author images from loading.
 7. Do not add new Python/runtime dependencies.
@@ -196,7 +198,7 @@ Verify:
 - parent terminal remains responsive under worst-case Mermaid fixture;
 - Print / Save as PDF has selectable text, visible arrowheads, readable diagrams, no UI chrome/clipping.
 
-Security release gate: record owner sign-off on residual preview containment risk and create a follow-up ticket for iframe sandboxing + same-origin uploaded HTML/SVG serving.
+Security release gate: renewed owner/security sign-off must explicitly accept the interactive Markdown same-origin connect/Worker capability and residual same-origin risk. `LANTERN-SEC-001` remains open for iframe sandboxing + same-origin uploaded HTML/SVG isolation. Until the renewed sign-off is personally recorded, M-A12 remains INCOMPLETE.
 
 ## T8 — Full regression and scope check
 

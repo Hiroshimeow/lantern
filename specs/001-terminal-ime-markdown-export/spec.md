@@ -145,23 +145,28 @@ Inline/parser rules:
 - an unclosed Mermaid fence renders as ordinary escaped code, never a diagram;
 - bounded tables/tasks/images/fence language metadata remain lightweight.
 
-## Preview CSP and residual risk
+## Preview CSP profiles and residual risk
 
-Every plugin preview kind uses the shared-shell CSP:
+The server selects the CSP from the verified preview kind; client UI text or a client-supplied privilege flag never chooses a more permissive profile.
 
-`default-src 'none'; script-src 'nonce-{random}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'`
+- **Generic read-only preview** (for example text/CSV and PDF extracted-text):
+  `default-src 'none'; script-src 'nonce-{random}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'`
+- **Interactive Markdown document** (`.md`/`.markdown` classified as Markdown, including its Preview mode): the same policy except `connect-src 'self'; worker-src 'self'` replaces `connect-src 'none'`. Same-origin work/CAS APIs, WebSocket and the local segmentation Worker are application capabilities required by the unified Preview/Edit/Source document. Cross-origin connect/Worker targets remain forbidden.
+- **Native PDF viewer** (PDF page view only): the generic read-only policy plus `frame-src 'self'` for the single same-origin raw-PDF iframe, while retaining `connect-src 'none'`. PDF extracted-text view stays on the unframed generic read-only profile.
 
-`{random}` is a fresh per-response nonce generated with Python `secrets`. The CSP nonce must exactly equal the nonce on every app-owned `<script>` tag. `script-src` must not add `'self'`, `'strict-dynamic'`, `'unsafe-inline'`, or `'unsafe-eval'`.
+`{random}` is a fresh per-response nonce generated with Python `secrets`. The CSP nonce must exactly equal the nonce on every app-owned `<script>` tag. `script-src` must not add `'self'`, `'strict-dynamic'`, `'unsafe-inline'`, or `'unsafe-eval'`. The Markdown exception must not add wildcard/third-party origins.
 
 The same normal Back button replaces `javascript:history.back()` for every plugin preview kind. `markdown_preview.js` sets `window.opener=null` before Mermaid work.
 
 A nonce-only script source blocks injected script tags, inline handlers, `javascript:` links, and uploaded same-origin scripts without the nonce. Mermaid uses `securityLevel:"strict"` and no eval.
 
-Iframe sandboxing remains out of scope only as partial containment: it would protect the side-pane path but not same-tab navigation or the existing `window.open(previewUrl,'_blank')` path, and Lantern already serves uploaded `.html`/`.svg` same-origin. Residual risk remains that parent/opener capabilities are not contained and `connect-src` could be bypassed through them if script execution were ever achieved.
+**CSP-DEC-20261018-01:** independent REVIEW accepted the typed-profile design for scoped implementation because forcing `connect-src 'none'` onto the existing unified Markdown editor breaks its source/CAS, WebSocket and Worker paths. This is a contract correction, not a security release sign-off. A separate read-only Markdown realm remains a fallback only if the owner rejects the residual risk.
+
+Iframe sandboxing remains out of scope only as partial containment: it would protect the side-pane path but not same-tab navigation or the existing `window.open(previewUrl,'_blank')` path, and Lantern already serves uploaded `.html`/`.svg` same-origin. Residual risk remains that a same-origin script compromise may reach editor/write/WebSocket capabilities according to server permissions. The existing `LANTERN-SEC-001` follow-up still covers preview iframe containment and same-origin uploaded HTML/SVG isolation.
 
 Release therefore requires:
-- security-owner sign-off on this residual risk;
-- a follow-up ticket covering both preview iframe sandboxing and existing same-origin uploaded `.html`/`.svg` serving.
+- renewed explicit security-owner acceptance of the interactive Markdown `connect-src 'self'; worker-src 'self'` deviation and its same-origin capability risk; this approval is **pending** until the owner personally records it;
+- the existing follow-up ticket covering preview iframe sandboxing and same-origin uploaded `.html`/`.svg` serving remains open.
 
 ## Structural HTML invariant
 
@@ -252,14 +257,14 @@ Chromium PDF acceptance: selectable text, visible arrowheads, readable diagrams/
 - M-A2: adversarial URL corpus includes C0, mixed case, `&#106;avascript:`, data SVG, protocol-relative, traversal, double-encoding cases.
 - M-A3: stdlib `html.parser` structural allowlist invariant passes.
 - M-A4: no `<base>`; local relative URLs rewrite exactly once.
-- M-A5: CSP nonce matches every app script nonce; uploaded same-origin JS without nonce does not execute; preview-realm WebSocket is blocked; no unexpected CSP violations.
+- M-A5: server-classified CSP profiles are enforced exactly. Generic read-only previews and PDF extracted-text block fetch/WebSocket/Worker connection attempts; native PDF keeps `connect-src 'none'` and allows only its same-origin `frame-src 'self'` viewer; interactive Markdown allows only same-origin work/CAS fetch, WebSocket and local Worker while cross-origin connect/Worker targets stay blocked. Every response has a fresh nonce matching every app script; uploaded same-origin JS without that nonce does not execute; browser evidence distinguishes expected CSP blocks from unexpected violations.
 - M-A6: with Lantern origin reachable but **no internet route** (or every non-Lantern origin blocked), all seven Mermaid types render; the T7 network log shows zero extra/non-Lantern requests.
 - M-A7: malformed/over-limit/page-cap+1 cases are isolated.
 - M-A8: all seven types export non-empty PNGs with correct filenames and no `SecurityError`.
 - M-A9: Print / Save as PDF meets the Chromium contract.
 - M-A10: no CDN and no new Python runtime dependency.
 - M-A11: non-Mermaid pages make zero Mermaid-bundle requests; Mermaid loads lazily at most once per Mermaid preview page; in the accepted FJP Playwright Chromium harness, measure nine fresh contexts using actual served product HTML with helper initialize/render excluded from first-load attribution, and require the median isolated first-load bundle parse/evaluation task <=300 ms with no individual sample >500 ms; every subsequent initialize/render/PNG-export main-thread task attributable to the governed Mermaid operation is <=100 ms; aggregate page Long Tasks count as failures only when attribution ties them to a governed over-budget Mermaid operation.
-- M-A12: residual-risk owner sign-off and follow-up ticket exist before release.
+- M-A12: renewed owner/security sign-off explicitly accepts the interactive Markdown same-origin connect/Worker capability and its residual same-origin risk; `LANTERN-SEC-001` remains open for preview iframe containment and uploaded same-origin HTML/SVG isolation. Until that renewed sign-off is personally recorded, M-A12 is INCOMPLETE.
 
 ### Release gates
 

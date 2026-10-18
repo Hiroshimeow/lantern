@@ -488,32 +488,72 @@ class MarkdownPreviewTests(unittest.TestCase):
                     if not split.scheme:
                         self.assertTrue(value.startswith(("/", "#")), value)
 
-    def test_exact_nonce_csp_all_scripts_and_normal_back_for_all_preview_kinds(self) -> None:
-        pages = [
-            self.render_markdown("# md"),
-            self.render_file(".txt", "plain"),
-            self.render_file(".csv", "a,b\n1,2\n"),
+    def test_exact_nonce_csp_profiles_and_normal_back(self) -> None:
+        strict_tail = (
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            "connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'"
+        )
+        markdown_tail = (
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            "connect-src 'self'; worker-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
+        )
+        pdf_tail = (
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            "connect-src 'none'; frame-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
+        )
+        markdown = self.render_markdown("# md")
+        markdown_again = self.render_markdown("# md")
+        text_page = self.render_file(".txt", "plain")
+        csv_page = self.render_file(".csv", "a,b\n1,2\n")
+        pdf_page = self.render_file(".pdf", "%PDF-1.4")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pdf = root / "sample.pdf"
+            pdf.write_bytes(b"%PDF-1.4")
+            with patch.object(plugin, "_render_pdf", return_value=("PDF preview", "<pre>text</pre>")):
+                pdf_text_page = plugin.render_preview_page(pdf, root, pdf_text=True).decode("utf-8")
+
+        cases = [
+            ("markdown", markdown, markdown_tail),
+            ("text", text_page, strict_tail),
+            ("csv", csv_page, strict_tail),
+            ("pdf-native", pdf_page, pdf_tail),
+            ("pdf-text", pdf_text_page, strict_tail),
         ]
-        for page in pages:
+        nonces = {}
+        for name, page, expected_tail in cases:
             audit = self.audit(page)
-            metas = [attrs for tag, attrs in audit.tags if tag == "meta" and attrs.get("http-equiv") == "Content-Security-Policy"]
-            self.assertEqual(len(metas), 1)
+            metas = [
+                attrs for tag, attrs in audit.tags
+                if tag == "meta" and attrs.get("http-equiv") == "Content-Security-Policy"
+            ]
+            self.assertEqual(len(metas), 1, name)
             csp = metas[0].get("content") or ""
             match = re.fullmatch(
-                r"default-src 'none'; script-src 'nonce-([^']+)'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src '(none|self)'; (worker-src 'self'; )?base-uri 'none'; object-src 'none'; form-action 'none'",
+                r"default-src 'none'; script-src 'nonce-([^']+)'; " + re.escape(expected_tail),
                 csp,
             )
-            self.assertIsNotNone(match, csp)
-            self.assertEqual(match.group(2), "self" if "Edit visually" in page else "none")
-            self.assertEqual(bool(match.group(3)), "Edit visually" in page)
+            self.assertIsNotNone(match, f"{name}: {csp}")
             nonce = match.group(1)
+            nonces[name] = nonce
             scripts = [attrs for tag, attrs in audit.tags if tag == "script"]
-            self.assertGreaterEqual(len(scripts), 1)
-            self.assertTrue(all(attrs.get("nonce") == nonce for attrs in scripts))
-            self.assertNotIn("javascript:", page.lower())
-            back = [attrs for tag, attrs in audit.tags if tag == "button" and attrs.get("data-action") == "back"]
-            self.assertEqual(len(back), 1)
-            self.assertEqual(back[0].get("type"), "button")
+            self.assertGreaterEqual(len(scripts), 1, name)
+            self.assertTrue(all(attrs.get("nonce") == nonce for attrs in scripts), name)
+            self.assertNotIn("javascript:", page.lower(), name)
+            back = [
+                attrs for tag, attrs in audit.tags
+                if tag == "button" and attrs.get("data-action") == "back"
+            ]
+            self.assertEqual(len(back), 1, name)
+            self.assertEqual(back[0].get("type"), "button", name)
+
+        second = self.audit(markdown_again)
+        second_meta = next(
+            attrs for tag, attrs in second.tags
+            if tag == "meta" and attrs.get("http-equiv") == "Content-Security-Policy"
+        )
+        second_nonce = re.search(r"script-src 'nonce-([^']+)'", second_meta["content"]).group(1)
+        self.assertNotEqual(nonces["markdown"], second_nonce)
 
     def test_same_origin_author_script_is_escaped_and_not_nonce_authorized(self) -> None:
         page = self.render_markdown("<script src='/uploads/owned.js'></script>")

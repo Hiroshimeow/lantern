@@ -93,17 +93,19 @@ Parser invariants:
 - unclosed Mermaid fence renders as ordinary escaped code;
 - test adversarial output with stdlib `html.parser`; every emitted tag, attribute, and URL scheme is explicitly allowlisted.
 
-## Shared preview CSP
+## Preview CSP profiles
 
-Every plugin preview kind uses exactly:
+The server chooses the profile from the verified preview kind; no client-visible label or query privilege switch may select a broader policy.
 
-`default-src 'none'; script-src 'nonce-{random}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'`
+- Generic read-only preview and PDF extracted-text: `default-src 'none'; script-src 'nonce-{random}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'`.
+- Interactive Markdown (Preview/Edit/Source are modes of one editor-capable document): same policy, but `connect-src 'self'; worker-src 'self'` replaces `connect-src 'none'` so same-origin work/CAS fetch, WebSocket and the local segmentation Worker remain functional. Third-party/wildcard connect and Worker sources remain forbidden.
+- Native PDF page view: generic read-only policy plus `frame-src 'self'` for the one same-origin raw-PDF iframe; it still uses `connect-src 'none'`.
 
 Generate a fresh per-response nonce with Python `secrets`. The same nonce must appear in the CSP and every app-owned `<script>` tag. Do not add `'self'`, `'strict-dynamic'`, `'unsafe-inline'`, or `'unsafe-eval'` to `script-src`.
 
-Replace `javascript:history.back()` with a normal button wired by local JS. `markdown_preview.js` sets `window.opener=null` before Mermaid work.
+Replace `javascript:history.back()` with a normal button wired by local JS. `markdown_preview.js` sets `window.opener=null` before Mermaid work. CSP-DEC-20261018-01 records independent REVIEW acceptance of these typed profiles for scoped implementation; this does not constitute owner/security release sign-off.
 
-Iframe sandboxing remains deferred only as partial containment: the same preview also has same-tab and `window.open` paths, and Lantern already serves uploaded HTML/SVG same-origin. Release requires security-owner sign-off on this residual risk plus a follow-up ticket covering both preview iframe sandboxing and same-origin uploaded HTML/SVG serving.
+Iframe sandboxing remains deferred only as partial containment: the same preview also has same-tab and `window.open` paths, and Lantern already serves uploaded HTML/SVG same-origin. Release requires renewed explicit owner/security acceptance of the Markdown same-origin connect/Worker capability and residual risk. `LANTERN-SEC-001` remains open for preview iframe containment and same-origin uploaded HTML/SVG isolation.
 
 ## Mermaid dependency and runtime
 
