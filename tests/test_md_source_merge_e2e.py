@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import time
 import unittest
@@ -22,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = ROOT / ".plan" / "lantern-markdown-main-20261018"
 DEPS = PLAN / "cm6-merge-poc-deps"
-EVIDENCE = PLAN / "dev_turn9_md_source_merge.json"
+EVIDENCE = PLAN / "dev_turn10_md_source_merge.json"
 
 MERGE_VERSION = "6.12.2"
 CM_VERSION = "6.0.2"
@@ -58,24 +59,68 @@ def _sized_text(target_bytes: int, width: int) -> str:
     return raw[:target_bytes].decode("utf-8", errors="ignore")
 
 
+def _valid_utf16_boundary(text: str, offset: int) -> bool:
+    utf16 = text.encode("utf-16-le")
+    units = len(utf16) // 2
+    if offset < 0 or offset > units:
+        return False
+    if offset == 0 or offset == units:
+        return True
+    before = int.from_bytes(
+        utf16[(offset - 1) * 2 : offset * 2],
+        "little",
+    )
+    after = int.from_bytes(
+        utf16[offset * 2 : (offset + 1) * 2],
+        "little",
+    )
+    return not (
+        0xD800 <= before <= 0xDBFF
+        and 0xDC00 <= after <= 0xDFFF
+    )
+
+
+def _raw_utf8_span(
+    raw: bytes,
+    start_utf16: int,
+    end_utf16: int,
+) -> tuple[int, int]:
+    bom = raw.startswith(b"\xef\xbb\xbf")
+    payload = raw[3:] if bom else raw
+    text = payload.decode("utf-8")
+    if not _valid_utf16_boundary(text, start_utf16):
+        raise ValueError("start splits UTF-16 surrogate pair")
+    if not _valid_utf16_boundary(text, end_utf16):
+        raise ValueError("end splits UTF-16 surrogate pair")
+    utf16 = text.encode("utf-16-le")
+    prefix = utf16[: start_utf16 * 2].decode("utf-16-le").encode("utf-8")
+    selected = utf16[
+        start_utf16 * 2 : end_utf16 * 2
+    ].decode("utf-16-le").encode("utf-8")
+    raw_start = (3 if bom else 0) + len(prefix)
+    return raw_start, raw_start + len(selected)
+
+
 def _raw_patch_utf8(
     raw: bytes,
     start_utf16: int,
     end_utf16: int,
     insert: str,
 ) -> bytes:
-    bom = raw.startswith(b"\xef\xbb\xbf")
-    payload = raw[3:] if bom else raw
-    text = payload.decode("utf-8")
-    utf16 = text.encode("utf-16-le")
-    prefix = utf16[: start_utf16 * 2].decode("utf-16-le").encode("utf-8")
-    suffix = utf16[end_utf16 * 2 :].decode("utf-16-le").encode("utf-8")
-    return (
-        (b"\xef\xbb\xbf" if bom else b"")
-        + prefix
-        + insert.encode("utf-8")
-        + suffix
+    raw_start, raw_end = _raw_utf8_span(
+        raw,
+        start_utf16,
+        end_utf16,
     )
+    return (
+        raw[:raw_start]
+        + insert.encode("utf-8")
+        + raw[raw_end:]
+    )
+
+
+def _eol_tokens(raw: bytes) -> list[bytes]:
+    return re.findall(rb"\r\n|\n|\r", raw)
 
 
 ENTRY = r"""
@@ -87,12 +132,14 @@ import {
 } from "@codemirror/merge";
 
 const stats={updates:0,docChanges:0,serializations:0};
+const capturedChanges=[];
 let view=null, split=null;
 
 function createUnified(parent, original, current, lineSeparator="\n") {
   if (view) view.destroy();
   parent.textContent="";
   stats.updates=stats.docChanges=stats.serializations=0;
+  capturedChanges.length=0;
   view=new EditorView({
     state:EditorState.create({
       doc:current,
@@ -103,7 +150,23 @@ function createUnified(parent, original, current, lineSeparator="\n") {
         EditorView.lineWrapping,
         EditorView.updateListener.of(update=>{
           stats.updates++;
-          if(update.docChanged) stats.docChanges++;
+          if(update.docChanged) {
+            stats.docChanges++;
+            for(const transaction of update.transactions) {
+              if(!transaction.docChanged) continue;
+              transaction.changes.iterChanges(
+                (fromA,toA,fromB,toB,inserted)=>{
+                  capturedChanges.push({
+                    from:fromA,
+                    to:toA,
+                    fromNew:fromB,
+                    toNew:toB,
+                    inserted:inserted.toString()
+                  });
+                }
+              );
+            }
+          }
         }),
         unifiedMergeView({
           original,
@@ -157,6 +220,14 @@ function getOriginal() {
   return getOriginalDoc(view.state).toString();
 }
 
+function clearCapturedChanges() {
+  capturedChanges.length=0;
+}
+
+function getCapturedChanges() {
+  return capturedChanges.map(change=>({...change}));
+}
+
 function updateOriginal(text) {
   const old=getOriginalDoc(view.state);
   const changes=ChangeSet.of(
@@ -207,6 +278,8 @@ window.CMPoc={
   setSelection,
   getDoc,
   getOriginal,
+  clearCapturedChanges,
+  getCapturedChanges,
   updateOriginal,
   doUndo,
   doRedo,
@@ -539,7 +612,7 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
             self.assertEqual(baseline["before"], baseline["after"])
             self.assertEqual(baseline["original"], new_baseline)
 
-            crlf = page.evaluate(
+            page.evaluate(
                 """() => {
                   const host=document.getElementById('app');
                   CMPoc.createUnified(
@@ -548,11 +621,29 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
                     'a\\r\\nb\\r\\n',
                     '\\r\\n'
                   );
-                  CMPoc.setSelection(0);
-                  return CMPoc.getDoc();
+                  CMPoc.setSelection(1);
+                  CMPoc.clearCapturedChanges();
+                  CMPoc.view.focus();
                 }"""
             )
-            self.assertEqual(crlf, "a\r\nb\r\n")
+            page.keyboard.insert_text("X")
+            crlf = page.evaluate(
+                """() => ({
+                  doc:CMPoc.getDoc(),
+                  changes:CMPoc.getCapturedChanges()
+                })"""
+            )
+            self.assertEqual(crlf["doc"], "aX\r\nb\r\n")
+            self.assertEqual(
+                crlf["changes"],
+                [{
+                    "from": 1,
+                    "to": 1,
+                    "fromNew": 1,
+                    "toNew": 2,
+                    "inserted": "X",
+                }],
+            )
 
             split = page.evaluate(
                 """({a,b}) => {
@@ -570,49 +661,122 @@ class CodeMirrorMergePocE2E(unittest.TestCase):
                 "keyboardSelection": True,
                 "undoRedo": True,
                 "uniformCrlfSliceDocPreserved": True,
+                "uniformCrlfEditPreserved": True,
+                "uniformCrlfCapturedChange": crlf["changes"][0],
                 "baselineUpdatePreservesCurrent": True,
             }
             report["splitComparison"] = split
         finally:
             page.close()
 
-        raw = (
-            b"\xef\xbb\xbf"
-            + "# T\r\n\r\n日本語 🏮\nBefore\nEDIT_TARGET\r\nTail".encode(
-                "utf-8"
-            )
+        marker = "EDIT_TARGET"
+        replacement = "EDIT_TARGET_X"
+        source_text = (
+            "# T\n"
+            "\u65e5\u672c\u8a9e \U0001f3ee\n"
+            "EDIT_TARGET\r\n"
+            "Tail LF\n"
+            "Final"
         )
+        raw = b"\xef\xbb\xbf" + source_text.encode("utf-8")
         decoded = raw[3:].decode("utf-8")
-        marker_chars = decoded.index("EDIT_TARGET")
-        marker_start = len(
-            decoded[:marker_chars].encode("utf-16-le")
-        ) // 2
-        marker_end = marker_start + (
-            len("EDIT_TARGET".encode("utf-16-le")) // 2
+
+        page = self._new_page()
+        try:
+            selection = page.evaluate(
+                """({text,marker}) => {
+                  CMPoc.createUnified(
+                    document.getElementById('app'),
+                    text,
+                    text
+                  );
+                  const doc=CMPoc.view.state.doc.toString();
+                  const start=doc.indexOf(marker);
+                  if(start < 0) throw new Error('marker missing');
+                  CMPoc.setSelection(start,start+marker.length);
+                  CMPoc.clearCapturedChanges();
+                  CMPoc.view.focus();
+                  return {start,end:start+marker.length};
+                }""",
+                {"text": decoded, "marker": marker},
+            )
+            page.keyboard.insert_text(replacement)
+            transaction_result = page.evaluate(
+                """() => ({
+                  doc:CMPoc.getDoc(),
+                  changes:CMPoc.getCapturedChanges()
+                })"""
+            )
+        finally:
+            page.close()
+
+        self.assertEqual(len(transaction_result["changes"]), 1)
+        change = transaction_result["changes"][0]
+        self.assertEqual(change["from"], selection["start"])
+        self.assertEqual(change["to"], selection["end"])
+        self.assertEqual(change["inserted"], replacement)
+        self.assertEqual(
+            change["toNew"] - change["fromNew"],
+            len(replacement),
+        )
+        self.assertTrue(
+            _valid_utf16_boundary(decoded, change["from"])
+        )
+        self.assertTrue(
+            _valid_utf16_boundary(decoded, change["to"])
+        )
+
+        raw_start, raw_end = _raw_utf8_span(
+            raw,
+            change["from"],
+            change["to"],
+        )
+        self.assertEqual(
+            raw[raw_start:raw_end],
+            marker.encode("utf-8"),
         )
         patched = _raw_patch_utf8(
             raw,
-            marker_start,
-            marker_end,
-            "EDIT_TARGET_X",
+            change["from"],
+            change["to"],
+            change["inserted"],
         )
         expected = raw.replace(
-            b"EDIT_TARGET",
-            b"EDIT_TARGET_X",
+            marker.encode("utf-8"),
+            replacement.encode("utf-8"),
             1,
         )
         self.assertEqual(patched, expected)
         self.assertTrue(patched.startswith(b"\xef\xbb\xbf"))
-        self.assertIn(b"\r\n", patched)
-        self.assertIn("日本語 🏮".encode("utf-8"), patched)
-        self.assertIn(b"Before\n", patched)
+        self.assertEqual(
+            patched[:raw_start],
+            raw[:raw_start],
+        )
+        patched_suffix_start = raw_start + len(
+            replacement.encode("utf-8")
+        )
+        self.assertEqual(
+            patched[patched_suffix_start:],
+            raw[raw_end:],
+        )
+        self.assertEqual(_eol_tokens(patched), _eol_tokens(raw))
+        self.assertFalse(raw.endswith((b"\n", b"\r")))
+        self.assertFalse(patched.endswith((b"\n", b"\r")))
+        self.assertIn(
+            "\u65e5\u672c\u8a9e \U0001f3ee".encode("utf-8"),
+            patched,
+        )
         report["byteStrategy"] = {
             "bomPreserved": True,
             "mixedEolUntouchedBytesPreserved": True,
-            "nonBmpBoundaryCovered": True,
+            "noFinalNewlinePreserved": True,
+            "nonBmpBeforeEditCovered": True,
+            "surrogateBoundaryPreserved": True,
+            "capturedChange": change,
             "strategy": (
-                "CodeMirror transaction UTF-16 range -> authoritative "
-                "raw UTF-8 byte patch; never whole-document serialization"
+                "captured CodeMirror transaction UTF-16 range -> "
+                "authoritative raw UTF-8 byte patch; never whole-document "
+                "serialization"
             ),
         }
 
