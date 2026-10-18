@@ -362,23 +362,23 @@ class LiveMarkdownE2E(unittest.TestCase):
             area.click()
             page.keyboard.press("Control+End")
             page.keyboard.press("ArrowLeft")
-            page.keyboard.type(" MORE")
+            page.keyboard.insert_text(" MORE")
             page.wait_for_function(
                 "() => window.__lanternMdVisual.state.lastSaved.includes('Accepted. MORE')",
                 timeout=12000)
             self.assertEqual(file.read_text(encoding="utf-8"),redone)
             self.assertEqual(temp.read_bytes(),accepted_temp)
 
-            for _ in range(5):
-                page.keyboard.press("Control+z")
+            page.keyboard.press("Control+z")
+            page.wait_for_timeout(700)
+            self.assertEqual(area.input_value(),accepted)
             page.wait_for_function(
                 "() => window.__lanternMdVisual.state.lastSaved.endsWith('Accepted.\\n')",
                 timeout=12000)
             self.assertEqual(file.read_text(encoding="utf-8"),accepted)
             self.assertEqual(temp.read_bytes(),accepted_temp)
 
-            for _ in range(5):
-                page.keyboard.press("Control+y")
+            page.keyboard.press("Control+y")
             page.wait_for_function(
                 "() => window.__lanternMdVisual.state.lastSaved.includes('Accepted. MORE')",
                 timeout=12000)
@@ -655,6 +655,10 @@ class LiveMarkdownE2E(unittest.TestCase):
             self.assertEqual(work_posts,0,requests)
             self.assertEqual(mutations,{"records":0,"added":0,"removed":0})
 
+            initial_state=page.evaluate(
+                "async()=>(await(await fetch('/api/work?p=poll-large.md')).json())")
+            temp=Path(initial_state["tempPath"])
+            accepted_bytes=temp.read_bytes()
             page.evaluate("""() => {
               Object.defineProperty(document,'hidden',{
                 configurable:true,get:()=>true
@@ -668,20 +672,34 @@ class LiveMarkdownE2E(unittest.TestCase):
                 for method,url in requests)
             self.assertEqual(hidden_gets,0,requests)
 
+            external=text.replace("# Large poll","# Large poll external",1)
+            large.write_text(external,encoding="utf-8",newline="")
+            started=time.perf_counter()
             page.evaluate("""() => {
               Object.defineProperty(document,'hidden',{
                 configurable:true,get:()=>false
               });
               document.dispatchEvent(new Event('visibilitychange'));
+              window.dispatchEvent(new Event('focus'));
             }""")
             page.wait_for_function(
-                "() => window.__lanternMdVisual.state.loading === false",
-                timeout=3000)
-            page.wait_for_timeout(300)
+                "() => document.querySelector('.md-source-area')?.value"
+                ".startsWith('# Large poll external')",
+                timeout=2000)
+            self.assertLess(time.perf_counter()-started,2.0)
             visible_gets=sum(
                 method=="GET" and "/api/work?p=poll-large.md" in url
                 for method,url in requests)
+            visible_posts=sum(
+                method=="POST" and "/api/work/write" in url
+                for method,url in requests)
             self.assertGreaterEqual(visible_gets,1,requests)
+            self.assertEqual(visible_posts,0,requests)
+            state=page.evaluate(
+                "async()=>(await(await fetch('/api/work?p=poll-large.md')).json())")
+            self.assertEqual(state["saved"]["content"],text)
+            self.assertEqual(state["work"]["content"],external)
+            self.assertEqual(temp.read_bytes(),accepted_bytes)
         finally:
             ctx.close()
 
