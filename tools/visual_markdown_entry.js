@@ -154,6 +154,149 @@ function buildVerifiedBlockMap(crepe, markdown) {
   return { mapped: true, reason: '', units, view: pieces.view };
 }
 
+// MD-T002 proof metadata: decoded source offsets are JavaScript UTF-16
+// code units. Raw offsets are UTF-8 bytes. A UTF-8 BOM is outside the
+// decoded Markdown string and contributes three leading raw bytes.
+const SOURCE_ENCODER = new TextEncoder();
+
+function validUtf16Boundary(text, offset) {
+  if (!Number.isInteger(offset) || offset < 0 || offset > text.length) return false;
+  if (offset === 0 || offset === text.length) return true;
+  const before = text.charCodeAt(offset - 1);
+  const after = text.charCodeAt(offset);
+  return !(before >= 0xd800 && before <= 0xdbff &&
+    after >= 0xdc00 && after <= 0xdfff);
+}
+
+function rawUtf8Offset(text, offset, bom) {
+  if (!validUtf16Boundary(text, offset)) return null;
+  return (bom ? 3 : 0) + SOURCE_ENCODER.encode(text.slice(0, offset)).length;
+}
+
+function buildSourceEvidence(crepe, markdown, metadata = {}) {
+  const version = typeof metadata.version === 'string' &&
+    /^[0-9a-f]{64}$/.test(metadata.version) ? metadata.version : null;
+  if (!version) {
+    return { ok: false, reason: 'missing-revision', units: [] };
+  }
+  if (metadata.encoding !== 'utf-8') {
+    return { ok: false, reason: 'encoding', units: [] };
+  }
+
+  let pieces;
+  let tree;
+  try {
+    pieces = currentEditorPieces(crepe);
+    tree = pieces.remark.runSync(pieces.remark.parse(markdown));
+  } catch (error) {
+    return { ok: false, reason: 'parse:' + error.message, units: [] };
+  }
+
+  const bom = metadata.bom === true;
+  const blocks = (Array.isArray(tree?.children) ? tree.children : [])
+    .filter(node => !DIFF_IGNORED_MDAST.has(node?.type));
+  const units = [];
+  for (let index = 0; index < blocks.length; index++) {
+    const md = blocks[index];
+    const sourceStart = Number(md?.position?.start?.offset);
+    const sourceEnd = Number(md?.position?.end?.offset);
+    const lineStart = Number(md?.position?.start?.line);
+    const lineEnd = Number(md?.position?.end?.line);
+    if (![sourceStart, sourceEnd, lineStart, lineEnd].every(Number.isFinite)) {
+      return { ok: false, reason: 'missing-position:' + index, units: [] };
+    }
+    const rawByteStart = rawUtf8Offset(markdown, sourceStart, bom);
+    const rawByteEnd = rawUtf8Offset(markdown, sourceEnd, bom);
+    if (rawByteStart == null || rawByteEnd == null || rawByteEnd < rawByteStart) {
+      return { ok: false, reason: 'invalid-utf16-boundary:' + index, units: [] };
+    }
+    units.push({
+      index,
+      type: md.type,
+      mdastType: md.type,
+      sourceStart,
+      sourceEnd,
+      lineStart: Math.max(0, lineStart - 1),
+      lineEnd: Math.max(lineStart, lineEnd),
+      rawByteStart,
+      rawByteEnd,
+      sourceOffsetUnit: 'utf16-code-unit',
+      rawOffsetUnit: 'utf8-byte',
+      encoding: 'utf-8',
+      bom,
+      revision: version,
+      proof: 'source-only',
+      nestedProof: 'unproved',
+    });
+  }
+  return { ok: true, reason: '', units };
+}
+
+function buildSourceMappingEvidence(crepe, markdown, metadata = {}) {
+  const source = buildSourceEvidence(crepe, markdown, metadata);
+  if (!source.ok) {
+    return {
+      mapped: false,
+      classification: 'unmapped',
+      reason: source.reason,
+      sourceUnits: [],
+      units: [],
+    };
+  }
+
+  // Never map a normalized/serialized representation back onto authoritative
+  // source bytes. Callers may still inspect the source-only ranges.
+  if (markdown !== crepe.getMarkdown()) {
+    return {
+      mapped: false,
+      classification: 'stale',
+      reason: 'stale',
+      sourceUnits: source.units,
+      units: [],
+    };
+  }
+
+  const proof = buildVerifiedBlockMap(crepe, markdown);
+  if (!proof.mapped) {
+    return {
+      mapped: false,
+      classification: proof.reason.startsWith('block-count:')
+        ? 'ambiguous' : 'unmapped',
+      reason: proof.reason,
+      sourceUnits: source.units,
+      units: [],
+    };
+  }
+  if (proof.units.length !== source.units.length) {
+    return {
+      mapped: false,
+      classification: 'ambiguous',
+      reason: 'evidence-count:' + source.units.length + '/' + proof.units.length,
+      sourceUnits: source.units,
+      units: [],
+    };
+  }
+
+  const units = proof.units.map((pm, index) => ({
+    ...source.units[index],
+    // Keep source grammar identity explicit and carry PM identity separately.
+    type: source.units[index].mdastType,
+    pmType: pm.type,
+    from: pm.from,
+    to: pm.to,
+    proof: 'exact-block',
+    nestedProof: 'unproved',
+    ambiguity: 'none',
+  }));
+  return {
+    mapped: true,
+    classification: 'block-only',
+    reason: '',
+    sourceUnits: source.units,
+    units,
+  };
+}
+
 function diffGhost(text) {
   const ghost = document.createElement('div');
   ghost.className = 'md-visual-deletion';
@@ -571,6 +714,9 @@ async function createVisualMarkdown(root, content, onChange, documentPath, onUpl
     setPendingDiff(markdown, hunks) { return pending.setPendingDiff(markdown, hunks); },
     clearPendingDiff() { return pending.clearPendingDiff(); },
     debugBlockMap() { return pending.debugBlockMap(); },
+    debugSourceMap(markdown, metadata) {
+      return buildSourceMappingEvidence(crepe, markdown, metadata);
+    },
     sourceLineLocator() { return sourceLineLocator(crepe); },
     sourceBlockAtLine(line) { return sourceBlockAtLine(crepe, line); },
     destroy() { unmountTableToolbar(); unmountCrop(); return crepe.destroy(); },
