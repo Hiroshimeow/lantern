@@ -514,6 +514,44 @@ class LiveMarkdownE2E(unittest.TestCase):
                         moved.unlink()
 
 
+
+    def test_delete_during_pending_local_write_retains_text_and_never_recreates_file(self):
+        file=self.root/"delete-pending.md"
+        original="# Delete pending\n\nOriginal line.\n"
+        local="# Delete pending\n\nLocal recovery line.\n"
+        file.write_text(original,encoding="utf-8",newline="")
+        ctx=self.browser.new_context(viewport={"width":1100,"height":800})
+        page=ctx.new_page()
+        intercepted=[]
+        def delete_before_write(route):
+            if not intercepted:
+                intercepted.append(True)
+                if file.exists():
+                    file.unlink()
+            route.continue_()
+        page.route("**/api/work/write",delete_before_write)
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=delete-pending.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            area=page.get_by_role("textbox",name="Markdown source")
+            area.wait_for(timeout=12000)
+            area.fill(local)
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.conflict === true",
+                timeout=12000)
+            self.assertTrue(intercepted)
+            self.assertFalse(file.exists())
+            self.assertEqual(area.input_value(),local)
+            status=page.locator("[data-md-status]").inner_text().lower()
+            self.assertTrue(
+                "retained" in status or "unavailable" in status,
+                status)
+            page.wait_for_timeout(1000)
+            self.assertFalse(file.exists())
+            self.assertEqual(area.input_value(),local)
+        finally:
+            ctx.close()
+
     def test_external_overlap_during_local_write_retains_local_recovery_and_real_external_bytes(self):
         file=self.root/"external-overlap.md"
         original="# External overlap\n\nOriginal line.\n"
