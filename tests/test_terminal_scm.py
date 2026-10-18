@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import socket
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from lantern.terminal import TerminalManager, WinConPty, encode_terminal_key, resolve_shell
 from lantern.scm import ScmService, build_git_command
-from lantern.ws import WebSocketPeer, dispatch, _terminal_error_reply
+from lantern.ws import WebSocketHub, WebSocketPeer, dispatch, _terminal_error_reply
 
 
 class FakePty:
@@ -184,6 +184,95 @@ class TerminalParityTests(unittest.TestCase):
             spawned["tail"].emit("0123456789abcdefghijkl")
             time.sleep(0.02)
             self.assertEqual(dict(manager.replay())["tail"], "6789abcdefghijkl")
+            _meta, output, seq, start, end = manager.replay_view("tail")
+            self.assertEqual((output, seq, start, end), ("6789abcdefghijkl", 1, 6, 22))
+
+
+    def test_replay_view_tracks_utf8_retention_and_generation_reset(self) -> None:
+        events = []
+        spawned = {}
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            p = FakePty(on_data, on_exit)
+            spawned[term_id] = p
+            return p
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(
+                Path(td), events.append, pty_factory=factory, max_output=5, flush_ms=0
+            )
+            first = manager.create("utf8", td)
+            spawned["utf8"].emit("A\u65e5\U0001F642BCDEF")
+            meta, output, seq, start, end = manager.replay_view("utf8")
+            self.assertEqual(meta["generation"], first["generation"])
+            self.assertEqual((output, seq), ("BCDEF", 1))
+            self.assertEqual(start, len("A\u65e5\U0001F642".encode("utf-8")))
+            self.assertEqual(end, len("A\u65e5\U0001F642BCDEF".encode("utf-8")))
+            self.assertEqual(manager.replay_one("utf8"), (meta, output, seq))
+
+            manager.kill("utf8")
+            second = manager.create("utf8", td)
+            self.assertNotEqual(second["generation"], first["generation"])
+            _meta, output, seq, start, end = manager.replay_view("utf8")
+            self.assertEqual((output, seq, start, end), ("", 0, 0, 0))
+
+    def test_websocket_replay_offsets_cover_actual_sent_suffix(self) -> None:
+        class Peer:
+            def __init__(self):
+                self.subscriptions = set()
+                self.messages = []
+                self.protocol = "v2"
+
+            def send(self, message):
+                self.messages.append(message)
+
+        spawned = {}
+        hub = WebSocketHub()
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            p = FakePty(on_data, on_exit)
+            spawned[term_id] = p
+            return p
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(
+                Path(td), hub.broadcast, pty_factory=factory, max_output=100, flush_ms=0
+            )
+            manager.create("cap", td)
+            spawned["cap"].emit("A\u65e5\U0001F642BC")
+
+            uncapped = Peer()
+            hub.add(uncapped)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 100):
+                dispatch(
+                    uncapped,
+                    {"type": "terminal_subscribe", "terminalId": "cap"},
+                    manager,
+                    None,
+                    hub,
+                )
+            replay = next(m for m in uncapped.messages if m["type"] == "terminal_replay")
+            self.assertEqual(replay["output"], "A\u65e5\U0001F642BC")
+            self.assertFalse(replay["truncated"])
+            self.assertEqual(replay["replayStartUtf8"], 0)
+            self.assertEqual(replay["replayEndUtf8"], len("A\u65e5\U0001F642BC".encode("utf-8")))
+
+            hub.unsubscribe(uncapped, "cap")
+            capped = Peer()
+            hub.add(capped)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 4):
+                dispatch(
+                    capped,
+                    {"type": "terminal_subscribe", "terminalId": "cap"},
+                    manager,
+                    None,
+                    hub,
+                )
+            replay = next(m for m in capped.messages if m["type"] == "terminal_replay")
+            self.assertEqual(replay["output"], "\u65e5\U0001F642BC")
+            self.assertTrue(replay["truncated"])
+            self.assertEqual(replay["replayStartUtf8"], len("A".encode("utf-8")))
+            self.assertEqual(replay["replayEndUtf8"], len("A\u65e5\U0001F642BC".encode("utf-8")))
 
     def test_resize_rename_input_and_restart_exited_id(self) -> None:
         events = []

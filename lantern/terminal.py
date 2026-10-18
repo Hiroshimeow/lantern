@@ -327,7 +327,8 @@ class TerminalEntry:
     running: bool = True
     exit_code: Optional[int] = None
     output: str = ""
-    output_offset: int = 0
+    retained_start_utf8: int = 0
+    stream_end_utf8: int = 0
     command: Optional[str] = None
     generation: str = field(default_factory=lambda: uuid4().hex)
     seq: int = 0
@@ -439,10 +440,12 @@ class TerminalManager:
 
     def _append_retained(self, entry: TerminalEntry, data: str) -> None:
         entry.output += data
+        entry.stream_end_utf8 += len(data.encode("utf-8"))
         if len(entry.output) > self.max_output:
             drop = len(entry.output) - self.max_output
+            removed = entry.output[:drop]
             entry.output = entry.output[drop:]
-            entry.output_offset += drop
+            entry.retained_start_utf8 += len(removed.encode("utf-8"))
 
     def _queue_output(self, entry: TerminalEntry, data: str) -> None:
         if not data:
@@ -561,13 +564,24 @@ class TerminalManager:
         with self.lock:
             return [self._info(x) for x in [*self.live.values(), *self.history.values()]]
 
-    def replay_one(self, term_id: str) -> tuple[Dict[str, Any], str, int]:
-        """Capture one bounded PTY tail and its output sequence atomically."""
+    def replay_view(self, term_id: str) -> tuple[Dict[str, Any], str, int, int, int]:
+        """Capture one bounded PTY tail, sequence and UTF-8 stream interval atomically."""
         with self.lock:
             entry = self.live.get(term_id) or self.history.get(term_id)
             if entry is None:
                 raise ValueError("Unknown terminal id")
-            return self._info(entry), entry.output, entry.seq
+            return (
+                self._info(entry),
+                entry.output,
+                entry.seq,
+                entry.retained_start_utf8,
+                entry.stream_end_utf8,
+            )
+
+    def replay_one(self, term_id: str) -> tuple[Dict[str, Any], str, int]:
+        """Capture one bounded PTY tail and its output sequence atomically."""
+        meta, output, seq, _start_utf8, _end_utf8 = self.replay_view(term_id)
+        return meta, output, seq
 
     def replay(self) -> Iterable[tuple[str, str]]:
         with self.lock:

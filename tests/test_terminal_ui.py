@@ -144,6 +144,56 @@ class TerminalUiParityTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+
+    def test_v2_client_tracks_utf8_replay_continuity_without_changing_rendering(self) -> None:
+        client = json.dumps(str(CLIENT))
+        script = textwrap.dedent(f"""
+            const assert = require('assert');
+            global.location = {{protocol:'http:', host:'lantern.test'}};
+            global.document = {{querySelector:()=>null, addEventListener:()=>{{}}, hidden:false}};
+            global.addEventListener = ()=>{{}};
+            global.setInterval = ()=>0;
+            class FakeWebSocket {{ static OPEN=1; constructor(){{this.readyState=1}} send(){{}} close(){{}} }}
+            global.WebSocket = FakeWebSocket;
+            require({client});
+            const api = global.__lanternTerminalScm;
+            assert.equal(api.utf8Length('A\\u65e5\\ud83d\\ude42'), 8);
+            assert.equal(api.isReplayContinuous(7, 8, 13), false);
+            assert.equal(api.isReplayContinuous(8, 8, 13), true);
+            assert.equal(api.isReplayContinuous(13, 8, 13), true);
+            assert.equal(api.isReplayContinuous(14, 8, 13), false);
+
+            const writes=[];
+            const t={{
+              meta:{{id:'x',generation:'g1',running:true}},
+              term:{{reset(){{}},write(s,done){{writes.push(s);done?.()}}}},
+              pending:false,pendingChunks:new Map(),replayTok:0,seq:null,
+              replayStartUtf8:null,streamUtf8:null,
+            }};
+            api.state.terms.set('x',t);
+            api.state.serverProtocol='v2';
+            api.state.subscribed='x';
+            api.handleMessage({{
+              type:'terminal_replay',terminalId:'x',meta:{{id:'x',generation:'g1'}},
+              seq:1,output:'TAIL',truncated:false,replayStartUtf8:8,replayEndUtf8:13,
+            }});
+            assert.equal(t.replayStartUtf8,8);
+            assert.equal(t.streamUtf8,13);
+            api.handleMessage({{
+              type:'terminal_output',terminalId:'x',generation:'g1',seq:2,data:'\\u65e5\\ud83d\\ude42',
+            }});
+            assert.equal(t.streamUtf8,20);
+            api.handleMessage({{type:'terminal_list',terminals:[{{id:'x',generation:'g2',running:true}}]}});
+            assert.equal(t.replayStartUtf8,null);
+            assert.equal(t.streamUtf8,null);
+            assert.deepEqual(writes,['TAIL','\\u65e5\\ud83d\\ude42']);
+        """)
+        result = subprocess.run(
+            ["node", "-e", script], cwd=ROOT, text=True, capture_output=True,
+            check=False, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_browser_client_parses_as_javascript(self) -> None:
         result = subprocess.run(
             ["node", "--check", str(CLIENT)],

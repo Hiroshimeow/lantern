@@ -429,14 +429,21 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None):
         # and socket I/O run outside terminal.lock. Sequence numbers allow the
         # browser to merge any live output that races ahead of the snapshot.
         with terminal.lock:
-            meta, output, seq = terminal.replay_one(term_id)
+            meta, output, seq, replay_start_utf8, replay_end_utf8 = terminal.replay_view(term_id)
             hub.subscribe(peer, term_id)
         # Retained PTY history is untouched. A configured 5M-character tail can
         # exceed an 8 MiB WebSocket queue after ANSI escaping; bound display replay.
         truncated = len(output) > _MAX_ACTIVE_REPLAY_CHARS
+        if truncated:
+            drop = len(output) - _MAX_ACTIVE_REPLAY_CHARS
+            omitted = output[:drop]
+            output = output[drop:]
+            replay_start_utf8 += len(omitted.encode("utf-8"))
         peer.send({"type": "terminal_replay", "terminalId": term_id,
-                   "meta": meta, "output": output[-_MAX_ACTIVE_REPLAY_CHARS:],
-                   "seq": seq, "truncated": truncated})
+                   "meta": meta, "output": output,
+                   "seq": seq, "truncated": truncated,
+                   "replayStartUtf8": replay_start_utf8,
+                   "replayEndUtf8": replay_end_utf8})
         return
     if typ == "terminal_create":
         meta = terminal.create(str(msg.get("terminalId") or ""), str(msg.get("cwd") or ""), int(msg.get("cols") or 80), int(msg.get("rows") or 24), str(msg.get("title") or "Terminal"))

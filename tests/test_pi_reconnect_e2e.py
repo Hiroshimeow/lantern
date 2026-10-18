@@ -18,12 +18,39 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lantern.terminal import NativePty, TerminalManager
 from lantern.ws import WebSocketHub, dispatch
 
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / ".plan" / "lantern-pi-native-20261018" / "evidence-turn6"
+
+
+REAL_PI_DELTA_CHUNKS = [
+    "\r\nDELTA-BEGIN",
+    "\x1b[3",
+    "1mR",
+    "ED\x1b[0m",
+    "\x1b[2;10H@",
+    "\x1b[?1049hALT\x1b[3;7H\x1b[1;34m#\x1b[0m",
+    "\x1b[?1049l",
+    "\x1b[?2004h",
+    " \u65e5\u672c\u8a9e\U0001F642",
+]
+
+
+def _public_delta_after_snapshot(replay: dict, snapshot_utf8: int) -> str | None:
+    start = replay.get("replayStartUtf8")
+    end = replay.get("replayEndUtf8")
+    if not all(isinstance(v, int) for v in (snapshot_utf8, start, end)):
+        return None
+    if snapshot_utf8 < start or snapshot_utf8 > end:
+        return None
+    encoded = str(replay.get("output") or "").encode("utf-8")
+    if len(encoded) != end - start:
+        raise AssertionError("public replay interval does not match its UTF-8 payload length")
+    return encoded[snapshot_utf8 - start :].decode("utf-8")
 
 
 def _edge() -> Path | None:
@@ -333,14 +360,7 @@ const summary=s=>({{cols:s.cols,rows:s.rows,type:s.type,cx:s.cx,cy:s.cy,base:s.b
  const recon=new Terminal({{cols:120,rows:40,scrollback:8000,allowProposedApi:true}});
  await write(recon,serialized);
  const a=snap(ref),b=snap(recon);
- const chunks=[
-  '\\r\\nDELTA-BEGIN',
-  '\\x1b[3','1mR','ED\\x1b[0m',
-  '\\x1b[2;10H@',
-  '\\x1b[?1049hALT\\x1b[3;7H\\x1b[1;34m#\\x1b[0m',
-  '\\x1b[?1049l',
-  '\\x1b[?2004h'
- ];
+ const chunks={json.dumps(REAL_PI_DELTA_CHUNKS, ensure_ascii=False)};
  for(const chunk of chunks){{await write(ref,chunk);await write(recon,chunk);}}
  const da=snap(ref),db=snap(recon);
  document.getElementById('out').textContent='RESULT:'+JSON.stringify({{
@@ -470,7 +490,104 @@ class PiReconnectProof(unittest.TestCase):
         self.assertEqual(result["delta"]["ref"], result["delta"]["recon"])
         self.assertGreater(result["delta"]["chunks"], 1)
 
-    def test_public_ws_replay_cannot_signal_internal_retention_gap(self) -> None:
+
+    def test_public_watermark_restores_real_pi_short_detach_exactly_once(self) -> None:
+        raw_path = (
+            ROOT
+            / ".plan"
+            / "lantern-pi-native-20261018"
+            / "evidence-turn4"
+            / "pi-t002-g6-winconpty-raw.txt"
+        )
+        raw_bytes = raw_path.read_bytes()
+        raw = raw_bytes.decode("utf-8")
+        spawned: dict[str, _CapturePty] = {}
+        hub = WebSocketHub()
+
+        class Peer:
+            def __init__(self) -> None:
+                self.subscriptions: set[str] = set()
+                self.messages: list[dict] = []
+                self.protocol = "v2"
+
+            def send(self, msg: dict) -> None:
+                self.messages.append(msg)
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            pty = _CapturePty(on_data, on_exit)
+            spawned[term_id] = pty
+            return pty
+
+        with tempfile.TemporaryDirectory(prefix="lantern-public-continuity-") as td:
+            manager = TerminalManager(
+                Path(td), hub.broadcast, pty_factory=factory, flush_ms=0, max_output=100_000
+            )
+            manager.create("pi-public", td, 120, 40, "Pi public continuity")
+            pty = spawned["pi-public"]
+            pty.emit(raw)
+            snapshot_peer = Peer()
+            hub.add(snapshot_peer)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 100_000):
+                dispatch(
+                    snapshot_peer,
+                    {"type": "terminal_subscribe", "terminalId": "pi-public"},
+                    manager,
+                    None,
+                    hub,
+                )
+            snapshot_replay = next(
+                m for m in snapshot_peer.messages if m["type"] == "terminal_replay"
+            )
+            snapshot_utf8 = snapshot_replay["replayEndUtf8"]
+            self.assertEqual(snapshot_replay["replayStartUtf8"], 0)
+            self.assertEqual(snapshot_utf8, len(raw_bytes))
+            self.assertGreater(snapshot_utf8, len(raw), "snapshot boundary must use UTF-8 bytes")
+            hub.unsubscribe(snapshot_peer, "pi-public")
+            manager.input("pi-public", "ONE-USER-INPUT")
+
+            for chunk in REAL_PI_DELTA_CHUNKS:
+                pty.emit(chunk)
+
+            peer = Peer()
+            hub.add(peer)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 100_000):
+                dispatch(
+                    peer,
+                    {"type": "terminal_subscribe", "terminalId": "pi-public"},
+                    manager,
+                    None,
+                    hub,
+                )
+            replay = next(m for m in peer.messages if m["type"] == "terminal_replay")
+            expected_delta = "".join(REAL_PI_DELTA_CHUNKS)
+            self.assertEqual(replay["replayStartUtf8"], 0)
+            self.assertEqual(
+                replay["replayEndUtf8"],
+                snapshot_utf8 + len(expected_delta.encode("utf-8")),
+            )
+            self.assertEqual(
+                _public_delta_after_snapshot(replay, snapshot_utf8),
+                expected_delta,
+            )
+            self.assertEqual(
+                _public_delta_after_snapshot(replay, replay["replayStartUtf8"]),
+                replay["output"],
+                "exact retained-start boundary must be accepted",
+            )
+            self.assertEqual(
+                _public_delta_after_snapshot(replay, replay["replayEndUtf8"]),
+                "",
+                "snapshot at stream end has a valid empty delta",
+            )
+            self.assertEqual(pty.writes, ["ONE-USER-INPUT"], "replay must not resend input")
+
+            oracle = _real_pi_exact_client_results()
+            self.assertTrue(oracle["browser"]["equal"])
+            self.assertTrue(oracle["delta"]["equal"])
+            self.assertEqual(oracle["delta"]["chunks"], len(REAL_PI_DELTA_CHUNKS))
+            manager.kill("pi-public")
+
+    def test_public_ws_watermark_rejects_manager_and_display_cap_gaps(self) -> None:
         spawned: dict[str, _CapturePty] = {}
         hub = WebSocketHub()
 
@@ -494,7 +611,21 @@ class PiReconnectProof(unittest.TestCase):
             )
             manager.create("pi-gap", td, 80, 24, "Gap proof")
             pty = spawned["pi-gap"]
-            pty.emit("SNAP")  # snapshot boundary S=1
+            pty.emit("SNAP")
+            snapshot_peer = Peer()
+            hub.add(snapshot_peer)
+            dispatch(
+                snapshot_peer,
+                {"type": "terminal_subscribe", "terminalId": "pi-gap"},
+                manager,
+                None,
+                hub,
+            )
+            snapshot_replay = next(
+                m for m in snapshot_peer.messages if m["type"] == "terminal_replay"
+            )
+            snapshot_utf8 = snapshot_replay["replayEndUtf8"]
+            hub.unsubscribe(snapshot_peer, "pi-gap")
             pty.emit("ABCDEFGHIJK")  # seq=2 exceeds retained output capacity
 
             peer = Peer()
@@ -510,10 +641,60 @@ class PiReconnectProof(unittest.TestCase):
             self.assertEqual(replay["seq"], 2)
             self.assertEqual(replay["output"], "DEFGHIJK")
             self.assertIs(replay["truncated"], False)
-            self.assertNotIn("outputOffset", replay["meta"])
-            self.assertNotIn("oldestSeq", replay["meta"])
-            self.assertNotIn("truncated", replay["meta"])
+            self.assertEqual(snapshot_utf8, len("SNAP".encode("utf-8")))
+            self.assertEqual(replay["replayStartUtf8"], 7)
+            self.assertEqual(replay["replayEndUtf8"], 15)
+            self.assertIsNone(
+                _public_delta_after_snapshot(replay, snapshot_utf8),
+                "manager retention gap must reject a stale snapshot before partial render",
+            )
             manager.kill("pi-gap")
+
+            display_hub = WebSocketHub()
+            display_manager = TerminalManager(
+                Path(td), display_hub.broadcast, pty_factory=factory, flush_ms=0, max_output=100
+            )
+            display_manager.create("pi-display-gap", td, 80, 24, "Display gap proof")
+            display_pty = spawned["pi-display-gap"]
+            display_pty.emit("SNAP")
+            display_snapshot_peer = Peer()
+            display_hub.add(display_snapshot_peer)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 100):
+                dispatch(
+                    display_snapshot_peer,
+                    {"type": "terminal_subscribe", "terminalId": "pi-display-gap"},
+                    display_manager,
+                    None,
+                    display_hub,
+                )
+            display_snapshot_replay = next(
+                m for m in display_snapshot_peer.messages if m["type"] == "terminal_replay"
+            )
+            display_snapshot_utf8 = display_snapshot_replay["replayEndUtf8"]
+            display_hub.unsubscribe(display_snapshot_peer, "pi-display-gap")
+            display_pty.emit("ABCDEFGHIJK")
+            display_peer = Peer()
+            display_hub.add(display_peer)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 5):
+                dispatch(
+                    display_peer,
+                    {"type": "terminal_subscribe", "terminalId": "pi-display-gap"},
+                    display_manager,
+                    None,
+                    display_hub,
+                )
+            display_replay = next(
+                m for m in display_peer.messages if m["type"] == "terminal_replay"
+            )
+            self.assertTrue(display_replay["truncated"])
+            self.assertEqual(display_replay["output"], "GHIJK")
+            self.assertEqual(display_replay["replayStartUtf8"], 10)
+            self.assertEqual(display_replay["replayEndUtf8"], 15)
+            self.assertIsNone(
+                _public_delta_after_snapshot(display_replay, display_snapshot_utf8),
+                "WS display cap gap must reject a stale snapshot before partial render",
+            )
+            display_manager.kill("pi-display-gap")
 
     def test_manager_detach_replay_orders_output_without_resending_input(self) -> None:
         events: list[dict] = []
