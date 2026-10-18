@@ -274,6 +274,148 @@ class TerminalParityTests(unittest.TestCase):
             self.assertEqual(replay["replayStartUtf8"], len("A".encode("utf-8")))
             self.assertEqual(replay["replayEndUtf8"], len("A\u65e5\U0001F642BC".encode("utf-8")))
 
+
+    def test_structured_spawn_preserves_exact_argv_cwd_and_env_without_shell(self) -> None:
+        spawned = []
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None, *, argv=None, env=None):
+            spawned.append({
+                "cwd": str(cwd),
+                "command": command,
+                "argv": list(argv) if argv is not None else None,
+                "env": dict(env) if env is not None else None,
+            })
+            return FakePty(on_data, on_exit)
+
+        argv = [
+            r"C:\Program Files\nodejs\node.exe",
+            "cli with spaces.js",
+            "日本語",
+            'quote"inside',
+            "a&b",
+            "semi;colon",
+            "single'quote",
+        ]
+        overlay = {"LANTERN_PI_TEST": "値🙂", "TERM": "pi-term"}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = root / "child"
+            cwd.mkdir()
+            before = os.environ.copy()
+            manager = TerminalManager(root, lambda _event: None, pty_factory=factory)
+            info = manager.create_argv(
+                "structured",
+                cwd,
+                argv,
+                90,
+                30,
+                "Structured",
+                env=overlay,
+            )
+            self.assertTrue(info["running"])
+            self.assertEqual(len(spawned), 1)
+            self.assertEqual(spawned[0]["argv"], argv)
+            self.assertIsNone(spawned[0]["command"])
+            self.assertEqual(Path(spawned[0]["cwd"]), cwd.resolve())
+            self.assertEqual(spawned[0]["env"], overlay)
+            self.assertEqual(os.environ, before)
+            self.assertNotIn("argv", info)
+            self.assertNotIn("env", info)
+
+    def test_structured_spawn_rejects_empty_argv_command_mix_and_outside_cwd(self) -> None:
+        calls = []
+
+        def factory(*args, **kwargs):
+            calls.append((args, kwargs))
+            return FakePty(args[4], args[5])
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manager = TerminalManager(root, lambda _event: None, pty_factory=factory)
+            with self.assertRaisesRegex(ValueError, "argv"):
+                manager.create_argv("empty", root, [])
+            with self.assertRaisesRegex(TypeError, "argv"):
+                manager.create_argv("string-is-not-argv", root, "node")
+            with self.assertRaisesRegex(ValueError, "both"):
+                manager.create(
+                    "both",
+                    root,
+                    command="echo no",
+                    argv=["node", "cli.js"],
+                )
+            with self.assertRaisesRegex(ValueError, "inside"):
+                manager.create_argv("outside", root.parent, ["node"])
+            self.assertEqual(calls, [])
+
+    def test_structured_spawn_env_overlay_inherits_defaults_without_parent_mutation(self) -> None:
+        from lantern.terminal import _build_pty_env
+
+        with patch.dict(os.environ, {}, clear=True):
+            defaults = _build_pty_env()
+            self.assertEqual(defaults["TERM"], "xterm-256color")
+            self.assertEqual(defaults["LANG"], "en_US.UTF-8")
+
+        with patch.dict(os.environ, {"LANTERN_PARENT_SENTINEL": "present"}, clear=False):
+            before = os.environ.copy()
+            child = _build_pty_env({"TERM": "custom-term", "PI_UNICODE": "Việt🙂"})
+            self.assertEqual(child["LANTERN_PARENT_SENTINEL"], "present")
+            self.assertEqual(child["TERM"], "custom-term")
+            self.assertEqual(child["LANG"], os.environ.get("LANG", "en_US.UTF-8"))
+            self.assertEqual(child["PI_UNICODE"], "Việt🙂")
+            self.assertEqual(os.environ, before)
+            child["LANTERN_PARENT_SENTINEL"] = "changed"
+            self.assertEqual(os.environ["LANTERN_PARENT_SENTINEL"], "present")
+
+        with self.assertRaisesRegex(TypeError, "strings"):
+            _build_pty_env({"BAD": 1})
+
+
+    def test_structured_spawn_dispatches_same_argv_env_contract_to_native_backend(self) -> None:
+        captured = []
+
+        def backend(argv, cwd, cols, rows, on_data, on_exit, env_overlay=None):
+            captured.append((list(argv), cwd, cols, rows, dict(env_overlay or {})))
+            return FakePty(on_data, on_exit)
+
+        argv = ["node", "cli.js", "a&b", "日本語"]
+        overlay = {"TERM": "custom", "PI_FLAG": "値"}
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(Path(td), lambda _event: None)
+            for platform, target in (("nt", "WinConPty"), ("posix", "PosixPty")):
+                captured.clear()
+                with patch("lantern.terminal.os.name", platform), patch(
+                    f"lantern.terminal.{target}", side_effect=backend
+                ):
+                    manager._spawn_native(
+                        "x",
+                        Path(td),
+                        80,
+                        24,
+                        lambda _data: None,
+                        lambda _code: None,
+                        argv=argv,
+                        env=overlay,
+                    )
+                self.assertEqual(
+                    captured,
+                    [(argv, str(Path(td)), 80, 24, overlay)],
+                    f"{target} must receive the same structured argv/env contract",
+                )
+
+    def test_ordinary_create_keeps_legacy_factory_signature(self) -> None:
+        calls = []
+
+        def legacy_factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            calls.append((term_id, str(cwd), cols, rows, command))
+            return FakePty(on_data, on_exit)
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(Path(td), lambda _event: None, pty_factory=legacy_factory)
+            manager.create("shell", td, 80, 24, "Shell")
+            manager.run_command("cmd", td, "echo hi", "Command")
+            self.assertEqual(calls[0][-1], None)
+            self.assertEqual(calls[1][-1], "echo hi")
+
     def test_resize_rename_input_and_restart_exited_id(self) -> None:
         events = []
         spawned = {}

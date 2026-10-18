@@ -15,7 +15,7 @@ import time
 import unittest
 from pathlib import Path
 
-from lantern.terminal import TerminalManager, WinConPty
+from lantern.terminal import TerminalManager
 
 
 def _pi_argv(session_dir: Path) -> list[str]:
@@ -66,17 +66,9 @@ class NativePiTerminalManagerE2E(unittest.TestCase):
             session_dir = root / "sessions"
             session_dir.mkdir()
             argv = _pi_argv(session_dir)
-            spawned: list[list[str]] = []
-
-            def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
-                self.assertIsNone(command, "Pi proof must not use shell command wrapping")
-                spawned.append(argv.copy())
-                return WinConPty(argv, str(cwd), cols, rows, on_data, on_exit)
-
             manager = TerminalManager(
                 root,
                 events.append,
-                pty_factory=factory,
                 flush_ms=0.01,
             )
             term_id = "pi-native-poc"
@@ -100,13 +92,24 @@ class NativePiTerminalManagerE2E(unittest.TestCase):
                 self.fail(f"Pi TUI output did not contain {needle!r}; tail={last[-1200:]!r}")
 
             try:
-                info = manager.create(term_id, root, 100, 32, "Native Pi POC")
+                self.assertIs(getattr(manager.pty_factory, "__self__", None), manager)
+                info = manager.create_argv(
+                    term_id,
+                    root,
+                    argv,
+                    100,
+                    32,
+                    "Native Pi POC",
+                    env={"LANTERN_PI_NATIVE_HARNESS": "1"},
+                )
                 self.assertTrue(info["running"])
                 self.assertTrue(info["generation"])
                 self.assertEqual((info["cols"], info["rows"]), (100, 32))
-                self.assertEqual(spawned, [argv])
+                self.assertNotIn("argv", info)
+                self.assertNotIn("env", info)
                 self.assertNotIn("-Command", argv)
                 self.assertNotIn("/C", argv)
+                self.assertNotIn("-lc", argv)
 
                 # Allow startup/extensions to settle before opening local UI.
                 time.sleep(8.0)
