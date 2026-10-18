@@ -51,7 +51,7 @@
     baseline: '', lastSaved: '', roundtripSafe: false, approvedReformat: false,
     draftTimer: 0, diffTimer: 0, checkTimer: 0, host: null, status: null,
     saveButton: null, closeButton: null, details: null,
-    sourceArea: null, sourceBackdrop: null, sourceDeletions: null, visualDiffFallback: null, hunks: [],
+    sourceHost: null, visualDiffFallback: null, hunks: [],
     workHash: null, workState: 'clean', ackedText: '', piTurn: null, applyingPi: false,
     savedSincePreview: false, switchingFromPaged: false,
   };
@@ -135,22 +135,6 @@
     ? view.lastSaved.replace(/\r\n?/g, '\n') : view.lastSaved);
   const diffApi = () => globalThis.LanternMarkdownDiff;
   const diffBaseline = () => String(view.baseline || '');
-  const syncSourceBackdrop = () => {
-    if (!view.sourceArea || !view.sourceBackdrop) return;
-    view.sourceBackdrop.style.transform =
-      'translate(' + (-view.sourceArea.scrollLeft) + 'px,' + (-view.sourceArea.scrollTop) + 'px)';
-    if (view.sourceDeletions) {
-      const area = view.sourceArea;
-      const style = getComputedStyle(area);
-      const lineHeight = parseFloat(style.lineHeight) || 21;
-      const paddingTop = parseFloat(style.paddingTop) || 16;
-      for (const row of view.sourceDeletions.children) {
-        const at = Number(row.dataset.line) * lineHeight + paddingTop - area.scrollTop;
-        row.hidden = at < 0 || at > area.clientHeight - 32;
-        row.style.top = at + 'px';
-      }
-    }
-  };
   const hunkButtons = index => {
     const group = document.createElement('span');
     group.className = 'md-hunk-actions';
@@ -228,47 +212,9 @@
     }
   };
 
-  const renderSourceDiff = (hunks, draftText) => {
-    if (!view.sourceArea || !view.sourceBackdrop || !view.sourceDeletions) return;
-    const lines = String(draftText || '').replace(/\r\n?/g, '\n').split('\n');
-    const classes = Array.from({length: Math.max(1, lines.length)}, () => new Set());
-
-    for (const hunk of hunks) {
-      if (hunk.kind === 'add' || hunk.kind === 'mod') {
-        for (let i = hunk.draftStart; i < hunk.draftEnd; i++) {
-          if (classes[i]) classes[i].add(hunk.kind === 'add' ? 'md-diff-add' : 'md-diff-mod');
-        }
-      }
-      if (hunk.baseText?.length) {
-        const at = Math.max(0, Math.min(classes.length - 1, hunk.draftStart));
-        classes[at].add('md-diff-delete-anchor');
-
-      }
-    }
-    view.sourceBackdrop.textContent = '';
-    const fragment = document.createDocumentFragment();
-    for (let i = 0; i < classes.length; i++) {
-      const line = document.createElement('span');
-      line.className = 'md-source-diff-line ' + [...classes[i]].join(' ');
-      line.textContent = lines[i] || ' ';
-      fragment.append(line);
-    }
-    view.sourceBackdrop.append(fragment);
-    view.sourceDeletions.textContent = '';
-    for (const [index, hunk] of hunks.entries()) {
-      const row = document.createElement('div');
-      row.className = 'md-source-deletion';
-      row.dataset.line = String(hunk.draftStart);
-      const old = document.createElement('span');
-      old.className = 'md-source-deletion-text';
-      old.textContent = hunk.baseText?.length
-        ? '− ' + hunk.baseText.join(' ↵ ') : '+ ' + hunk.draftText.join(' ↵ ');
-      old.title = old.textContent;
-      row.append(old, hunkButtons(index));
-      view.sourceDeletions.append(row);
-    }
-    view.sourceDeletions.hidden = !hunks.length;
-    syncSourceBackdrop();
+  const renderSourceDiff = hunks => {
+    if (view.mode !== 'source' || !view.instance?.setHunks) return;
+    view.instance.setHunks(hunks);
   };
   const clearPreviewDiff = () => {
     for (const node of preview.querySelectorAll('.md-preview-diff-add,.md-preview-diff-mod')) {
@@ -551,22 +497,6 @@
     globalThis.__lanternMdPaged?.cancelBotTurn?.();
   };
 
-  const replaceTextareaText = (area, nextText) => {
-    const current = area.value;
-    if (current === nextText) return false;
-    let startAt = 0;
-    const common = Math.min(current.length, nextText.length);
-    while (startAt < common && current.charCodeAt(startAt) === nextText.charCodeAt(startAt)) startAt++;
-    let oldEnd = current.length;
-    let newEnd = nextText.length;
-    while (oldEnd > startAt && newEnd > startAt &&
-           current.charCodeAt(oldEnd - 1) === nextText.charCodeAt(newEnd - 1)) {
-      oldEnd--; newEnd--;
-    }
-    area.setRangeText(nextText.slice(startAt, newEnd), startAt, oldEnd, 'preserve');
-    return true;
-  };
-
   const applyWorkingText = async (text, hash, { backed = true } = {}) => {
     const next = String(text ?? '');
     const bookmark = capturePosition();
@@ -574,8 +504,8 @@
     if (!view.active || view.mode === 'preview') {
       await renderDraftPreview(next);
       preview.hidden = false;
-    } else if (view.mode === 'source' && view.sourceArea) {
-      if (replaceTextareaText(view.sourceArea, next)) view.revision += 1;
+    } else if (view.mode === 'source' && view.instance?.replaceExternalText) {
+      if (view.instance.replaceExternalText(next)) view.revision += 1;
     } else if (view.mode === 'visual') {
       const engine = await loadBundle();
       const host = view.host?.querySelector('.md-visual-host');
@@ -833,6 +763,22 @@
     }).catch(err => { window.__lanternCrepePromise = null; throw err; });
     return window.__lanternCrepePromise;
   };
+  const loadSourceBundle = async () => {
+    if (window.LanternSourceEditor) return window.LanternSourceEditor;
+    if (window.__lanternSourcePromise) return window.__lanternSourcePromise;
+    window.__lanternSourcePromise = new Promise((resolve, reject) => {
+      ensureShellStyle();
+      const script = document.createElement('script');
+      script.src = '/static/vendor/lantern-source-editor.min.js';
+      script.nonce = nonce;
+      script.onload = () => window.LanternSourceEditor
+        ? resolve(window.LanternSourceEditor)
+        : reject(new Error('Source editor not initialized'));
+      script.onerror = () => reject(new Error('Offline Source editor asset unavailable'));
+      document.head.appendChild(script);
+    }).catch(err => { window.__lanternSourcePromise = null; throw err; });
+    return window.__lanternSourcePromise;
+  };
   const downloadDraft = () => {
     const content = getEditorText();
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
@@ -848,9 +794,7 @@
 
   function renderToolbar(kind, sourceText = '') {
     ensureShellStyle();
-    view.sourceArea = null;
-    view.sourceBackdrop = null;
-    view.sourceDeletions = null;
+    view.sourceHost = null;
     view.visualDiffFallback = null;
     const shell = document.createElement('section');
     shell.className = 'md-visual-shell';
@@ -860,29 +804,12 @@
     editorHost.id = 'md-visual-edit-' + escapeCss(path);
     if (kind === 'source') {
       const wrap = document.createElement('div');
-      wrap.className = 'md-source-diff-wrap';
-      const backdrop = document.createElement('div');
-      backdrop.className = 'md-source-diff-backdrop';
-      const backdropContent = document.createElement('div');
-      backdropContent.className = 'md-source-diff-backdrop-content';
-      backdrop.append(backdropContent);
-      const area = document.createElement('textarea');
-      area.className = 'md-source-area';
-      area.setAttribute('aria-label', 'Markdown source');
-      area.spellcheck = false;
-      area.wrap = 'off';
-      area.value = sourceText;
-      area.addEventListener('input', changed);
-      area.addEventListener('scroll', syncSourceBackdrop, {passive: true});
-      const deleted = document.createElement('div');
-      deleted.className = 'md-source-deletions';
-      deleted.hidden = true;
-      wrap.append(backdrop, area, deleted);
+      wrap.className = 'md-source-editor-wrap';
+      const mount = document.createElement('div');
+      mount.className = 'md-source-editor-mount';
+      wrap.append(mount);
       editorHost.append(wrap);
-      view.sourceArea = area;
-      view.sourceBackdrop = backdropContent;
-      view.sourceDeletions = deleted;
-      view.instance = { getMarkdown: () => area.value, focus: () => area.focus(), destroy: () => {} };
+      view.sourceHost = mount;
     }
     shell.append(editorHost);
     if (kind === 'visual') {
@@ -1029,8 +956,14 @@
     const oldSafe = view.roundtripSafe;
     const oldApproved = view.approvedReformat;
     let engine = null;
-    try { if (kind === 'visual') engine = await loadBundle(); }
-    catch (error) { status('Cannot load Visual editor: ' + error.message, 'error'); return; }
+    try {
+      if (kind === 'visual') engine = await loadBundle();
+      else if (kind === 'source') engine = await loadSourceBundle();
+    } catch (error) {
+      status('Cannot load ' + (kind === 'source' ? 'Source' : 'Visual') +
+        ' editor: ' + error.message, 'error');
+      return;
+    }
     view.loading = true;
     restoreButtons();
     clearTimeout(view.draftTimer);
@@ -1044,6 +977,8 @@
       const editorHost = renderToolbar(kind, contents);
       if (kind === 'visual') {
         view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
+      } else if (kind === 'source') {
+        view.instance = engine.createSourceMarkdown(view.sourceHost, contents, changed, actionHunk);
       }
       const converted = getEditorText();
       const safeRoundtrip = cleanLineEndings(converted) === cleanLineEndings(contents);
@@ -1217,7 +1152,11 @@
         await restorePosition('visual', bookmark, y);
         return;
       }
-      const engine = kind === 'visual' ? await loadBundle() : null;
+      const engine = kind === 'visual'
+        ? await loadBundle()
+        : kind === 'source'
+          ? await loadSourceBundle()
+          : null;
       const recovered = await drafts.read().catch(() => null);
       if (recovered?.mode !== 'paged' && typeof recovered?.content === 'string' &&
           recovered.content !== contents) {
@@ -1238,6 +1177,8 @@
       preview.hidden = true;
       if (kind === 'visual') {
         view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
+      } else if (kind === 'source') {
+        view.instance = engine.createSourceMarkdown(view.sourceHost, contents, changed, actionHunk);
       }
       view.mode = kind;
       const restoredDraft = contents !== doc.content;

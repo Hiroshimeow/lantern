@@ -191,8 +191,10 @@
   function capture(mode, preview = document.querySelector('article.md-preview')) {
     if (!preview) return null;
     if (mode === 'source') {
-      const source = document.querySelector('textarea.md-source-area');
-      return source ? captureSource(source) : null;
+      const instance = globalThis.__lanternMdVisual?.state?.instance;
+      return typeof instance?.sourceBookmark === 'function'
+        ? instance.sourceBookmark()
+        : null;
     }
     if (mode === 'visual' || mode === 'paged') {
       const paged = globalThis.__lanternMdPaged;
@@ -259,10 +261,10 @@
     if (!bookmark || !preview) return false;
     if (mode === 'preview' && !preview.hidden) return restorePreview(preview, bookmark);
     if (mode === 'source') {
-      const area = document.querySelector('textarea.md-source-area');
-      if (!area) return false;
-      selectLine(area, bookmark.line, bookmark);
-      return true;
+      const instance = globalThis.__lanternMdVisual?.state?.instance;
+      return typeof instance?.restoreBookmark === 'function'
+        ? !!instance.restoreBookmark(bookmark)
+        : false;
     }
     if (mode === 'visual' || mode === 'paged') {
       const paged = globalThis.__lanternMdPaged;

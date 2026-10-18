@@ -64,9 +64,25 @@ await build({
   sourcemap:false,
   logLevel:'info',
 });
+// Source is an independent CodeMirror bundle. Preview and Visual must not
+// download it unless the user explicitly opens Source.
+const sourceOut=path.join(vendor,'lantern-source-editor.min.js');
+await build({
+  entryPoints:[path.join(root,'tools','source_markdown_entry.js')],
+  outfile:sourceOut,
+  bundle:true,
+  platform:'browser',
+  format:'iife',
+  target:['chrome114','firefox115','safari16'],
+  minify:true,
+  legalComments:'external',
+  sourcemap:false,
+  logLevel:'info',
+});
 const artifactPaths = [out, out.replace(/\.js$/, '.css'), out + '.LEGAL.txt',
   imageCropOut, imageCropOut + '.LEGAL.txt',
-  worker, worker + '.LEGAL.txt', codeBlockOut, codeBlockOut+'.LEGAL.txt'];
+  worker, worker + '.LEGAL.txt', codeBlockOut, codeBlockOut+'.LEGAL.txt',
+  sourceOut, sourceOut+'.LEGAL.txt'];
 const artifacts = {};
 for (const file of artifactPaths) {
   if (fs.existsSync(file)) {
@@ -77,7 +93,9 @@ for (const file of artifactPaths) {
 const manifestPath = path.join(vendor, 'lantern-crepe.manifest.json');
 const manifestTmp = manifestPath + '.tmp';
 fs.writeFileSync(manifestTmp, JSON.stringify({
-  dependencies: {'@milkdown/crepe':'7.22.2', esbuild:'0.28.2', 'markdown-it':'14.3.1',cropperjs:'2.3.0'},
+  dependencies: {'@milkdown/crepe':'7.22.2', codemirror:'6.0.2',
+    '@codemirror/theme-one-dark':'6.1.3', esbuild:'0.28.2',
+    'markdown-it':'14.3.1',cropperjs:'2.3.0'},
   artifacts,
 }, null, 2) + '\n');
 fs.renameSync(manifestTmp, manifestPath);
