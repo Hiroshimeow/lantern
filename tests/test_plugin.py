@@ -606,6 +606,14 @@ class MarkdownPreviewTests(unittest.TestCase):
             ".mermaid-diagram{border:0;padding:0;break-inside:avoid-page;page-break-inside:avoid}",
             page,
         )
+        self.assertIn(
+            ".mermaid-output svg[aria-roledescription=\"gantt\"] text{font-size:20px!important}",
+            page,
+        )
+        self.assertIn(
+            ".mermaid-output svg[aria-roledescription=\"gantt\"] .titleText{font-size:24px!important}",
+            page,
+        )
         self.assertNotIn("break-before:page", page)
 
     def test_mermaid_vendor_uses_pinned_tiny_build_and_yielded_warm_parse(self) -> None:
