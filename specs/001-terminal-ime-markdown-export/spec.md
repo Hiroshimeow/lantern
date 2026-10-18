@@ -174,7 +174,7 @@ Parse adversarial rendered output with stdlib `html.parser`. Every emitted tag, 
 
 ## Mermaid contract
 
-Pin Mermaid **11.17.2** locally only after T5.
+Pin Mermaid **11.17.2** locally only after T5. The production browser asset may use the official `@mermaid-js/tiny` **11.17.2** build when it preserves all seven required types and the one-local-request/offline contract; this is the upstream Mermaid subset, not a version downgrade or a CDN runtime dependency.
 
 T5 records:
 - official Mermaid 11.17.2 source/tag, SHA-256, and npm integrity hash;
@@ -186,7 +186,9 @@ T5 records:
 - static inspection that the selected browser bundle has no literal dynamic `import(` / planned runtime chunks, while treating T7's zero-extra-request network log as the binding proof that no runtime fetch is required;
 - re-audit trigger: reconsider the pin when an applicable Mermaid release ships KaTeX >=0.18.2.
 
-Do not enable a KaTeX trust option. The KaTeX advisory requires an existing prototype-pollution foothold; document the remaining exposure as residual risk constrained by `securityLevel:"strict"`, the nonce CSP, and no eval rather than claiming the advisory is absent.
+Performance-delta review for the Tiny build must record its own source URL, file SHA-256, package integrity/license, upstream feature removals, seven-type browser proof, and zero-extra-request proof. Do not carry the full standalone build's KaTeX reachability claim forward without evidence; the Tiny README states KaTeX rendering is removed, while any remaining generic math/config tokens are not by themselves reachability proof.
+
+Do not enable a KaTeX trust option. For any selected build that actually includes affected KaTeX runtime code, the advisory requires an existing prototype-pollution foothold; document that remaining exposure as residual risk constrained by `securityLevel:"strict"`, the nonce CSP, and no eval rather than claiming the advisory is absent.
 
 Initialize once with:
 - `startOnLoad:false`;
@@ -205,7 +207,7 @@ Cap rendering at 24 diagrams, render sequentially with yields, isolate malformed
 
 Required types: flowchart, sequence, class, state, ER, Gantt, pie.
 
-Performance acceptance uses attributed Chromium timings with a statistical first-load guardrail. The reviewed 3.57 MB Mermaid standalone bundle is loaded **lazily at most once per preview page** and only when at least one Mermaid fence exists; pages without Mermaid must never request or parse it. Diagram input stays bounded by `maxTextSize:60000`, `maxEdges:500`, and 24 diagrams/page. Rendering is sequential, never concurrent, and Lantern yields after bundle load, after initialize, after each `mermaid.render()` before DOM insertion, and between diagrams. In the accepted **FJP Playwright Chromium** harness, use the actual served product preview HTML and nine fresh browser contexts. Isolate the attributable first-load Mermaid bundle parse/evaluation task by preventing helper initialize/render work from contaminating the measurement. First-load PASS requires **the median of the nine isolated samples <=300 ms and no individual sample >500 ms**. Every subsequent Mermaid initialize, diagram render, and PNG/export main-thread task attributable to the governed operation must be **<=100 ms**. A larger aggregate full-page Long Task entry is not by itself a Mermaid failure unless evidence attributes the over-budget task to bundle parse/evaluation or another governed Mermaid operation. A first-load median >300 ms, any individual first-load sample >500 ms, any subsequent governed task >100 ms, or loss of the lazy/bounded/sequential/yield invariants keeps acceptance INCOMPLETE and triggers re-review.
+Performance acceptance uses attributed Chromium timings with a statistical first-load guardrail. The selected **2,516,850-byte official `@mermaid-js/tiny` 11.17.2 browser bundle** is loaded **lazily at most once per preview page** and only when at least one Mermaid fence exists; pages without Mermaid must never request or parse it. Diagram input stays bounded by `maxTextSize:60000`, `maxEdges:500`, and 24 diagrams/page. Rendering is sequential, never concurrent. Lantern yields after bundle load, after initialize, after an explicit `mermaid.parse(source)` warm-parse, after each `mermaid.render()` before DOM insertion, and between diagrams; this warm parse is a real governed task, not excluded work. In the accepted **FJP Playwright Chromium** harness, use the actual served product preview HTML and nine fresh browser contexts. Isolate the attributable first-load Mermaid bundle parse/evaluation task by preventing helper initialize/parse/render work from contaminating the measurement. First-load PASS requires **the median of the nine isolated samples <=300 ms and no individual sample >500 ms**. Every subsequent Mermaid initialize, explicit parse, diagram render, and PNG/export main-thread task attributable to the governed operation must be **<=100 ms**. A larger aggregate full-page Long Task entry is not by itself a Mermaid failure unless evidence attributes the over-budget task to bundle parse/evaluation or another governed Mermaid operation. A first-load median >300 ms, any individual first-load sample >500 ms, any subsequent governed task >100 ms, or loss of the lazy/bounded/sequential/yield invariants keeps acceptance INCOMPLETE and triggers re-review.
 
 ## PNG contract
 
@@ -263,7 +265,7 @@ Chromium PDF acceptance: selectable text, visible arrowheads, readable diagrams/
 - M-A8: all seven types export non-empty PNGs with correct filenames and no `SecurityError`.
 - M-A9: Print / Save as PDF meets the Chromium contract.
 - M-A10: no CDN and no new Python runtime dependency.
-- M-A11: non-Mermaid pages make zero Mermaid-bundle requests; Mermaid loads lazily at most once per Mermaid preview page; in the accepted FJP Playwright Chromium harness, measure nine fresh contexts using actual served product HTML with helper initialize/render excluded from first-load attribution, and require the median isolated first-load bundle parse/evaluation task <=300 ms with no individual sample >500 ms; every subsequent initialize/render/PNG-export main-thread task attributable to the governed Mermaid operation is <=100 ms; aggregate page Long Tasks count as failures only when attribution ties them to a governed over-budget Mermaid operation.
+- M-A11: non-Mermaid pages make zero Mermaid-bundle requests; Mermaid loads lazily at most once per Mermaid preview page; in the accepted FJP Playwright Chromium harness, measure nine fresh contexts using actual served product HTML with helper initialize/parse/render excluded from first-load attribution, and require the median isolated first-load bundle parse/evaluation task <=300 ms with no individual sample >500 ms; every subsequent initialize/explicit-parse/render/PNG-export main-thread task attributable to the governed Mermaid operation is <=100 ms; aggregate page Long Tasks count as failures only when attribution ties them to a governed over-budget Mermaid operation.
 - M-A12: renewed owner/security sign-off explicitly accepts the interactive Markdown same-origin connect/Worker capability and its residual same-origin risk; `LANTERN-SEC-001` remains open for preview iframe containment and uploaded same-origin HTML/SVG isolation. Until that renewed sign-off is personally recorded, M-A12 is INCOMPLETE.
 
 ### Release gates

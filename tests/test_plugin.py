@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import re
 import tempfile
 import unittest
@@ -590,6 +591,48 @@ class MarkdownPreviewTests(unittest.TestCase):
         self.assertTrue(plain_scripts[0].get("nonce"))
         self.assertIn("defer", plain_scripts[0])
         self.assertLess(plain_page.index('/static/markdown_preview.js'), plain_page.index("</head>"))
+
+    def test_print_css_keeps_mermaid_diagram_atomic_and_natural_size(self) -> None:
+        page = self.render_markdown("## Diagram\n\n```mermaid\nflowchart LR\nA-->B\n```\n")
+        self.assertIn(
+            ".mermaid-output svg{width:auto!important;max-width:100%!important;max-height:85vh!important;height:auto!important}",
+            page,
+        )
+        self.assertIn(
+            ".md-preview h1,.md-preview h2,.md-preview h3{break-after:avoid-page}",
+            page,
+        )
+        self.assertIn(
+            ".mermaid-diagram{border:0;padding:0;break-inside:avoid-page;page-break-inside:avoid}",
+            page,
+        )
+        self.assertNotIn("break-before:page", page)
+
+    def test_mermaid_vendor_uses_pinned_tiny_build_and_yielded_warm_parse(self) -> None:
+        static = Path(plugin.__file__).resolve().parent / "static"
+        asset = static / "vendor" / "mermaid-11.17.2.min.js"
+        data = asset.read_bytes()
+        self.assertLess(len(data), 2_600_000)
+        self.assertIn(b"@mermaid-js/tiny@11.17.2", data[:512])
+        self.assertEqual(
+            hashlib.sha256(data).hexdigest(),
+            "9a04338a4eb73a5bd449461f12becad20311fa75a6ca41f89fce8f055e7c2bfd",
+        )
+
+        notice = (static / "vendor" / "mermaid-11.17.2.LICENSES.txt").read_text(encoding="utf-8")
+        self.assertIn("@mermaid-js/tiny 11.17.2", notice)
+        self.assertIn("9a04338a4eb73a5bd449461f12becad20311fa75a6ca41f89fce8f055e7c2bfd", notice)
+        self.assertIn(
+            "sha512-PmFr1c5cSfNf5AngLLR98DrbvR4U5KeD7I+hQkGqG5w5Veu3QT4dG0qu9f99cpn/sKj2XxRBK0q7EL6hr9NY/A==",
+            notice,
+        )
+
+        helper = (static / "markdown_preview.js").read_text(encoding="utf-8")
+        parse_pos = helper.index("await runtime.parse(source);")
+        parse_yield_pos = helper.index("await yieldUi();", parse_pos)
+        render_pos = helper.index("await runtime.render(", parse_yield_pos)
+        self.assertLess(parse_pos, parse_yield_pos)
+        self.assertLess(parse_yield_pos, render_pos)
 
     def test_markdown_helper_clears_opener_before_mermaid_work(self) -> None:
         helper = Path(plugin.__file__).resolve().parent / "static" / "markdown_preview.js"

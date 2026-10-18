@@ -119,7 +119,7 @@ The Mermaid track is independent of T0-C. T5 accepts a deliberate 11.17.2 pin, s
 - record that the bundle has no literal dynamic `import(` hits/planned runtime chunks, but treat T7's zero-extra-request network log as the binding self-contained proof;
 - never enable a KaTeX trust option; record the residual-risk reasoning and re-audit when an applicable Mermaid release ships KaTeX >=0.18.2.
 
-Only after the dependency gate, vendor the bundle.
+Only after the dependency gate, vendor the bundle. A later measured performance regression may switch the production file to the official `@mermaid-js/tiny` build at the **same pinned 11.17.2 version** only with its own source/hash/integrity/license delta, seven-required-type proof, and zero-extra-request proof; it must not become a runtime CDN dependency.
 
 Runtime config:
 
@@ -131,7 +131,7 @@ Runtime config:
 - conservative `dompurifyConfig`;
 - secure list includes `secure`, `securityLevel`, `startOnLoad`, `suppressErrorRendering`, `maxTextSize`, `maxEdges`, `theme`, `themeCSS`, `themeVariables`, `fontFamily`, `htmlLabels`, `dompurifyConfig`.
 
-Cap at 24 diagrams/page, render sequentially with yields, isolate malformed/oversized blocks, and use a light diagram container. Do not load/parse Mermaid on pages with no Mermaid fence; lazily load the nonce-authorized local bundle at most once when at least one Mermaid fence exists. For first-load acceptance, use the accepted **FJP Playwright Chromium** harness against the actual served product preview HTML in nine fresh browser contexts. Prevent helper initialize/render work from contaminating attribution and measure the attributable Mermaid bundle parse/evaluation main-thread task in each context. PASS requires **median <=300 ms and no individual sample >500 ms**. After that load, require every attributable Mermaid initialize, diagram-render, and PNG/export main-thread task to complete in **<=100 ms**. Yield after bundle load, after initialize, after each render generation before DOM insertion, and between diagrams. Keep DOM insertion/bind as a separate short phase and never render diagrams concurrently. A larger aggregate full-page Long Task is not a failure without attribution to an over-budget governed Mermaid operation; first-load median >300 ms, any individual first-load sample >500 ms, subsequent governed task >100 ms, or loss of the bounded/lazy/sequential/yield invariants triggers re-review.
+Cap at 24 diagrams/page, render sequentially with yields, isolate malformed/oversized blocks, and use a light diagram container. Do not load/parse Mermaid on pages with no Mermaid fence; lazily load the nonce-authorized local bundle at most once when at least one Mermaid fence exists. Before each render, explicitly `mermaid.parse(source)` then yield so parser/diagram-registry setup is not compounded into the render task; the parse remains a measured governed task. For first-load acceptance, use the accepted **FJP Playwright Chromium** harness against the actual served product preview HTML in nine fresh browser contexts. Prevent helper initialize/parse/render work from contaminating attribution and measure the attributable Mermaid bundle parse/evaluation main-thread task in each context. PASS requires **median <=300 ms and no individual sample >500 ms**. After that load, require every attributable Mermaid initialize, explicit parse, diagram-render, and PNG/export main-thread task to complete in **<=100 ms**. Yield after bundle load, after initialize, after explicit parse, after each render generation before DOM insertion, and between diagrams. Keep DOM insertion/bind as a separate short phase and never render diagrams concurrently. A larger aggregate full-page Long Task is not a failure without attribution to an over-budget governed Mermaid operation; first-load median >300 ms, any individual first-load sample >500 ms, subsequent governed task >100 ms, or loss of the bounded/lazy/sequential/yield invariants triggers re-review.
 
 ## PNG and Print / PDF
 
@@ -143,7 +143,7 @@ PNG:
 - target 2x density within 8192 px/side and about 32 MP;
 - `toBlob` must succeed; name `<doc>-diagram-N.png`; revoke URLs after use.
 
-Print / Save as PDF waits for pending Mermaid renders before `window.print()`. Print CSS explicitly uses `color-scheme:light`, white background/dark text, hides UI/source fallback for successful diagrams, sets `.table-wrap,.md-code{overflow:visible}`, `th{position:static}`, `pre{white-space:pre-wrap;overflow:visible}`, and responsive SVG.
+Print / Save as PDF waits for pending Mermaid renders before `window.print()`. Print CSS explicitly uses `color-scheme:light`, white background/dark text, hides UI/source fallback for successful diagrams, sets `.table-wrap,.md-code{overflow:visible}`, `th{position:static}`, `pre{white-space:pre-wrap;overflow:visible}`, keeps Mermaid SVG at natural aspect ratio with `max-width:100%`/`max-height:85vh`, and marks each Mermaid wrapper `break-inside:avoid-page` (plus legacy `page-break-inside:avoid`) so one diagram is not split across sheets.
 
 ## Verification
 

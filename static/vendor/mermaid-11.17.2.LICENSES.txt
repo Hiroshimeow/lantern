@@ -1,10 +1,11 @@
-﻿Mermaid 11.17.2 retained license and third-party notice
+﻿@mermaid-js/tiny 11.17.2 retained license and upstream notice
 
-Intentional pin: Mermaid 11.17.2 is retained instead of the checked 12.1.0 because the reviewed standalone bundle is materially smaller; this is not a latest-version claim.
-Bundle SHA-256: 581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8
-npm integrity: sha512-V6K3C8EBdEsPFZXSKMJe6ppQOENxuHARr9GvHX4hh47lAbhMRD9qf4oEK7LoaRQxULMa80/qt5gHO73aCleBBg==
-Residual advisory: GHSA-238p-pmpm-9mq7 affects bundled KaTeX 0.16.47 (range >=0.11.0 <0.18.2). No KaTeX trust option is enabled. Re-audit when an applicable Mermaid release ships KaTeX >=0.18.2.
-lodash-es 4.18.1 is present/runtime-reachable in the reviewed bundle. Chevrotain 11.1.2 is type-only/not runtime-reachable in the reviewed all-in-one bundle.
+Performance variant: Lantern vendors the official @mermaid-js/tiny 11.17.2 browser build from the Mermaid repository instead of the 3.57 MB full standalone build. The upstream Tiny README describes it as the web-optimized Mermaid subset and explicitly removes Mindmap, Architecture, KaTeX rendering, and Mermaid's internal lazy-loading. Lantern requires the seven verified types (flowchart, sequence, class, state, ER, Gantt, pie) and supplies its own one-request page-level lazy load.
+Vendored file source: https://cdn.jsdelivr.net/npm/@mermaid-js/tiny@11.17.2/dist/mermaid.tiny.min.js
+Vendored file SHA-256: 9a04338a4eb73a5bd449461f12becad20311fa75a6ca41f89fce8f055e7c2bfd
+npm package integrity: sha512-PmFr1c5cSfNf5AngLLR98DrbvR4U5KeD7I+hQkGqG5w5Veu3QT4dG0qu9f99cpn/sKj2XxRBK0q7EL6hr9NY/A==
+Package metadata declares MIT and no runtime dependencies. The upstream Tiny README states KaTeX rendering is removed; the vendored file contains no KaTeX 0.16.47 version string or renderToString/katex.min.css markers. Generic schema/config text containing "katex" remains, so this notice does not claim a proof that every math-related token was erased. No KaTeX trust option is enabled.
+The historical full-Mermaid third-party inventory below is retained conservatively for notice coverage; it is not a claim that every listed package remains runtime-reachable in the Tiny subset. Re-audit reachability when changing the vendored Mermaid/Tiny version.
 
 === Mermaid MIT license ===
 The MIT License (MIT)

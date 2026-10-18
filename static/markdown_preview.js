@@ -71,6 +71,9 @@
     temp.style.pointerEvents = "none";
     document.body.appendChild(temp);
     try {
+      // Warm the parser/diagram registry in its own task so the governed render task stays bounded.
+      await runtime.parse(source);
+      await yieldUi();
       const result = await runtime.render(`lantern-mermaid-${index}`, source, temp);
       // Keep Mermaid generation and DOM insertion as separate browser tasks.
       await yieldUi();
