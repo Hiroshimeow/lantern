@@ -148,5 +148,29 @@ class LiveMarkdownTests(unittest.TestCase):
         self.assertEqual(Path(state["tempPath"]).read_bytes(), self.target.read_bytes())
 
 
+    def test_accept_copies_external_mixed_eol_bytes_exactly_without_rewriting_real(self):
+        original = b"\xef\xbb\xbf# Title\r\n\nBefore\r\nTail"
+        changed = b"\xef\xbb\xbf# Title\r\n\nAfter\r\nTail"
+        self.target.write_bytes(original)
+        initial = self.store.get("report.md")
+        temp = Path(initial["tempPath"])
+        self.assertEqual(temp.read_bytes(), original)
+
+        self.target.write_bytes(changed)
+        pending = self.store.get("report.md")
+        self.assertEqual(pending["state"], "pending")
+        self.assertEqual(temp.read_bytes(), original)
+
+        accepted = self.store.save(
+            "report.md",
+            expect_hash=pending["currentVersion"],
+            expect_saved_version=initial["saved"]["version"],
+        )
+        self.assertEqual(accepted["state"], "clean")
+        self.assertEqual(self.target.read_bytes(), changed)
+        self.assertEqual(temp.read_bytes(), changed)
+        self.assertFalse(changed.endswith((b"\n", b"\r")))
+
+
 if __name__ == "__main__":
     unittest.main()

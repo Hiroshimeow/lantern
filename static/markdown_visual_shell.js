@@ -59,9 +59,10 @@
   const escapeCss = s => s.replace(/[^A-Za-z0-9_-]/g, '-');
   const cleanLineEndings = text => String(text || '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const status = (message, kind = 'info') => {
-    if (view.status) {
-      view.status.textContent = message;
-      view.status.dataset.kind = kind;
+    const target = view.status || topStatus;
+    if (target) {
+      target.textContent = message;
+      target.dataset.kind = kind;
     }
   };
   const api = async (url, options = {}) => {
@@ -485,7 +486,17 @@
       if (!quiet) status('Project .md changed externally. Diff reflects the live file.', 'info');
       return true;
     } catch (error) {
-      if (!quiet) console.warn('Cannot refresh Markdown from disk:', error);
+      if (error.status === 404) {
+        const firstMissing = view.workState !== 'missing';
+        view.conflict = true;
+        view.workState = 'missing';
+        if (firstMissing && view.active && view.instance) {
+          await drafts.write(getEditorText()).catch(() => {});
+        }
+        status('Project .md unavailable; local recovery text retained.', 'error');
+      } else if (!quiet) {
+        console.warn('Cannot refresh Markdown from disk:', error);
+      }
       return false;
     } finally {
       refreshingReal = false;

@@ -73,10 +73,13 @@ class LiveMarkdownE2E(unittest.TestCase):
         try:
             page.goto(self.base+"/api/plugin/preview?p=vscode.md")
             page.wait_for_function("() => !!window.__lanternMdVisual.state.currentVersion")
+            started=time.perf_counter()
             target.write_text(edited,encoding="utf-8",newline="")
             page.wait_for_function(
                 "() => !!document.querySelector('.md-preview-diff-mod')",
                 timeout=13000)
+            detected=time.perf_counter()-started
+            self.assertLess(detected,5.5,detected)
             self.assertIn("VS Code edited.",page.locator("article.md-preview").inner_text())
             state=page.evaluate("async()=>(await(await fetch('/api/work?p=vscode.md')).json())")
             self.assertEqual(state["saved"]["content"],before)
@@ -327,6 +330,322 @@ class LiveMarkdownE2E(unittest.TestCase):
             second.keyboard.press("Control+s")
             self.assertEqual(file.read_text(encoding="utf-8"),"# Concurrent\n\nClient A.\n")
         finally:ctx.close()
+
+
+    def test_accept_then_browser_undo_redo_keeps_md_temp_at_accepted_version(self):
+        file=self.root/"accept-undo.md"
+        original="# Accept undo\n\nBase.\n"
+        accepted="# Accept undo\n\nAccepted.\n"
+        redone="# Accept undo\n\nAccepted. MORE\n"
+        file.write_text(original,encoding="utf-8",newline="")
+        ctx=self.browser.new_context(viewport={"width":1100,"height":800})
+        page=ctx.new_page()
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=accept-undo.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            area=page.get_by_role("textbox",name="Markdown source")
+            area.wait_for(timeout=12000)
+            area.fill(accepted)
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('Accepted.')",
+                timeout=12000)
+            page.keyboard.press("Control+s")
+            page.wait_for_function(
+                "() => document.documentElement.dataset.mdPendingHunks === '0'",
+                timeout=12000)
+            accepted_state=page.evaluate(
+                "async()=>(await(await fetch('/api/work?p=accept-undo.md')).json())")
+            temp=Path(accepted_state["tempPath"])
+            self.assertEqual(temp.read_bytes(),file.read_bytes())
+            accepted_temp=temp.read_bytes()
+
+            area.click()
+            page.keyboard.press("Control+End")
+            page.keyboard.press("ArrowLeft")
+            page.keyboard.type(" MORE")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('Accepted. MORE')",
+                timeout=12000)
+            self.assertEqual(file.read_text(encoding="utf-8"),redone)
+            self.assertEqual(temp.read_bytes(),accepted_temp)
+
+            for _ in range(5):
+                page.keyboard.press("Control+z")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.endsWith('Accepted.\\n')",
+                timeout=12000)
+            self.assertEqual(file.read_text(encoding="utf-8"),accepted)
+            self.assertEqual(temp.read_bytes(),accepted_temp)
+
+            for _ in range(5):
+                page.keyboard.press("Control+y")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('Accepted. MORE')",
+                timeout=12000)
+            self.assertEqual(file.read_text(encoding="utf-8"),redone)
+            self.assertEqual(temp.read_bytes(),accepted_temp)
+            final=page.evaluate(
+                "async()=>(await(await fetch('/api/work?p=accept-undo.md')).json())")
+            self.assertEqual(final["saved"]["content"],accepted)
+            self.assertEqual(final["work"]["content"],redone)
+        finally:
+            ctx.close()
+
+    def test_two_browser_clients_nonoverlap_changes_auto_merge_without_lost_update(self):
+        file=self.root/"two-clients-nonoverlap.md"
+        original="# Concurrent\n\nA old.\n\nB old.\n"
+        first_text="# Concurrent\n\nA NEW.\n\nB old.\n"
+        second_text="# Concurrent\n\nA old.\n\nB NEW.\n"
+        merged="# Concurrent\n\nA NEW.\n\nB NEW.\n"
+        file.write_text(original,encoding="utf-8",newline="")
+        ctx=self.browser.new_context(viewport={"width":1100,"height":800})
+        first,second=ctx.new_page(),ctx.new_page()
+        try:
+            for page in (first,second):
+                page.goto(self.base+"/api/plugin/preview?p=two-clients-nonoverlap.md")
+                page.get_by_role("button",name="Source",exact=True).click()
+                page.get_by_role("textbox",name="Markdown source").wait_for(timeout=12000)
+
+            first.get_by_role("textbox",name="Markdown source").fill(first_text)
+            first.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('A NEW.')",
+                timeout=12000)
+            second.get_by_role("textbox",name="Markdown source").fill(second_text)
+            second.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('A NEW.')"
+                " && window.__lanternMdVisual.state.lastSaved.includes('B NEW.')",
+                timeout=12000)
+            self.assertEqual(file.read_text(encoding="utf-8"),merged)
+            self.assertFalse(second.evaluate(
+                "() => window.__lanternMdVisual.state.conflict"))
+            self.assertEqual(
+                second.get_by_role("textbox",name="Markdown source").input_value(),
+                merged)
+            state=second.evaluate(
+                "async()=>(await(await fetch('/api/work?p=two-clients-nonoverlap.md')).json())")
+            self.assertEqual(state["saved"]["content"],original)
+            self.assertEqual(state["work"]["content"],merged)
+        finally:
+            ctx.close()
+
+
+
+    def test_external_poll_refreshes_source_and_visual_without_accepting_temp(self):
+        for mode in ("source","visual"):
+            with self.subTest(mode=mode):
+                name=f"external-{mode}.md"
+                file=self.root/name
+                original=f"# External {mode}\n\nOld block.\n"
+                edited=f"# External {mode}\n\nNew block.\n"
+                file.write_text(original,encoding="utf-8",newline="")
+                ctx=self.browser.new_context(viewport={"width":1150,"height":800})
+                page=ctx.new_page()
+                try:
+                    page.goto(self.base+"/api/plugin/preview?p="+name)
+                    if mode=="source":
+                        page.get_by_role("button",name="Source",exact=True).click()
+                        editor=page.get_by_role("textbox",name="Markdown source")
+                    else:
+                        page.get_by_role("button",name="Edit visually",exact=True).click()
+                        editor=page.locator(".md-visual-host .ProseMirror")
+                    editor.wait_for(timeout=24000)
+                    initial=page.evaluate(
+                        f"async()=>(await(await fetch('/api/work?p={name}')).json())")
+                    temp=Path(initial["tempPath"])
+                    accepted_bytes=temp.read_bytes()
+                    file.write_text(edited,encoding="utf-8",newline="")
+                    if mode=="source":
+                        page.wait_for_function(
+                            "() => document.querySelector('.md-source-area')?.value.includes('New block.')",
+                            timeout=9000)
+                    else:
+                        page.wait_for_function(
+                            "() => document.querySelector('.md-visual-host .ProseMirror')?.textContent.includes('New block.')",
+                            timeout=9000)
+                    state=page.evaluate(
+                        f"async()=>(await(await fetch('/api/work?p={name}')).json())")
+                    self.assertEqual(state["saved"]["content"],original)
+                    self.assertEqual(state["work"]["content"],edited)
+                    self.assertEqual(temp.read_bytes(),accepted_bytes)
+                    self.assertFalse(page.evaluate(
+                        "() => window.__lanternMdVisual.state.conflict"))
+                finally:
+                    ctx.close()
+
+    def test_external_delete_and_rename_fail_visible_without_recreating_old_path(self):
+        for action in ("delete","rename"):
+            with self.subTest(action=action):
+                name=f"missing-{action}.md"
+                file=self.root/name
+                moved=self.root/(name+".moved")
+                original="# Missing path\n\nKeep recovery text.\n"
+                file.write_text(original,encoding="utf-8",newline="")
+                ctx=self.browser.new_context(viewport={"width":1100,"height":800})
+                page=ctx.new_page()
+                try:
+                    page.goto(self.base+"/api/plugin/preview?p="+name)
+                    area=None
+                    if action=="delete":
+                        page.get_by_role("button",name="Source",exact=True).click()
+                        area=page.get_by_role("textbox",name="Markdown source")
+                        area.wait_for(timeout=12000)
+                        file.unlink()
+                    else:
+                        page.locator("article.md-preview").wait_for(timeout=12000)
+                        file.rename(moved)
+                    page.wait_for_function(
+                        "() => window.__lanternMdVisual.state.conflict === true",
+                        timeout=9000)
+                    self.assertFalse(file.exists())
+                    if area is not None:
+                        self.assertEqual(area.input_value(),original)
+                    else:
+                        self.assertIn("Keep recovery text.",
+                                      page.locator("article.md-preview").inner_text())
+                    status=page.locator("[data-md-status]").inner_text().lower()
+                    self.assertTrue(
+                        "unavailable" in status or "missing" in status,
+                        status)
+                    page.wait_for_timeout(700)
+                    self.assertFalse(file.exists())
+                finally:
+                    ctx.close()
+                    if moved.exists():
+                        moved.unlink()
+
+
+    def test_external_overlap_during_local_write_retains_local_recovery_and_real_external_bytes(self):
+        file=self.root/"external-overlap.md"
+        original="# External overlap\n\nOriginal line.\n"
+        local="# External overlap\n\nLocal browser line.\n"
+        external="# External overlap\n\nVS Code line.\n"
+        file.write_text(original,encoding="utf-8",newline="")
+        ctx=self.browser.new_context(viewport={"width":1100,"height":800})
+        page=ctx.new_page()
+        intercepted=[]
+        def race(route):
+            if not intercepted:
+                intercepted.append(True)
+                file.write_text(external,encoding="utf-8",newline="")
+            route.continue_()
+        page.route("**/api/work/write",race)
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=external-overlap.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            area=page.get_by_role("textbox",name="Markdown source")
+            area.wait_for(timeout=12000)
+            area.fill(local)
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.conflict === true",
+                timeout=12000)
+            self.assertTrue(intercepted)
+            self.assertEqual(file.read_text(encoding="utf-8"),external)
+            self.assertEqual(area.input_value(),local)
+            state=page.evaluate(
+                "async()=>(await(await fetch('/api/work?p=external-overlap.md')).json())")
+            self.assertEqual(state["saved"]["content"],original)
+            self.assertEqual(state["work"]["content"],external)
+            status=page.locator("[data-md-status]").inner_text().lower()
+            self.assertIn("overlapping",status)
+        finally:
+            ctx.close()
+
+    def test_self_write_echo_and_large_noop_poll_do_not_write_or_rebuild(self):
+        file=self.root/"poll-echo.md"
+        original="# Poll echo\n\nOriginal.\n"
+        edited="# Poll echo\n\nEdited.\n"
+        file.write_text(original,encoding="utf-8",newline="")
+        ctx=self.browser.new_context(viewport={"width":1200,"height":800})
+        page=ctx.new_page()
+        requests=[]
+        page.on("request",lambda req:requests.append((req.method,req.url)))
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=poll-echo.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            area=page.get_by_role("textbox",name="Markdown source")
+            area.wait_for(timeout=12000)
+            requests.clear()
+            area.fill(edited)
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('Edited.')",
+                timeout=12000)
+            posts=lambda:sum(
+                method=="POST" and "/api/work/write" in url
+                for method,url in requests)
+            self.assertEqual(posts(),1,requests)
+            posts_after_write=posts()
+            page.wait_for_timeout(3200)
+            self.assertEqual(posts(),posts_after_write,requests)
+            self.assertEqual(file.read_text(encoding="utf-8"),edited)
+        finally:
+            ctx.close()
+
+        large=self.root/"poll-large.md"
+        text="# Large poll\n\n"+"".join(
+            f"line {i:05d} "+("x"*70)+"\n" for i in range(6200))
+        large.write_text(text,encoding="utf-8",newline="")
+        ctx=self.browser.new_context(viewport={"width":1200,"height":800})
+        page=ctx.new_page()
+        requests=[]
+        page.on("request",lambda req:requests.append((req.method,req.url)))
+        try:
+            page.goto(self.base+"/api/plugin/preview?p=poll-large.md")
+            page.get_by_role("button",name="Source",exact=True).click()
+            area=page.get_by_role("textbox",name="Markdown source")
+            area.wait_for(timeout=18000)
+            page.evaluate("""() => {
+              const host=document.querySelector('.md-source-diff-backdrop-content');
+              window.__pollMutations={records:0,added:0,removed:0};
+              new MutationObserver(records=>{
+                for(const r of records){
+                  __pollMutations.records++;
+                  __pollMutations.added+=r.addedNodes.length;
+                  __pollMutations.removed+=r.removedNodes.length;
+                }
+              }).observe(host,{childList:true,subtree:true});
+            }""")
+            requests.clear()
+            page.wait_for_timeout(3200)
+            work_gets=sum(
+                method=="GET" and "/api/work?p=poll-large.md" in url
+                for method,url in requests)
+            work_posts=sum(
+                method=="POST" and "/api/work/write" in url
+                for method,url in requests)
+            mutations=page.evaluate("() => window.__pollMutations")
+            self.assertGreaterEqual(work_gets,1,requests)
+            self.assertEqual(work_posts,0,requests)
+            self.assertEqual(mutations,{"records":0,"added":0,"removed":0})
+
+            page.evaluate("""() => {
+              Object.defineProperty(document,'hidden',{
+                configurable:true,get:()=>true
+              });
+              document.dispatchEvent(new Event('visibilitychange'));
+            }""")
+            requests.clear()
+            page.wait_for_timeout(2900)
+            hidden_gets=sum(
+                method=="GET" and "/api/work?p=poll-large.md" in url
+                for method,url in requests)
+            self.assertEqual(hidden_gets,0,requests)
+
+            page.evaluate("""() => {
+              Object.defineProperty(document,'hidden',{
+                configurable:true,get:()=>false
+              });
+              document.dispatchEvent(new Event('visibilitychange'));
+            }""")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.loading === false",
+                timeout=3000)
+            page.wait_for_timeout(300)
+            visible_gets=sum(
+                method=="GET" and "/api/work?p=poll-large.md" in url
+                for method,url in requests)
+            self.assertGreaterEqual(visible_gets,1,requests)
+        finally:
+            ctx.close()
 
     def test_wide_window_left_aligns_content_beside_chat(self):
         file=self.root/"layout.md"
