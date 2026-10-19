@@ -128,7 +128,7 @@ class TerminalParityTests(unittest.TestCase):
                 max_output=32,
                 flush_ms=0.01,
             )
-            manager.create("one", td, 80, 24, "One")
+            first = manager.create("one", td, 80, 24, "One")
             manager.create("two", td, 80, 24, "Two")
             with self.assertRaises(RuntimeError):
                 manager.create("three", td, 80, 24, "Three")
@@ -137,8 +137,11 @@ class TerminalParityTests(unittest.TestCase):
             spawned["one"].emit("abcdef")
             spawned["one"].exit(7)
             time.sleep(0.04)
-            kinds = [e["type"] for e in events if e.get("terminalId") == "one"]
+            one_events = [e for e in events if e.get("terminalId") == "one"]
+            kinds = [e["type"] for e in one_events]
             self.assertLess(kinds.index("terminal_output"), kinds.index("terminal_exit"))
+            exit_event = next(e for e in one_events if e["type"] == "terminal_exit")
+            self.assertEqual(exit_event["generation"], first["generation"])
             info = {t["id"]: t for t in manager.list()}
             self.assertFalse(info["one"]["running"])
             self.assertTrue(info["two"]["running"])
@@ -426,7 +429,8 @@ class TerminalParityTests(unittest.TestCase):
             return p
 
         with tempfile.TemporaryDirectory() as td:
-            manager = TerminalManager(Path(td), lambda _event: None, pty_factory=factory)
+            events = []
+            manager = TerminalManager(Path(td), events.append, pty_factory=factory)
             first = manager.create("same-id", td)
             manager.kill("same-id")
             second = manager.create("same-id", td)
@@ -443,6 +447,16 @@ class TerminalParityTests(unittest.TestCase):
 
             self.assertTrue(manager.kill_if_generation("same-id", second["generation"]))
             self.assertTrue(spawned["same-id"][1].closed)
+            exit_events = [
+                event
+                for event in events
+                if event.get("type") == "terminal_exit"
+                and event.get("terminalId") == "same-id"
+            ]
+            self.assertEqual(
+                [event.get("generation") for event in exit_events],
+                [first["generation"], second["generation"]],
+            )
 
     def test_resize_rename_input_and_restart_exited_id(self) -> None:
         events = []

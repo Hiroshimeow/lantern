@@ -342,6 +342,7 @@ class TerminalEntry:
     retained_start_utf8: int = 0
     stream_end_utf8: int = 0
     command: Optional[str] = None
+    control_owner: Optional[str] = None
     generation: str = field(default_factory=lambda: uuid4().hex)
     seq: int = 0
 
@@ -432,6 +433,7 @@ class TerminalManager:
         *,
         argv: Optional[Sequence[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        control_owner: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not self.enabled:
             raise RuntimeError("Terminal is disabled in config")
@@ -492,7 +494,16 @@ class TerminalManager:
                         argv=list(argv) if argv is not None else None,
                         env=dict(env) if env is not None else None,
                     )
-                entry = TerminalEntry(term_id, title.strip() or "Terminal", str(safe_cwd), cols, rows, pty_obj, command=command)
+                entry = TerminalEntry(
+                    term_id,
+                    title.strip() or "Terminal",
+                    str(safe_cwd),
+                    cols,
+                    rows,
+                    pty_obj,
+                    command=command,
+                    control_owner=control_owner,
+                )
                 holder["entry"] = entry
                 self.live[term_id] = entry
                 try:
@@ -529,12 +540,33 @@ class TerminalManager:
         title: str = "Terminal",
         *,
         env: Optional[Mapping[str, str]] = None,
+        control_owner: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self.create(term_id, cwd, cols, rows, title, argv=argv, env=env)
+        return self.create(
+            term_id,
+            cwd,
+            cols,
+            rows,
+            title,
+            argv=argv,
+            env=env,
+            control_owner=control_owner,
+        )
 
     def run_command(self, term_id: str, cwd: str | Path, command: str, title: str, cols: int = 80, rows: int = 24) -> Dict[str, Any]:
         self.kill(term_id, emit_exit=False)
         return self.create(term_id, cwd, cols, rows, title, command=command)
+
+    def control_owner(self, term_id: str, *, include_history: bool = False) -> Optional[str]:
+        with self.lock:
+            entry = self.live.get(term_id)
+            if entry is not None and entry.running:
+                return entry.control_owner
+            if include_history:
+                entry = self.history.get(term_id)
+                if entry is not None:
+                    return entry.control_owner
+            return None
 
     def _append_retained(self, entry: TerminalEntry, data: str) -> None:
         entry.output += data
@@ -554,7 +586,7 @@ class TerminalManager:
             self._append_retained(entry, data)
             entry.seq += 1
             seq = entry.seq
-        self.emit({"type": "terminal_output", "terminalId": entry.id, "generation": entry.generation, "seq": seq, "data": data})
+        self.emit({"type": "terminal_output", "terminalId": entry.id, "generation": entry.generation, "seq": seq, "data": data, "_controlOwner": entry.control_owner})
 
     def _handle_exit(self, entry: TerminalEntry, code: int) -> None:
         evicted = []
@@ -574,7 +606,7 @@ class TerminalManager:
                 old.pty.close(graceful=False)
             except Exception:
                 pass
-        self.emit({"type": "terminal_exit", "terminalId": entry.id, "exitCode": code})
+        self.emit({"type": "terminal_exit", "terminalId": entry.id, "generation": entry.generation, "exitCode": code, "_controlOwner": entry.control_owner})
         self._emit_list()
 
     def input(self, term_id: str, data: str) -> None:
@@ -620,7 +652,7 @@ class TerminalManager:
             except Exception:
                 pass
             if emit_exit:
-                self.emit({"type": "terminal_exit", "terminalId": term_id, "exitCode": None})
+                self.emit({"type": "terminal_exit", "terminalId": term_id, "generation": entry.generation, "exitCode": None, "_controlOwner": entry.control_owner})
             self._emit_list()
             return
         if hist:
@@ -649,7 +681,7 @@ class TerminalManager:
         except Exception:
             pass
         if emit_exit:
-            self.emit({"type": "terminal_exit", "terminalId": term_id, "exitCode": None})
+            self.emit({"type": "terminal_exit", "terminalId": term_id, "generation": entry.generation, "exitCode": None, "_controlOwner": entry.control_owner})
         self._emit_list()
         return True
 
@@ -707,6 +739,14 @@ class TerminalManager:
     def replay(self) -> Iterable[tuple[str, str]]:
         with self.lock:
             return [(e.id, e.output) for e in [*self.live.values(), *self.history.values()] if e.output]
+
+    def replay_excluding_control_owner(self, owner: str) -> Iterable[tuple[str, str]]:
+        with self.lock:
+            return [
+                (entry.id, entry.output)
+                for entry in [*self.live.values(), *self.history.values()]
+                if entry.output and entry.control_owner != owner
+            ]
 
     def _emit_list(self) -> None:
         self.emit({"type": "terminal_list", "terminals": self.list()})

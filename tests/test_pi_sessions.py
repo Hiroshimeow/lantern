@@ -18,7 +18,7 @@ class FakeTerminalManager:
         self.conditional_kills: list[tuple[str, str]] = []
         self.fail_next = False
 
-    def create_argv(self, term_id, cwd, argv, cols=80, rows=24, title="Terminal", *, env=None):
+    def create_argv(self, term_id, cwd, argv, cols=80, rows=24, title="Terminal", *, env=None, control_owner=None):
         cwd = Path(cwd).resolve()
         if self.root not in (cwd, *cwd.parents):
             raise ValueError("Terminal cwd must be inside the configured root")
@@ -34,6 +34,7 @@ class FakeTerminalManager:
             "rows": rows,
             "title": title,
             "env": dict(env or {}),
+            "control_owner": control_owner,
             "generation": generation,
             "running": True,
             "exitCode": None,
@@ -112,6 +113,7 @@ class PiSessionRegistryTests(unittest.TestCase):
             self.assertTrue(session["running"])
             self.assertNotIn("argv", session)
             self.assertNotIn("env", session)
+            self.assertNotIn("controlOwner", session)
 
             created = terminal.created[0]
             self.assertEqual(
@@ -129,6 +131,7 @@ class PiSessionRegistryTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(created["env"], {"PI_ENV": "server-owned"})
+            self.assertEqual(created["control_owner"], "pi")
             self.assertNotIn("--offline", created["argv"])
             self.assertNotIn("--model", created["argv"])
             self.assertNotIn("-Command", created["argv"])

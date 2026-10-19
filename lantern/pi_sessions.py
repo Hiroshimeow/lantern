@@ -102,6 +102,7 @@ class PiSessionRegistry:
                 rows,
                 title,
                 env=self.env,
+                control_owner="pi",
             )
         except Exception:
             try:
