@@ -1,0 +1,8 @@
+test_vscode_live_change_shows_preview_diff_and_per_hunk_undo (tests.test_live_markdown_e2e.LiveMarkdownE2E.test_vscode_live_change_shows_preview_diff_and_per_hunk_undo) ... ok
+test_accept_then_browser_undo_redo_keeps_md_temp_at_accepted_version (tests.test_live_markdown_e2e.LiveMarkdownE2E.test_accept_then_browser_undo_redo_keeps_md_temp_at_accepted_version) ... ok
+test_self_write_echo_and_large_noop_poll_do_not_write_or_rebuild (tests.test_live_markdown_e2e.LiveMarkdownE2E.test_self_write_echo_and_large_noop_poll_do_not_write_or_rebuild) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 23.001s
+
+OK

@@ -3,7 +3,7 @@ You are continuing the Lantern Markdown/app lane on FJP.
 Workspace:
 C:\Users\DuongNH66\Desktop\git\lantern
 
-Branch / expected HEAD:
+Branch / implementation checkpoint (handoff commits may be on top):
 main
 34276bdd8b35b65cd1b34947b3137c3497b552b9
 
@@ -24,10 +24,10 @@ Read FIRST, in order:
 14. specs/003-markdown-fidelity/plan.md
 15. specs/003-markdown-fidelity/tasks.md
 16. specs/003-markdown-fidelity/SOURCE_UX_PERFORMANCE_AUDIT_2026-10-17.md
-17. .plan/lantern-markdown-main-20261018/FJP_TRANSFER_HANDOFF_20261019.md
-18. .plan/lantern-markdown-main-20261018/lantern-markdown-main-20261018-plan_turn9_cdpa-idem-382a709ae8895eae9ec134d4.md
-19. .plan/lantern-markdown-main-20261018/lantern-markdown-main-20261018-review_turn15_cdpa-idem-382a709ae8895eae9ec134d4.md
-20. .plan/lantern-markdown-main-20261018/lantern-markdown-main-20261018-dev_turn14_cdpa-idem-382a709ae8895eae9ec134d4.md
+17. handoff/fjp-transfer-20261019/markdown/reports/FJP_TRANSFER_HANDOFF_20261019.md
+18. handoff/fjp-transfer-20261019/markdown/reports/lantern-markdown-main-20261018-plan_turn9_cdpa-idem-382a709ae8895eae9ec134d4.md
+19. handoff/fjp-transfer-20261019/markdown/reports/lantern-markdown-main-20261018-review_turn15_cdpa-idem-382a709ae8895eae9ec134d4.md
+20. handoff/fjp-transfer-20261019/markdown/reports/lantern-markdown-main-20261018-dev_turn14_cdpa-idem-382a709ae8895eae9ec134d4.md
 
 Mission:
 Continue all legally actionable Markdown/app work remaining from Spec 001 Markdown lane, Spec 002 Foundation closure/verification gates, and Spec 003, in dependency order.

@@ -1,0 +1,15 @@
+test_opening_mermaid_and_tables_never_saves_a_normalized_file (tests.test_md_visual_e2e.VisualMarkdownBrowserE2E.test_opening_mermaid_and_tables_never_saves_a_normalized_file) ... FAIL
+
+======================================================================
+FAIL: test_opening_mermaid_and_tables_never_saves_a_normalized_file (tests.test_md_visual_e2e.VisualMarkdownBrowserE2E.test_opening_mermaid_and_tables_never_saves_a_normalized_file)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "E:\git-project\lantern\tests\test_md_visual_e2e.py", line 331, in test_opening_mermaid_and_tables_never_saves_a_normalized_file
+    self.assertFalse(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 1 test in 12.784s
+
+FAILED (failures=1)

@@ -1,0 +1,49 @@
+
+  static\vendor\lantern-crepe.min.js             2.7mb ⚠️
+  static\vendor\lantern-crepe.min.css           76.5kb
+  static\vendor\lantern-crepe.min.js.LEGAL.txt   1.6kb
+
+⚡ Done in 366ms
+
+  static\vendor\lantern-image-crop.min.js            63.6kb
+  static\vendor\lantern-image-crop.min.js.LEGAL.txt   131b 
+
+⚡ Done in 52ms
+
+  static\vendor\lantern-md-segment-worker.min.js  146.7kb
+
+⚡ Done in 150ms
+
+  static\vendor\lantern-large-block.min.js  379.8kb
+
+⚡ Done in 99ms
+Lantern Crepe offline bundle: {
+  'lantern-crepe.min.js': {
+    bytes: 2788436,
+    sha256: '667832894bc73312de8e19caaf7ed6949819ea0c01effedac3f9c3f853675240'
+  },
+  'lantern-crepe.min.css': {
+    bytes: 78366,
+    sha256: 'e880d492012e75cb4b67655eef9597b5ef2aec7a60d01c0fb6d1cee52939b392'
+  },
+  'lantern-crepe.min.js.LEGAL.txt': {
+    bytes: 1679,
+    sha256: '4b183b8b263a3204d495216972cfb7d092d8a4c6ce6dd077e72f78793003e9de'
+  },
+  'lantern-image-crop.min.js': {
+    bytes: 65167,
+    sha256: '70194efa2d7bc71d9e2f693ebac90014ba236789588050d53cbf236495063f38'
+  },
+  'lantern-image-crop.min.js.LEGAL.txt': {
+    bytes: 131,
+    sha256: 'c0605fd352112ada262c5bb11ca427af387b86ca7fc8a08431a1dbfa5198549b'
+  },
+  'lantern-md-segment-worker.min.js': {
+    bytes: 150228,
+    sha256: '636d1539996e69d150c0dd3a25939955cbd5d03c512fcb5b5e2d3d6380d66d3b'
+  },
+  'lantern-large-block.min.js': {
+    bytes: 388898,
+    sha256: '5c0226bcf50a54ab95040bc12dbcb9550b270aaeb617db1dbb972e606e1ff7dd'
+  }
+}

@@ -1,4 +1,4 @@
-# FJP transfer handoff — Lantern Markdown lane — 2026-10-19
+# FJP transfer handoff â€” Lantern Markdown lane â€” 2026-10-19
 
 ## Destination
 - Device: FJP / LPP00374779A
@@ -8,7 +8,7 @@
 - Commit: feat(markdown): persist Source edits as exact patches
 - Remote: https://github.com/Hiroshimeow/lantern.git
 
-## Governing architecture/specs — read first
+## Governing architecture/specs â€” read first
 1. AGENTS.md
 2. docs/architecture/FOUNDATION_CURRENT.md
 3. docs/architecture/LANTERN_SYSTEM_ARCHITECTURE.md
@@ -79,13 +79,13 @@ Treat this as historical execution evidence only. FJP source continuation should
 
 ## Last role reports / continuation evidence
 Read these first after the specs:
-- .plan/lantern-markdown-main-20261018/lantern-markdown-main-20261018-plan_turn9_cdpa-idem-382a709ae8895eae9ec134d4.md
-- .plan/lantern-markdown-main-20261018/lantern-markdown-main-20261018-review_turn15_cdpa-idem-382a709ae8895eae9ec134d4.md
-- .plan/lantern-markdown-main-20261018/lantern-markdown-main-20261018-dev_turn14_cdpa-idem-382a709ae8895eae9ec134d4.md
+- handoff/fjp-transfer-20261019/markdown/reports/lantern-markdown-main-20261018-plan_turn9_cdpa-idem-382a709ae8895eae9ec134d4.md
+- handoff/fjp-transfer-20261019/markdown/reports/lantern-markdown-main-20261018-review_turn15_cdpa-idem-382a709ae8895eae9ec134d4.md
+- handoff/fjp-transfer-20261019/markdown/reports/lantern-markdown-main-20261018-dev_turn14_cdpa-idem-382a709ae8895eae9ec134d4.md
 
 There was no terminal dev_turn15 report from the stalled accepted hop. Do not invent one.
 
-All 273 files from the G6 team report directory are transferred to FJP.
+The FJP handoff tracks 303 Markdown report/evidence files from G6, including raw test/build logs and selected PDF/image artifacts. Dependency/source-mirror caches (for example cm6/mermaid repo mirrors) are intentionally excluded.
 
 ## Current implementation checkpoint
 HEAD includes the Markdown architecture/fidelity work through:
