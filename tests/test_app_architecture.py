@@ -73,6 +73,8 @@ class ArchitectureTests(unittest.TestCase):
                 self.assertIsNot(apps[0].ws, apps[1].ws)
                 self.assertIsNot(apps[0].terminal, apps[1].terminal)
                 self.assertIsNot(apps[0].bot, apps[1].bot)
+                self.assertIsNot(apps[0].pi, apps[1].pi)
+                self.assertNotEqual(apps[0].pi.state_dir, apps[1].pi.state_dir)
                 self.assertIsNot(apps[0].work, apps[1].work)
                 self.assertIsNot(apps[0].heavy_preview_slots, apps[1].heavy_preview_slots)
                 self.assertIsNot(apps[0].crop.lock, apps[1].crop.lock)

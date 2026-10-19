@@ -1291,6 +1291,8 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
     if visual_markdown:
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_table_interactions.js" defer></script>'
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_draft_diff.js" defer></script>'
+        helper_script += f'<script nonce="{h(nonce)}" src="/static/vendor/xterm.js" defer></script>'
+        helper_script += f'<script nonce="{h(nonce)}" src="/static/vendor/addon-fit.js" defer></script>'
         helper_script += f'<script nonce="{h(nonce)}" src="/static/chatbot.js" defer></script>'
     visual_script = (
         f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'
@@ -1319,7 +1321,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
     )
     table_style = ('<link rel="stylesheet" href="/static/markdown_table_interactions.css">'
                    if visual_markdown else '')
-    chat_style = ('<link rel="stylesheet" href="/static/chatbot.css">' if visual_markdown else '')
+    chat_style = ('<link rel="stylesheet" href="/static/vendor/xterm.css"><link rel="stylesheet" href="/static/chatbot.css">' if visual_markdown else '')
     edit_actions = (
         '<div class="md-edit-actions" data-md-edit-actions hidden>'
         '<button class="btn primary" type="button" data-action="md-save">Save</button>'

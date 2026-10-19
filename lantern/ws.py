@@ -594,7 +594,7 @@ def _legacy_snapshot_payload(terminal):
             "output": {k: s[-20000:] for k, s in output.items()}}, truncated
 
 
-def upgrade(handler, hub, terminal, scm, access=None, chat=None):
+def upgrade(handler, hub, terminal, scm, access=None, chat=None, pi=None):
     if not same_origin(handler):
         handler.send_error(403, "WebSocket Origin must match Host")
         return
@@ -671,7 +671,7 @@ def upgrade(handler, hub, terminal, scm, access=None, chat=None):
             received = None
             try:
                 received = json.loads(raw)
-                dispatch(peer, received, terminal, scm, hub, chat=chat)
+                dispatch(peer, received, terminal, scm, hub, chat=chat, pi=pi)
             except Exception as exc:
                 try:
                     peer.send(_terminal_error_reply(received, exc))
@@ -848,6 +848,42 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
     if typ.startswith("pi_session_") and hub is None:
         raise RuntimeError("Pi session hub is unavailable")
 
+    if typ.startswith("pi_session_") and pi is None:
+        raise RuntimeError("Pi session registry is unavailable")
+
+    if typ == "pi_session_sync":
+        peer.send({"type": "pi_session_state", "sessions": pi.list()})
+        return
+
+    if typ == "pi_session_create":
+        context = msg.get("context") if isinstance(msg.get("context"), dict) else {}
+        try:
+            cols = max(2, int(msg.get("cols") or 100))
+            rows = max(2, int(msg.get("rows") or 32))
+        except (TypeError, ValueError):
+            raise ValueError("Pi terminal dimensions must be integers") from None
+        title = str(msg.get("title") or "Pi").strip()[:120] or "Pi"
+        session = pi.create_for_context(
+            context_ref=context,
+            cols=cols,
+            rows=rows,
+            title=title,
+        )
+        peer.send({"type": "pi_session_created", "session": session})
+        return
+
+    if typ == "pi_session_stop":
+        session_id = str(msg.get("sessionId") or "")
+        generation = str(msg.get("generation") or "")
+        try:
+            current = pi.get(session_id)
+        except KeyError:
+            raise PiSessionError("pi_session_not_found", "Pi session not found") from None
+        if generation and current.get("generation") != generation:
+            raise PiSessionError("pi_session_stale", "stale session generation")
+        session = pi.stop(session_id)
+        peer.send({"type": "pi_session_stopped", "session": session})
+        return
     if typ == "pi_session_attach":
         session_id = str(msg.get("sessionId") or "")
         generation = str(msg.get("generation") or "")
