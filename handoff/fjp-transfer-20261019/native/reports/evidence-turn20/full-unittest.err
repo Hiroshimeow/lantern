@@ -1,0 +1,30 @@
+[04:15:12] 127.0.0.1 - "GET /api/info HTTP/1.1" 200 -
+[04:15:12] 127.0.0.1 - "GET /api/list?p=/ HTTP/1.1" 200 -
+[04:15:12] 127.0.0.1 - "GET /api/info HTTP/1.1" 200 -
+[04:15:12] 127.0.0.1 - "GET /api/list?p=/ HTTP/1.1" 200 -
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 404: 'Not Found'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 403: 'POST Origin must match Host'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 409: 'Conflict'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\threading.py:939: ResourceWarning: unclosed <socket.socket [closed] fd=324, family=2, type=1, proto=0>
+  self._os_thread_handle = _ThreadHandle()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 404: 'thumbnail unavailable'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+======================================================================
+FAIL: test_guard_blocks_saved_and_private_paths_but_allows_active_working_path (test_pi_working_copy_guard.PiWorkingCopyGuardTests.test_guard_blocks_saved_and_private_paths_but_allows_active_working_path)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "E:\git-project\lantern\.wt\lantern-bot\tests\test_pi_working_copy_guard.py", line 67, in test_guard_blocks_saved_and_private_paths_but_allows_active_working_path
+    self.assertIsNone(result["workRead"])
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'block': True, 'reason': 'Lantern keeps this logical file staged. Do not access the saved project path directly. Use workingPath from the newest <lantern_context>: C:\\Users\\admin\\AppData\\Local\\Temp\\tmpuxjrtsfm\\.lantern\\work\\doc\\doc.md'} is not None
+
+----------------------------------------------------------------------
+Ran 383 tests in 57.427s
+
+FAILED (failures=1, skipped=134)

@@ -1,0 +1,37 @@
+[21:04:22] 127.0.0.1 - "GET /api/info HTTP/1.1" 200 -
+[21:04:22] 127.0.0.1 - "GET /api/list?p=/ HTTP/1.1" 200 -
+[21:04:22] 127.0.0.1 - "GET /api/info HTTP/1.1" 200 -
+[21:04:22] 127.0.0.1 - "GET /api/list?p=/ HTTP/1.1" 200 -
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 404: 'Not Found'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 403: 'POST Origin must match Host'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 409: 'Conflict'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+======================================================================
+FAIL: test_per_server_heavy_preview_slots_cover_separate_clients (test_lan_multi_perf.LanPreviewConcurrencyTests.test_per_server_heavy_preview_slots_cover_separate_clients)
+Four concurrent clients: two parsers run, two reject without waiting.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "E:\git-project\lantern\.wt\lantern-bot\tests\test_lan_multi_perf.py", line 536, in test_per_server_heavy_preview_slots_cover_separate_clients
+    self.assertEqual(sorted(results), [200, 200, 503, 503])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: [200, 200, 200, 503] != [200, 200, 503, 503]
+
+First differing element 2:
+200
+503
+
+- [200, 200, 200, 503]
+?            ^ ^
+
++ [200, 200, 503, 503]
+?            ^ ^
+
+
+----------------------------------------------------------------------
+Ran 322 tests in 102.370s
+
+FAILED (failures=1, skipped=115)
