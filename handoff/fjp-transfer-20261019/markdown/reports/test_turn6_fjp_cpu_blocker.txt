@@ -1,0 +1,6 @@
+FJP controlled M-A11 retry blocker, 2026-10-18 JST
+Command: uv run --with psutil python -c "import psutil,time; print([psutil.cpu_percent(interval=1.0) for _ in range(5)])"
+Observed: [38.7, 46.8, 37.3, 60.6, 64.7]
+Controlled harness requirement: wait for host CPU <15% before each fresh context.
+Controlled run aborted after 120 s without meeting threshold; final pre_cpu=64.6.
+This is an environment/load blocker, not a product PASS/FAIL result.

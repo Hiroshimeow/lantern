@@ -1,0 +1,88 @@
+{
+  "cases": {
+    "read_only_text": {
+      "csp_meta": "default-src 'none'; script-src 'nonce-knQtweCLNUQC2NUSC3KO8rY_Bb0Dah6m'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'",
+      "script_count": 1,
+      "all_nonce_match": true,
+      "csp_response_header": "",
+      "has_three_modes": false,
+      "websocket": "blocked",
+      "fetch": "blocked:TypeError",
+      "worker": "created",
+      "meta_csp": "default-src 'none'; script-src 'nonce-hYEiX4-5dCP3GcNG2VhiytnEeZb0goL-'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'",
+      "has_source_button": false,
+      "console_errors": [
+        {
+          "type": "error",
+          "text": "Connecting to 'ws://127.0.0.1:50397/ws' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked."
+        },
+        {
+          "type": "error",
+          "text": "Connecting to 'http://127.0.0.1:50397/api/info' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked."
+        },
+        {
+          "type": "error",
+          "text": "Fetch API cannot load http://127.0.0.1:50397/api/info. Refused to connect because it violates the document's Content Security Policy."
+        },
+        {
+          "type": "error",
+          "text": "Creating a worker from 'http://127.0.0.1:50397/static/vendor/lantern-md-segment-worker.min.js' violates the following Content Security Policy directive: \"script-src 'nonce-hYEiX4-5dCP3GcNG2VhiytnEeZb0goL-'\". Note that 'w"
+        }
+      ]
+    },
+    "interactive_markdown": {
+      "csp_meta": "default-src 'none'; script-src 'nonce-VV6t4xB-JOIQOeeJV_XSKsY28qXTttiK'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'",
+      "script_count": 6,
+      "all_nonce_match": true,
+      "csp_response_header": "",
+      "has_three_modes": true,
+      "websocket": "opened",
+      "fetch": "ok",
+      "worker": "created",
+      "meta_csp": "default-src 'none'; script-src 'nonce-1wceEskuPVMgXaDUNTTPWUEaMvs6PaVH'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'",
+      "has_source_button": true,
+      "console_errors": []
+    },
+    "forced_001_on_markdown": {
+      "websocket": "blocked",
+      "fetch": "blocked:TypeError",
+      "worker": "created",
+      "meta_csp": "default-src 'none'; script-src 'nonce-F-vZfpPmbml12yMhuBzQpK69hebwtxst'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'",
+      "has_source_button": true,
+      "console_errors": [
+        {
+          "type": "error",
+          "text": "Connecting to 'http://127.0.0.1:50397/api/work?p=probe.md' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked."
+        },
+        {
+          "type": "error",
+          "text": "Fetch API cannot load http://127.0.0.1:50397/api/work?p=probe.md. Refused to connect because it violates the document's Content Security Policy."
+        },
+        {
+          "type": "error",
+          "text": "Connecting to 'ws://127.0.0.1:50397/ws' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked."
+        },
+        {
+          "type": "error",
+          "text": "Connecting to 'http://127.0.0.1:50397/api/info' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked."
+        },
+        {
+          "type": "error",
+          "text": "Fetch API cannot load http://127.0.0.1:50397/api/info. Refused to connect because it violates the document's Content Security Policy."
+        },
+        {
+          "type": "error",
+          "text": "Creating a worker from 'http://127.0.0.1:50397/static/vendor/lantern-md-segment-worker.min.js' violates the following Content Security Policy directive: \"script-src 'nonce-F-vZfpPmbml12yMhuBzQpK69hebwtxst'\". Note that 'w"
+        }
+      ]
+    }
+  },
+  "identity": {
+    "python": "3.13.9",
+    "ephemeral_port": 50397,
+    "edge": "155.0.4283.45"
+  },
+  "errors": [],
+  "fresh_nonce": true,
+  "proven": "spec conflict: restrictive 001 policy breaks interactive 003 dependencies"
+}

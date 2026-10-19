@@ -1,0 +1,154 @@
+[Reading 152 lines from start (total: 152 lines, 0 remaining)]
+
+{
+  "python": "3.14.3 (main, Mar 24 2026, 22:56:56) [MSC v.1944 64 bit (AMD64)]",
+  "baseline": "1b5939357bfd3748a1c56b5e491bc55026b0368b",
+  "head": "b2ffd886795840f0db570b8c07a913b406e68e80",
+  "workloads": {
+    "listing_1k": {
+      "n": 80,
+      "fixture_bytes": null,
+      "baseline": {
+        "median_ms": 678.4828,
+        "p95_ms": 1131.9954,
+        "cpu_s": 50.109375,
+        "peak_tree_rss_bytes": 51339264,
+        "body_lengths": [
+          85430
+        ]
+      },
+      "head": {
+        "median_ms": 706.6103,
+        "p95_ms": 1255.764,
+        "cpu_s": 50.890625,
+        "peak_tree_rss_bytes": 42369024,
+        "body_lengths": [
+          85430
+        ]
+      },
+      "ratios": {
+        "median_ms": 1.04145646728259,
+        "p95_ms": 1.1093366633822008,
+        "cpu_s": 1.0155908949173682,
+        "peak_tree_rss_bytes": 0.8252752513164193
+      },
+      "body_parity": true
+    },
+    "preview_100k": {
+      "n": 60,
+      "fixture_bytes": 102400,
+      "baseline": {
+        "median_ms": 195.27075,
+        "p95_ms": 326.0383,
+        "cpu_s": 11.1875,
+        "peak_tree_rss_bytes": 51998720,
+        "body_lengths": [
+          233905
+        ]
+      },
+      "head": {
+        "median_ms": 206.8749,
+        "p95_ms": 317.702,
+        "cpu_s": 11.515625,
+        "peak_tree_rss_bytes": 41734144,
+        "body_lengths": [
+          233905
+        ]
+      },
+      "ratios": {
+        "median_ms": 1.0594259508912625,
+        "p95_ms": 0.9744315315102551,
+        "cpu_s": 1.0293296089385475,
+        "peak_tree_rss_bytes": 0.8025994486018118
+      },
+      "body_parity": true
+    },
+    "terminal_replay_200k": {
+      "payload_bytes": 204800,
+      "runs": {
+        "baseline": [
+          {
+            "tree": "C:\\Users\\DuongNH66\\Desktop\\git\\lantern-test-base-turn4",
+            "payload_bytes": 204800,
+            "n": 300,
+            "median_ms": 1.9957,
+            "p95_ms": 2.7882,
+            "cpu_s": 0.625,
+            "rss_bytes": 27840512,
+            "frame_bytes": 205106,
+            "retained": 204800,
+            "seq": 1
+          },
+          {
+            "tree": "C:\\Users\\DuongNH66\\Desktop\\git\\lantern-test-base-turn4",
+            "payload_bytes": 204800,
+            "n": 300,
+            "median_ms": 1.55745,
+            "p95_ms": 2.1689,
+            "cpu_s": 0.515625,
+            "rss_bytes": 27152384,
+            "frame_bytes": 205106,
+            "retained": 204800,
+            "seq": 1
+          }
+        ],
+        "head": [
+          {
+            "tree": "C:\\Users\\DuongNH66\\Desktop\\git\\lantern-test-head-turn4",
+            "payload_bytes": 204800,
+            "n": 300,
+            "median_ms": 1.3851499999999999,
+            "p95_ms": 1.5284,
+            "cpu_s": 0.40625,
+            "rss_bytes": 27918336,
+            "frame_bytes": 205106,
+            "retained": 204800,
+            "seq": 1
+          },
+          {
+            "tree": "C:\\Users\\DuongNH66\\Desktop\\git\\lantern-test-head-turn4",
+            "payload_bytes": 204800,
+            "n": 300,
+            "median_ms": 1.2062,
+            "p95_ms": 1.4458,
+            "cpu_s": 0.375,
+            "rss_bytes": 27774976,
+            "frame_bytes": 205106,
+            "retained": 204800,
+            "seq": 1
+          }
+        ]
+      },
+      "baseline": {
+        "median_ms": 1.776575,
+        "p95_ms": 2.47855,
+        "cpu_s": 1.140625,
+        "rss_bytes": 27840512,
+        "frame_bytes": [
+          205106
+        ],
+        "retained": [
+          204800
+        ]
+      },
+      "head": {
+        "median_ms": 1.295675,
+        "p95_ms": 1.4870999999999999,
+        "cpu_s": 0.78125,
+        "rss_bytes": 27918336,
+        "frame_bytes": [
+          205106
+        ],
+        "retained": [
+          204800
+        ]
+      },
+      "ratios": {
+        "median_ms": 0.7293106117107355,
+        "p95_ms": 0.5999878961489581,
+        "cpu_s": 0.684931506849315,
+        "rss_bytes": 1.0027953508900986
+      }
+    }
+  }
+}

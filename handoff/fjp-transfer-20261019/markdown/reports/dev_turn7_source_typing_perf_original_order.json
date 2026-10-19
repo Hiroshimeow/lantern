@@ -1,0 +1,825 @@
+{
+  "schema": 1,
+  "browser": {
+    "channel": "msedge",
+    "version": "155.0.4283.62"
+  },
+  "target": {
+    "case": "lines-5500",
+    "key_wall_p95_lt_ms": 40.0,
+    "full_backdrop_rebuild": false
+  },
+  "cases": [
+    {
+      "case": "lines-900",
+      "input_method": "playwright-keyboard",
+      "source_lines": 900,
+      "source_bytes_before": 54805,
+      "sample_count": 9,
+      "key_wall_ms": [
+        13.278,
+        31.74,
+        13.183,
+        11.786,
+        11.549,
+        14.854,
+        25.756,
+        6.161,
+        7.011
+      ],
+      "key_wall_p50_ms": 13.183,
+      "key_wall_p95_ms": 31.74,
+      "key_wall_max_ms": 31.74,
+      "input_to_next_paint_p95_ms": 13.2,
+      "input_to_next_paint_ms": [
+        13.200000002980232,
+        9.900000002235174,
+        1.8999999985098839,
+        1.3999999985098839,
+        1.4000000022351742,
+        1.300000000745058,
+        3.2999999970197678,
+        1.1000000014901161,
+        1.300000000745058
+      ],
+      "long_tasks": [
+        {
+          "start": 521.4000000022352,
+          "duration": 64
+        },
+        {
+          "start": 586.5,
+          "duration": 50
+        },
+        {
+          "start": 1085.1000000014901,
+          "duration": 82
+        }
+      ],
+      "long_task_count": 3,
+      "mutation_records": 36,
+      "backdrop_dom_added": 16218,
+      "backdrop_dom_removed": 16218,
+      "backdrop_max_added_one_record": 901,
+      "backdrop_max_removed_one_record": 901,
+      "backdrop_lines_before": 901,
+      "backdrop_lines_after": 901,
+      "full_backdrop_rebuild": true,
+      "main_document_navigation_count": 0,
+      "write_post_count": 9,
+      "work_get_count": 2,
+      "write_settle_poll_count": 6,
+      "write_settle_quiet_ms": 704.007,
+      "write_settled": true,
+      "focus_preserved": true,
+      "active_class": "md-source-area",
+      "selection_start": 9,
+      "typed_inputs": 9,
+      "real_before": {
+        "sha256": "70226a899563c30cdd01df4012f04450a236893a672b4d6b8d8546c908477ca1",
+        "bytes": 54805
+      },
+      "real_after": {
+        "sha256": "8d6683b9e286e3135a6dc9653d764c8b3aec6f65333705bf2d9f43e1ddae9eab",
+        "bytes": 54814
+      },
+      "initial_real_version": "70226a899563c30cdd01df4012f04450a236893a672b4d6b8d8546c908477ca1",
+      "current_real_version": "8d6683b9e286e3135a6dc9653d764c8b3aec6f65333705bf2d9f43e1ddae9eab",
+      "md_temp_before": {
+        "sha256": "70226a899563c30cdd01df4012f04450a236893a672b4d6b8d8546c908477ca1",
+        "bytes": 54805
+      },
+      "md_temp_after": {
+        "sha256": "70226a899563c30cdd01df4012f04450a236893a672b4d6b8d8546c908477ca1",
+        "bytes": 54805
+      },
+      "initial_md_temp_version": "70226a899563c30cdd01df4012f04450a236893a672b4d6b8d8546c908477ca1",
+      "current_md_temp_version": "70226a899563c30cdd01df4012f04450a236893a672b4d6b8d8546c908477ca1",
+      "write_through": true,
+      "md_temp_unchanged": true,
+      "within_budget": null,
+      "acceptance": "MEASURED_NO_FIXED_THRESHOLD",
+      "page_errors": []
+    },
+    {
+      "case": "lines-5500",
+      "input_method": "playwright-keyboard",
+      "source_lines": 5500,
+      "source_bytes_before": 335405,
+      "sample_count": 9,
+      "key_wall_ms": [
+        22.604,
+        117.61,
+        18.796,
+        112.279,
+        91.824,
+        41.759,
+        139.778,
+        27.406,
+        126.987
+      ],
+      "key_wall_p50_ms": 91.824,
+      "key_wall_p95_ms": 139.778,
+      "key_wall_max_ms": 139.778,
+      "input_to_next_paint_p95_ms": 42.1,
+      "input_to_next_paint_ms": [
+        5.699999999254942,
+        17.399999998509884,
+        4.699999999254942,
+        22.099999997764826,
+        17,
+        10.599999997764826,
+        42.100000001490116,
+        10.400000002235174,
+        28.299999997019768
+      ],
+      "long_tasks": [
+        {
+          "start": 514.5999999977648,
+          "duration": 148
+        },
+        {
+          "start": 664,
+          "duration": 144
+        },
+        {
+          "start": 1233.5,
+          "duration": 100
+        },
+        {
+          "start": 1356.3999999985099,
+          "duration": 88
+        },
+        {
+          "start": 1675.2999999970198,
+          "duration": 78
+        },
+        {
+          "start": 1870.8999999985099,
+          "duration": 73
+        },
+        {
+          "start": 2089.7999999970198,
+          "duration": 75
+        },
+        {
+          "start": 2184,
+          "duration": 73
+        },
+        {
+          "start": 2494.5,
+          "duration": 91
+        },
+        {
+          "start": 2622.099999997765,
+          "duration": 73
+        },
+        {
+          "start": 2934.099999997765,
+          "duration": 119
+        },
+        {
+          "start": 3134.099999997765,
+          "duration": 129
+        },
+        {
+          "start": 3423.39999999851,
+          "duration": 116
+        },
+        {
+          "start": 3606.5,
+          "duration": 157
+        },
+        {
+          "start": 3763.89999999851,
+          "duration": 51
+        },
+        {
+          "start": 3994.699999999255,
+          "duration": 126
+        },
+        {
+          "start": 4158,
+          "duration": 111
+        },
+        {
+          "start": 4305,
+          "duration": 97
+        },
+        {
+          "start": 4633.39999999851,
+          "duration": 106
+        },
+        {
+          "start": 4774.199999999255,
+          "duration": 145
+        }
+      ],
+      "long_task_count": 20,
+      "mutation_records": 34,
+      "backdrop_dom_added": 93517,
+      "backdrop_dom_removed": 93517,
+      "backdrop_max_added_one_record": 5501,
+      "backdrop_max_removed_one_record": 5501,
+      "backdrop_lines_before": 5501,
+      "backdrop_lines_after": 5501,
+      "full_backdrop_rebuild": true,
+      "main_document_navigation_count": 0,
+      "write_post_count": 8,
+      "work_get_count": 3,
+      "write_settle_poll_count": 6,
+      "write_settle_quiet_ms": 692.779,
+      "write_settled": true,
+      "focus_preserved": true,
+      "active_class": "md-source-area",
+      "selection_start": 9,
+      "typed_inputs": 9,
+      "real_before": {
+        "sha256": "8f85ca2c9766fe1e5acc0569bce8105fa3ae0679ede9b53b1798fdf9a4d938db",
+        "bytes": 335405
+      },
+      "real_after": {
+        "sha256": "46b0112b0e8857372e21c4b6ac0ddb659b0d7b10098622640c66097a89f6fe73",
+        "bytes": 335414
+      },
+      "initial_real_version": "8f85ca2c9766fe1e5acc0569bce8105fa3ae0679ede9b53b1798fdf9a4d938db",
+      "current_real_version": "46b0112b0e8857372e21c4b6ac0ddb659b0d7b10098622640c66097a89f6fe73",
+      "md_temp_before": {
+        "sha256": "8f85ca2c9766fe1e5acc0569bce8105fa3ae0679ede9b53b1798fdf9a4d938db",
+        "bytes": 335405
+      },
+      "md_temp_after": {
+        "sha256": "8f85ca2c9766fe1e5acc0569bce8105fa3ae0679ede9b53b1798fdf9a4d938db",
+        "bytes": 335405
+      },
+      "initial_md_temp_version": "8f85ca2c9766fe1e5acc0569bce8105fa3ae0679ede9b53b1798fdf9a4d938db",
+      "current_md_temp_version": "8f85ca2c9766fe1e5acc0569bce8105fa3ae0679ede9b53b1798fdf9a4d938db",
+      "write_through": true,
+      "md_temp_unchanged": true,
+      "within_budget": false,
+      "acceptance": "FAIL",
+      "page_errors": []
+    },
+    {
+      "case": "bytes-500k",
+      "input_method": "playwright-keyboard",
+      "source_lines": 209,
+      "source_bytes_before": 500000,
+      "sample_count": 9,
+      "key_wall_ms": [
+        21.377,
+        25.973,
+        20.206,
+        16.289,
+        16.362,
+        30.037,
+        16.013,
+        32.245,
+        73.623
+      ],
+      "key_wall_p50_ms": 21.377,
+      "key_wall_p95_ms": 73.623,
+      "key_wall_max_ms": 73.623,
+      "input_to_next_paint_p95_ms": 23.0,
+      "input_to_next_paint_ms": [
+        2.699999999254942,
+        1.1000000014901161,
+        1.1000000014901161,
+        12.100000001490116,
+        6.199999999254942,
+        1.800000000745058,
+        8.900000002235174,
+        2,
+        23
+      ],
+      "long_tasks": [
+        {
+          "start": 747.5999999977648,
+          "duration": 101
+        },
+        {
+          "start": 850.3999999985099,
+          "duration": 92
+        },
+        {
+          "start": 1375.199999999255,
+          "duration": 60
+        },
+        {
+          "start": 2893,
+          "duration": 53
+        },
+        {
+          "start": 3199.89999999851,
+          "duration": 70
+        },
+        {
+          "start": 3593,
+          "duration": 76
+        },
+        {
+          "start": 3735.7999999970198,
+          "duration": 67
+        },
+        {
+          "start": 3962.89999999851,
+          "duration": 54
+        },
+        {
+          "start": 4406.599999997765,
+          "duration": 53
+        }
+      ],
+      "long_task_count": 9,
+      "mutation_records": 36,
+      "backdrop_dom_added": 3780,
+      "backdrop_dom_removed": 3780,
+      "backdrop_max_added_one_record": 210,
+      "backdrop_max_removed_one_record": 210,
+      "backdrop_lines_before": 210,
+      "backdrop_lines_after": 210,
+      "full_backdrop_rebuild": true,
+      "main_document_navigation_count": 0,
+      "write_post_count": 9,
+      "work_get_count": 2,
+      "write_settle_poll_count": 6,
+      "write_settle_quiet_ms": 700.789,
+      "write_settled": true,
+      "focus_preserved": true,
+      "active_class": "md-source-area",
+      "selection_start": 9,
+      "typed_inputs": 9,
+      "real_before": {
+        "sha256": "e082e3a368bb915ec8df7de5973a6387276780d36d0a0facfa7a3a15d01e4aa8",
+        "bytes": 500000
+      },
+      "real_after": {
+        "sha256": "28aa26c639fc2854f59b51e4d6ed6a61525061b967df4ab5019573627213bb12",
+        "bytes": 500009
+      },
+      "initial_real_version": "e082e3a368bb915ec8df7de5973a6387276780d36d0a0facfa7a3a15d01e4aa8",
+      "current_real_version": "28aa26c639fc2854f59b51e4d6ed6a61525061b967df4ab5019573627213bb12",
+      "md_temp_before": {
+        "sha256": "e082e3a368bb915ec8df7de5973a6387276780d36d0a0facfa7a3a15d01e4aa8",
+        "bytes": 500000
+      },
+      "md_temp_after": {
+        "sha256": "e082e3a368bb915ec8df7de5973a6387276780d36d0a0facfa7a3a15d01e4aa8",
+        "bytes": 500000
+      },
+      "initial_md_temp_version": "e082e3a368bb915ec8df7de5973a6387276780d36d0a0facfa7a3a15d01e4aa8",
+      "current_md_temp_version": "e082e3a368bb915ec8df7de5973a6387276780d36d0a0facfa7a3a15d01e4aa8",
+      "write_through": true,
+      "md_temp_unchanged": true,
+      "within_budget": null,
+      "acceptance": "MEASURED_NO_FIXED_THRESHOLD",
+      "page_errors": []
+    },
+    {
+      "case": "bytes-5m",
+      "input_method": "playwright-keyboard",
+      "source_lines": 1986,
+      "source_bytes_before": 4800000,
+      "sample_count": 9,
+      "key_wall_ms": [
+        133.804,
+        764.41,
+        569.455,
+        625.205,
+        545.876,
+        1411.426,
+        891.319,
+        559.809,
+        862.91
+      ],
+      "key_wall_p50_ms": 625.205,
+      "key_wall_p95_ms": 1411.426,
+      "key_wall_max_ms": 1411.426,
+      "input_to_next_paint_p95_ms": 166.1,
+      "input_to_next_paint_ms": [
+        5.899999998509884,
+        4.700000002980232,
+        105.60000000149012,
+        89.19999999925494,
+        161.60000000149012,
+        129.39999999850988,
+        5.399999998509884,
+        163.69999999925494,
+        166.10000000149012
+      ],
+      "long_tasks": [
+        {
+          "start": 881.9000000022352,
+          "duration": 1039
+        },
+        {
+          "start": 1922.199999999255,
+          "duration": 733
+        },
+        {
+          "start": 3104.800000000745,
+          "duration": 88
+        },
+        {
+          "start": 3715.5,
+          "duration": 59
+        },
+        {
+          "start": 3897.10000000149,
+          "duration": 50
+        },
+        {
+          "start": 3954.10000000149,
+          "duration": 69
+        },
+        {
+          "start": 4023.699999999255,
+          "duration": 79
+        },
+        {
+          "start": 4222.10000000149,
+          "duration": 80
+        },
+        {
+          "start": 4302.699999999255,
+          "duration": 154
+        },
+        {
+          "start": 4463.900000002235,
+          "duration": 547
+        },
+        {
+          "start": 5011.699999999255,
+          "duration": 115
+        },
+        {
+          "start": 5127.400000002235,
+          "duration": 80
+        },
+        {
+          "start": 5208.5,
+          "duration": 71
+        },
+        {
+          "start": 5387.5,
+          "duration": 500
+        },
+        {
+          "start": 5926.199999999255,
+          "duration": 113
+        },
+        {
+          "start": 6039.699999999255,
+          "duration": 104
+        },
+        {
+          "start": 6260.60000000149,
+          "duration": 453
+        },
+        {
+          "start": 6714.300000000745,
+          "duration": 149
+        },
+        {
+          "start": 6864,
+          "duration": 72
+        },
+        {
+          "start": 6942.199999999255,
+          "duration": 71
+        },
+        {
+          "start": 7142.699999999255,
+          "duration": 540
+        },
+        {
+          "start": 7731.5,
+          "duration": 174
+        },
+        {
+          "start": 7906.199999999255,
+          "duration": 596
+        },
+        {
+          "start": 8637.199999999255,
+          "duration": 202
+        },
+        {
+          "start": 8903.800000000745,
+          "duration": 69
+        },
+        {
+          "start": 8975.699999999255,
+          "duration": 64
+        },
+        {
+          "start": 9176.800000000745,
+          "duration": 499
+        },
+        {
+          "start": 9676.699999999255,
+          "duration": 159
+        },
+        {
+          "start": 9836.300000000745,
+          "duration": 100
+        },
+        {
+          "start": 9937.10000000149,
+          "duration": 186
+        },
+        {
+          "start": 10130.300000000745,
+          "duration": 521
+        },
+        {
+          "start": 10652.5,
+          "duration": 180
+        },
+        {
+          "start": 10833.5,
+          "duration": 72
+        },
+        {
+          "start": 10907,
+          "duration": 85
+        },
+        {
+          "start": 11004.5,
+          "duration": 597
+        },
+        {
+          "start": 11645.199999999255,
+          "duration": 175
+        },
+        {
+          "start": 11881.199999999255,
+          "duration": 100
+        },
+        {
+          "start": 11981.5,
+          "duration": 672
+        },
+        {
+          "start": 12654.199999999255,
+          "duration": 230
+        },
+        {
+          "start": 12885.199999999255,
+          "duration": 99
+        },
+        {
+          "start": 12994.300000000745,
+          "duration": 89
+        },
+        {
+          "start": 13109.10000000149,
+          "duration": 474
+        },
+        {
+          "start": 13583.400000002235,
+          "duration": 145
+        },
+        {
+          "start": 13744.900000002235,
+          "duration": 53
+        },
+        {
+          "start": 13950.900000002235,
+          "duration": 91
+        },
+        {
+          "start": 14157.5,
+          "duration": 534
+        },
+        {
+          "start": 14691.800000000745,
+          "duration": 141
+        },
+        {
+          "start": 15069.5,
+          "duration": 501
+        },
+        {
+          "start": 15571.199999999255,
+          "duration": 103
+        },
+        {
+          "start": 16014.5,
+          "duration": 53
+        },
+        {
+          "start": 16781.400000002235,
+          "duration": 56
+        },
+        {
+          "start": 16838.400000002235,
+          "duration": 230
+        }
+      ],
+      "long_task_count": 52,
+      "mutation_records": 24,
+      "backdrop_dom_added": 23844,
+      "backdrop_dom_removed": 23844,
+      "backdrop_max_added_one_record": 1987,
+      "backdrop_max_removed_one_record": 1987,
+      "backdrop_lines_before": 1987,
+      "backdrop_lines_after": 1987,
+      "full_backdrop_rebuild": true,
+      "main_document_navigation_count": 0,
+      "write_post_count": 6,
+      "work_get_count": 5,
+      "write_settle_poll_count": 5,
+      "write_settle_quiet_ms": 741.315,
+      "write_settled": true,
+      "focus_preserved": true,
+      "active_class": "md-source-area",
+      "selection_start": 9,
+      "typed_inputs": 9,
+      "real_before": {
+        "sha256": "06c96768dbf8a845b3068668fab715bcc766743510fc027a9d8e03566ef49020",
+        "bytes": 4800000
+      },
+      "real_after": {
+        "sha256": "83dba775a8eb244d209216984f921990e8fd40d4bbf56d6e6662561a2ff413f3",
+        "bytes": 4800009
+      },
+      "initial_real_version": "06c96768dbf8a845b3068668fab715bcc766743510fc027a9d8e03566ef49020",
+      "current_real_version": "83dba775a8eb244d209216984f921990e8fd40d4bbf56d6e6662561a2ff413f3",
+      "md_temp_before": {
+        "sha256": "06c96768dbf8a845b3068668fab715bcc766743510fc027a9d8e03566ef49020",
+        "bytes": 4800000
+      },
+      "md_temp_after": {
+        "sha256": "06c96768dbf8a845b3068668fab715bcc766743510fc027a9d8e03566ef49020",
+        "bytes": 4800000
+      },
+      "initial_md_temp_version": "06c96768dbf8a845b3068668fab715bcc766743510fc027a9d8e03566ef49020",
+      "current_md_temp_version": "06c96768dbf8a845b3068668fab715bcc766743510fc027a9d8e03566ef49020",
+      "write_through": true,
+      "md_temp_unchanged": true,
+      "within_budget": null,
+      "acceptance": "MEASURED_NO_FIXED_THRESHOLD",
+      "page_errors": []
+    },
+    {
+      "case": "cjk-ime",
+      "input_method": "composition-events",
+      "source_lines": 900,
+      "source_bytes_before": 52111,
+      "sample_count": 6,
+      "key_wall_ms": [
+        9.89,
+        9.825,
+        12.979,
+        6.533,
+        7.023,
+        7.762
+      ],
+      "key_wall_p50_ms": 7.762,
+      "key_wall_p95_ms": 12.979,
+      "key_wall_max_ms": 12.979,
+      "input_to_next_paint_p95_ms": 29.1,
+      "input_to_next_paint_ms": [
+        29.099999997764826,
+        28.100000001490116,
+        28.600000001490116,
+        18.300000000745058,
+        18.600000001490116,
+        18.600000001490116
+      ],
+      "long_tasks": [
+        {
+          "start": 382,
+          "duration": 74
+        },
+        {
+          "start": 890.4000000022352,
+          "duration": 59
+        }
+      ],
+      "long_task_count": 2,
+      "mutation_records": 24,
+      "backdrop_dom_added": 10812,
+      "backdrop_dom_removed": 10812,
+      "backdrop_max_added_one_record": 901,
+      "backdrop_max_removed_one_record": 901,
+      "backdrop_lines_before": 901,
+      "backdrop_lines_after": 901,
+      "full_backdrop_rebuild": true,
+      "main_document_navigation_count": 0,
+      "write_post_count": 6,
+      "work_get_count": 2,
+      "write_settle_poll_count": 6,
+      "write_settle_quiet_ms": 693.512,
+      "write_settled": true,
+      "focus_preserved": true,
+      "active_class": "md-source-area",
+      "selection_start": 6,
+      "typed_inputs": 6,
+      "real_before": {
+        "sha256": "ec9ce0ffa6be4f22772bd62b81bfca4291e227553b5bec193dcfe24ba22df3f2",
+        "bytes": 52111
+      },
+      "real_after": {
+        "sha256": "ca7dfda4d9e411c80c17872cdb177c2a901014bcce54e2c26d5a0093484ea307",
+        "bytes": 52129
+      },
+      "initial_real_version": "ec9ce0ffa6be4f22772bd62b81bfca4291e227553b5bec193dcfe24ba22df3f2",
+      "current_real_version": "ca7dfda4d9e411c80c17872cdb177c2a901014bcce54e2c26d5a0093484ea307",
+      "md_temp_before": {
+        "sha256": "ec9ce0ffa6be4f22772bd62b81bfca4291e227553b5bec193dcfe24ba22df3f2",
+        "bytes": 52111
+      },
+      "md_temp_after": {
+        "sha256": "ec9ce0ffa6be4f22772bd62b81bfca4291e227553b5bec193dcfe24ba22df3f2",
+        "bytes": 52111
+      },
+      "initial_md_temp_version": "ec9ce0ffa6be4f22772bd62b81bfca4291e227553b5bec193dcfe24ba22df3f2",
+      "current_md_temp_version": "ec9ce0ffa6be4f22772bd62b81bfca4291e227553b5bec193dcfe24ba22df3f2",
+      "write_through": true,
+      "md_temp_unchanged": true,
+      "within_budget": null,
+      "acceptance": "MEASURED_NO_FIXED_THRESHOLD",
+      "page_errors": []
+    },
+    {
+      "case": "wide-30col",
+      "input_method": "playwright-keyboard",
+      "source_lines": 96,
+      "source_bytes_before": 19575,
+      "sample_count": 9,
+      "key_wall_ms": [
+        7.864,
+        6.575,
+        6.039,
+        6.255,
+        7.238,
+        6.834,
+        8.586,
+        6.8,
+        6.333
+      ],
+      "key_wall_p50_ms": 6.8,
+      "key_wall_p95_ms": 8.586,
+      "key_wall_max_ms": 8.586,
+      "input_to_next_paint_p95_ms": 13.6,
+      "input_to_next_paint_ms": [
+        13.599999997764826,
+        0.7000000029802322,
+        0.6999999992549419,
+        0.8999999985098839,
+        0.8999999985098839,
+        1.199999999254942,
+        1,
+        0.8999999985098839,
+        1
+      ],
+      "long_tasks": [],
+      "long_task_count": 0,
+      "mutation_records": 36,
+      "backdrop_dom_added": 1746,
+      "backdrop_dom_removed": 1746,
+      "backdrop_max_added_one_record": 97,
+      "backdrop_max_removed_one_record": 97,
+      "backdrop_lines_before": 97,
+      "backdrop_lines_after": 97,
+      "full_backdrop_rebuild": true,
+      "main_document_navigation_count": 0,
+      "write_post_count": 9,
+      "work_get_count": 2,
+      "write_settle_poll_count": 6,
+      "write_settle_quiet_ms": 705.424,
+      "write_settled": true,
+      "focus_preserved": true,
+      "active_class": "md-source-area",
+      "selection_start": 9,
+      "typed_inputs": 9,
+      "real_before": {
+        "sha256": "e65111e5e01ce6f1f500002855efc088cdb97e16b46ed7968d232a60767d2bc5",
+        "bytes": 19575
+      },
+      "real_after": {
+        "sha256": "0ccf90883a9c6772a19c53e78a0ba0f72e4cac5e63c051c4a4a374f236271e98",
+        "bytes": 19584
+      },
+      "initial_real_version": "e65111e5e01ce6f1f500002855efc088cdb97e16b46ed7968d232a60767d2bc5",
+      "current_real_version": "0ccf90883a9c6772a19c53e78a0ba0f72e4cac5e63c051c4a4a374f236271e98",
+      "md_temp_before": {
+        "sha256": "e65111e5e01ce6f1f500002855efc088cdb97e16b46ed7968d232a60767d2bc5",
+        "bytes": 19575
+      },
+      "md_temp_after": {
+        "sha256": "e65111e5e01ce6f1f500002855efc088cdb97e16b46ed7968d232a60767d2bc5",
+        "bytes": 19575
+      },
+      "initial_md_temp_version": "e65111e5e01ce6f1f500002855efc088cdb97e16b46ed7968d232a60767d2bc5",
+      "current_md_temp_version": "e65111e5e01ce6f1f500002855efc088cdb97e16b46ed7968d232a60767d2bc5",
+      "write_through": true,
+      "md_temp_unchanged": true,
+      "within_budget": null,
+      "acceptance": "MEASURED_NO_FIXED_THRESHOLD",
+      "page_errors": []
+    }
+  ]
+}

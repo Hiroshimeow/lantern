@@ -1,0 +1,232 @@
+{
+  "schema": 1,
+  "browser": {
+    "channel": "msedge",
+    "version": "155.0.4283.62"
+  },
+  "packages": {
+    "mergeVersion": "6.12.2",
+    "mergeLicense": "MIT",
+    "mergeIntegrity": "sha512-V8JvyAPjHbPupqP7BeMcsdsYCbyPij74jxIbaIJDORI+VZzW44zFmon8bF+oxGWvOKhcRmkiUMXd8MxHr3YA2w==",
+    "codemirrorVersion": "6.0.2",
+    "esbuildVersion": "0.28.2"
+  },
+  "functional": {
+    "unified": {
+      "initial": {
+        "length": 43,
+        "lines": 5,
+        "originalLength": 43,
+        "chunkCount": 2,
+        "domLines": 5,
+        "changedLines": 3,
+        "deletedChunks": 8,
+        "gutters": 1,
+        "active": false,
+        "selection": {
+          "from": 0,
+          "to": 0
+        },
+        "updates": 0,
+        "docChanges": 0,
+        "serializations": 0
+      },
+      "selected": {
+        "length": 43,
+        "lines": 5,
+        "originalLength": 43,
+        "chunkCount": 2,
+        "domLines": 5,
+        "changedLines": 3,
+        "deletedChunks": 8,
+        "gutters": 1,
+        "active": true,
+        "selection": {
+          "from": 2,
+          "to": 7
+        },
+        "updates": 1,
+        "docChanges": 0,
+        "serializations": 0
+      },
+      "classes": [
+        "cm-editor \u037c1 \u037c2  cm-merge-b",
+        "cm-announced",
+        "cm-scroller",
+        "cm-gutters cm-gutters-before",
+        "cm-gutter cm-changeGutter",
+        "cm-gutterElement cm-deletedLineGutter",
+        "cm-gutterElement cm-changedLineGutter",
+        "cm-content cm-lineWrapping",
+        "cm-deletedChunk",
+        "cm-deletedLine",
+        " cm-deletedText",
+        "cm-line cm-changedLine",
+        "cm-insertedLine",
+        "cm-changedText",
+        "cm-line"
+      ]
+    },
+    "addChangeDeleteAndBottom": true,
+    "inlineGutterDeletionAffordances": true,
+    "keyboardSelection": true,
+    "undoRedo": true,
+    "uniformCrlfSliceDocPreserved": true,
+    "uniformCrlfEditPreserved": true,
+    "uniformCrlfCapturedChange": {
+      "from": 3,
+      "to": 3,
+      "fromNew": 3,
+      "toNew": 4,
+      "inserted": "X"
+    },
+    "uniformCrlfRawPatchPreserved": true,
+    "baselineUpdatePreservesCurrent": true
+  },
+  "splitComparison": {
+    "aLines": 5,
+    "bLines": 5,
+    "domLines": 10
+  },
+  "byteStrategy": {
+    "bomPreserved": true,
+    "mixedEolUntouchedBytesPreserved": true,
+    "noFinalNewlinePreserved": true,
+    "nonBmpBeforeEditCovered": true,
+    "surrogateBoundaryPreserved": true,
+    "capturedChange": {
+      "from": 20,
+      "to": 31,
+      "fromNew": 20,
+      "toNew": 33,
+      "inserted": "EDIT_TARGET_X"
+    },
+    "authoritativeUtf16Range": {
+      "from": 21,
+      "to": 32
+    },
+    "normalizedCoordinateShift": {
+      "from": 1,
+      "to": 1
+    },
+    "strategy": "captured CodeMirror transaction UTF-16 range -> authoritative raw UTF-8 byte patch; never whole-document serialization"
+  },
+  "ime": {
+    "cjkInsertText": true,
+    "syntheticComposition": "events-dispatched-only; NOT native Windows IME acceptance"
+  },
+  "performance": {
+    "lines5500": {
+      "bytes": 291500,
+      "lines": 5500,
+      "typedInputs": 9,
+      "keyWallMs": [
+        25.81,
+        15.094,
+        13.147,
+        11.901,
+        13.202,
+        11.567,
+        13.155,
+        12.829,
+        10.277
+      ],
+      "keyWallP95Ms": 25.81,
+      "inputPaintP95Ms": 13.0,
+      "longTaskCount": 1,
+      "longTaskMaxMs": 65,
+      "domLinesBefore": 61,
+      "domLinesAfter": 61,
+      "mutationRecords": 19,
+      "domAdded": 10,
+      "domRemoved": 9,
+      "maxAdded": 1,
+      "maxRemoved": 1,
+      "serializationCallsDuringTyping": 0,
+      "focusPreserved": true,
+      "caret": {
+        "from": 9,
+        "to": 9
+      },
+      "navigationCount": 0
+    },
+    "bytes500k": {
+      "bytes": 500000,
+      "lines": 7936,
+      "typedInputs": 9,
+      "keyWallMs": [
+        29.393,
+        17.066,
+        21.93,
+        17.45,
+        19.094,
+        18.418,
+        14.173,
+        15.85,
+        17.073
+      ],
+      "keyWallP95Ms": 29.393,
+      "inputPaintP95Ms": 14.3,
+      "longTaskCount": 1,
+      "longTaskMaxMs": 69,
+      "domLinesBefore": 61,
+      "domLinesAfter": 61,
+      "mutationRecords": 19,
+      "domAdded": 10,
+      "domRemoved": 9,
+      "maxAdded": 1,
+      "maxRemoved": 1,
+      "serializationCallsDuringTyping": 0,
+      "focusPreserved": true,
+      "caret": {
+        "from": 9,
+        "to": 9
+      },
+      "navigationCount": 0
+    },
+    "bytes5m": {
+      "bytes": 4800000,
+      "lines": 5010,
+      "typedInputs": 5,
+      "keyWallMs": [
+        26.057,
+        21.466,
+        16.799,
+        15.679,
+        15.402
+      ],
+      "keyWallP95Ms": 26.057,
+      "inputPaintP95Ms": 13.3,
+      "longTaskCount": 2,
+      "longTaskMaxMs": 158,
+      "domLinesBefore": 10,
+      "domLinesAfter": 10,
+      "mutationRecords": 12,
+      "domAdded": 6,
+      "domRemoved": 6,
+      "maxAdded": 1,
+      "maxRemoved": 1,
+      "serializationCallsDuringTyping": 0,
+      "focusPreserved": true,
+      "caret": {
+        "from": 5,
+        "to": 5
+      },
+      "navigationCount": 0
+    }
+  },
+  "fixed5500Target": {
+    "keyWallP95LtMs": 40.0,
+    "noFullDocumentDomRebuild": true,
+    "pocMeetsTarget": true
+  },
+  "conclusion": "GO_WITH_CONSTRAINTS",
+  "alternativeReviewQuestion": null,
+  "constraints": [
+    "real .md bytes stay authoritative; CodeMirror state is decoded editor text only",
+    "retain BOM/newline metadata and raw-byte patch adapter for exact persistence",
+    "mixed EOL cannot be preserved by whole-document CodeMirror serialization",
+    "synthetic composition coverage is not native Windows IME acceptance",
+    "5 MB is characterization only; no pass threshold was invented"
+  ]
+}

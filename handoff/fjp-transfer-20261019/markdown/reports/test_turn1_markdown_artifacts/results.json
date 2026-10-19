@@ -1,0 +1,187 @@
+{
+  "identity": {
+    "repo": "E:\\git-project\\lantern",
+    "python": "3.13.9 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 19:09:58) [MSC v.1929 64 bit (AMD64)]",
+    "time": "2026-10-18T21:43:33+0900",
+    "browser": "msedge headless"
+  },
+  "checks": {
+    "plain": {
+      "http": 200,
+      "mermaid_requests": 0,
+      "external": []
+    },
+    "seven": {
+      "status": 200,
+      "types": [
+        "flowchart",
+        "sequence",
+        "class",
+        "state",
+        "er",
+        "gantt",
+        "pie"
+      ],
+      "rendered": [
+        {
+          "ok": true,
+          "svg": true,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "svg": true,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "svg": true,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "svg": true,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "svg": true,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "svg": true,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "svg": true,
+          "error": ""
+        }
+      ],
+      "mermaid_requests": 1,
+      "external": [],
+      "js_errors": [],
+      "console_errors": [],
+      "screenshot": "E:\\git-project\\lantern\\.plan\\lantern-markdown-main-20261018\\test_turn1_markdown_artifacts\\mermaid-seven.png"
+    },
+    "csp": {
+      "value": "",
+      "script_count": 7,
+      "all_nonces_match": false
+    },
+    "unnonced_js": {
+      "executed": false
+    },
+    "websocket": {
+      "result": "opened"
+    },
+    "png": [
+      {
+        "name": "mermaid-7-diagram-1.png",
+        "bytes": 5516,
+        "dimensions": [
+          504,
+          134
+        ],
+        "has_nonwhite": true
+      },
+      {
+        "name": "mermaid-7-diagram-2.png",
+        "bytes": 25836,
+        "dimensions": [
+          900,
+          550
+        ],
+        "has_nonwhite": true
+      },
+      {
+        "name": "mermaid-7-diagram-3.png",
+        "bytes": 11874,
+        "dimensions": [
+          215,
+          534
+        ],
+        "has_nonwhite": true
+      },
+      {
+        "name": "mermaid-7-diagram-4.png",
+        "bytes": 8939,
+        "dimensions": [
+          150,
+          362
+        ],
+        "has_nonwhite": true
+      },
+      {
+        "name": "mermaid-7-diagram-5.png",
+        "bytes": 16206,
+        "dimensions": [
+          275,
+          566
+        ],
+        "has_nonwhite": true
+      },
+      {
+        "name": "mermaid-7-diagram-6.png",
+        "bytes": 25179,
+        "dimensions": [
+          2400,
+          248
+        ],
+        "has_nonwhite": true
+      },
+      {
+        "name": "mermaid-7-diagram-7.png",
+        "bytes": 89839,
+        "dimensions": [
+          1112,
+          900
+        ],
+        "has_nonwhite": true
+      }
+    ],
+    "pdf": {
+      "print_button": 2,
+      "pages": 5,
+      "bytes": 55684,
+      "selectable_sentinel": true,
+      "section_title_present": true,
+      "path": "E:\\git-project\\lantern\\.plan\\lantern-markdown-main-20261018\\test_turn1_markdown_artifacts\\mermaid-seven-print.pdf"
+    },
+    "limits": {
+      "status": 200,
+      "wrapper_count": 24,
+      "first_four": [
+        {
+          "ok": false,
+          "error": "Mermaid render failed: Lexical error on line 1. Unrecognized text.\nflowchart ZZ A--->\n---------^",
+          "source_len": 19
+        },
+        {
+          "ok": true,
+          "error": "#lantern-mermaid-2{font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:16px;fill:#111111;}@keyframes edge-animation-frame{from{stroke-da",
+          "source_len": 19
+        },
+        {
+          "ok": false,
+          "error": "Diagram is too large to render.",
+          "source_len": 60067
+        },
+        {
+          "ok": true,
+          "error": "#lantern-mermaid-4{font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:16px;fill:#111111;}@keyframes edge-animation-frame{from{stroke-da",
+          "source_len": 19
+        }
+      ],
+      "last": {
+        "ok": true,
+        "error": "#lantern-mermaid-24{font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:16px;fill:#111111;}@keyframes edge-animation-frame{from{stroke-d",
+        "source_len": 19
+      },
+      "mermaid_requests": 1,
+      "external": []
+    }
+  },
+  "errors": []
+}
