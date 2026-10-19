@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import socket
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from lantern.terminal import TerminalManager, WinConPty, encode_terminal_key, resolve_shell
 from lantern.scm import ScmService, build_git_command
-from lantern.ws import WebSocketPeer, dispatch, _terminal_error_reply
+from lantern.ws import WebSocketHub, WebSocketPeer, dispatch, _terminal_error_reply
 
 
 class FakePty:
@@ -128,7 +128,7 @@ class TerminalParityTests(unittest.TestCase):
                 max_output=32,
                 flush_ms=0.01,
             )
-            manager.create("one", td, 80, 24, "One")
+            first = manager.create("one", td, 80, 24, "One")
             manager.create("two", td, 80, 24, "Two")
             with self.assertRaises(RuntimeError):
                 manager.create("three", td, 80, 24, "Three")
@@ -137,8 +137,11 @@ class TerminalParityTests(unittest.TestCase):
             spawned["one"].emit("abcdef")
             spawned["one"].exit(7)
             time.sleep(0.04)
-            kinds = [e["type"] for e in events if e.get("terminalId") == "one"]
+            one_events = [e for e in events if e.get("terminalId") == "one"]
+            kinds = [e["type"] for e in one_events]
             self.assertLess(kinds.index("terminal_output"), kinds.index("terminal_exit"))
+            exit_event = next(e for e in one_events if e["type"] == "terminal_exit")
+            self.assertEqual(exit_event["generation"], first["generation"])
             info = {t["id"]: t for t in manager.list()}
             self.assertFalse(info["one"]["running"])
             self.assertTrue(info["two"]["running"])
@@ -184,6 +187,276 @@ class TerminalParityTests(unittest.TestCase):
             spawned["tail"].emit("0123456789abcdefghijkl")
             time.sleep(0.02)
             self.assertEqual(dict(manager.replay())["tail"], "6789abcdefghijkl")
+            _meta, output, seq, start, end = manager.replay_view("tail")
+            self.assertEqual((output, seq, start, end), ("6789abcdefghijkl", 1, 6, 22))
+
+
+    def test_replay_view_tracks_utf8_retention_and_generation_reset(self) -> None:
+        events = []
+        spawned = {}
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            p = FakePty(on_data, on_exit)
+            spawned[term_id] = p
+            return p
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(
+                Path(td), events.append, pty_factory=factory, max_output=5, flush_ms=0
+            )
+            first = manager.create("utf8", td)
+            spawned["utf8"].emit("A\u65e5\U0001F642BCDEF")
+            meta, output, seq, start, end = manager.replay_view("utf8")
+            self.assertEqual(meta["generation"], first["generation"])
+            self.assertEqual((output, seq), ("BCDEF", 1))
+            self.assertEqual(start, len("A\u65e5\U0001F642".encode("utf-8")))
+            self.assertEqual(end, len("A\u65e5\U0001F642BCDEF".encode("utf-8")))
+            self.assertEqual(manager.replay_one("utf8"), (meta, output, seq))
+
+            manager.kill("utf8")
+            second = manager.create("utf8", td)
+            self.assertNotEqual(second["generation"], first["generation"])
+            _meta, output, seq, start, end = manager.replay_view("utf8")
+            self.assertEqual((output, seq, start, end), ("", 0, 0, 0))
+
+    def test_websocket_replay_offsets_cover_actual_sent_suffix(self) -> None:
+        class Peer:
+            def __init__(self):
+                self.subscriptions = set()
+                self.messages = []
+                self.protocol = "v2"
+
+            def send(self, message):
+                self.messages.append(message)
+
+        spawned = {}
+        hub = WebSocketHub()
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            p = FakePty(on_data, on_exit)
+            spawned[term_id] = p
+            return p
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(
+                Path(td), hub.broadcast, pty_factory=factory, max_output=100, flush_ms=0
+            )
+            manager.create("cap", td)
+            spawned["cap"].emit("A\u65e5\U0001F642BC")
+
+            uncapped = Peer()
+            hub.add(uncapped)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 100):
+                dispatch(
+                    uncapped,
+                    {"type": "terminal_subscribe", "terminalId": "cap"},
+                    manager,
+                    None,
+                    hub,
+                )
+            replay = next(m for m in uncapped.messages if m["type"] == "terminal_replay")
+            self.assertEqual(replay["output"], "A\u65e5\U0001F642BC")
+            self.assertFalse(replay["truncated"])
+            self.assertEqual(replay["replayStartUtf8"], 0)
+            self.assertEqual(replay["replayEndUtf8"], len("A\u65e5\U0001F642BC".encode("utf-8")))
+
+            hub.unsubscribe(uncapped, "cap")
+            capped = Peer()
+            hub.add(capped)
+            with patch("lantern.ws._MAX_ACTIVE_REPLAY_CHARS", 4):
+                dispatch(
+                    capped,
+                    {"type": "terminal_subscribe", "terminalId": "cap"},
+                    manager,
+                    None,
+                    hub,
+                )
+            replay = next(m for m in capped.messages if m["type"] == "terminal_replay")
+            self.assertEqual(replay["output"], "\u65e5\U0001F642BC")
+            self.assertTrue(replay["truncated"])
+            self.assertEqual(replay["replayStartUtf8"], len("A".encode("utf-8")))
+            self.assertEqual(replay["replayEndUtf8"], len("A\u65e5\U0001F642BC".encode("utf-8")))
+
+
+    def test_structured_spawn_preserves_exact_argv_cwd_and_env_without_shell(self) -> None:
+        spawned = []
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None, *, argv=None, env=None):
+            spawned.append({
+                "cwd": str(cwd),
+                "command": command,
+                "argv": list(argv) if argv is not None else None,
+                "env": dict(env) if env is not None else None,
+            })
+            return FakePty(on_data, on_exit)
+
+        argv = [
+            r"C:\Program Files\nodejs\node.exe",
+            "cli with spaces.js",
+            "日本語",
+            'quote"inside',
+            "a&b",
+            "semi;colon",
+            "single'quote",
+        ]
+        overlay = {"LANTERN_PI_TEST": "値🙂", "TERM": "pi-term"}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = root / "child"
+            cwd.mkdir()
+            before = os.environ.copy()
+            manager = TerminalManager(root, lambda _event: None, pty_factory=factory)
+            info = manager.create_argv(
+                "structured",
+                cwd,
+                argv,
+                90,
+                30,
+                "Structured",
+                env=overlay,
+            )
+            self.assertTrue(info["running"])
+            self.assertEqual(len(spawned), 1)
+            self.assertEqual(spawned[0]["argv"], argv)
+            self.assertIsNone(spawned[0]["command"])
+            self.assertEqual(Path(spawned[0]["cwd"]), cwd.resolve())
+            self.assertEqual(spawned[0]["env"], overlay)
+            self.assertEqual(os.environ, before)
+            self.assertNotIn("argv", info)
+            self.assertNotIn("env", info)
+
+    def test_structured_spawn_rejects_empty_argv_command_mix_and_outside_cwd(self) -> None:
+        calls = []
+
+        def factory(*args, **kwargs):
+            calls.append((args, kwargs))
+            return FakePty(args[4], args[5])
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manager = TerminalManager(root, lambda _event: None, pty_factory=factory)
+            with self.assertRaisesRegex(ValueError, "argv"):
+                manager.create_argv("empty", root, [])
+            with self.assertRaisesRegex(TypeError, "argv"):
+                manager.create_argv("string-is-not-argv", root, "node")
+            with self.assertRaisesRegex(ValueError, "both"):
+                manager.create(
+                    "both",
+                    root,
+                    command="echo no",
+                    argv=["node", "cli.js"],
+                )
+            with self.assertRaisesRegex(ValueError, "inside"):
+                manager.create_argv("outside", root.parent, ["node"])
+            self.assertEqual(calls, [])
+
+    def test_structured_spawn_env_overlay_inherits_defaults_without_parent_mutation(self) -> None:
+        from lantern.terminal import _build_pty_env
+
+        with patch.dict(os.environ, {}, clear=True):
+            defaults = _build_pty_env()
+            self.assertEqual(defaults["TERM"], "xterm-256color")
+            self.assertEqual(defaults["LANG"], "en_US.UTF-8")
+
+        with patch.dict(os.environ, {"LANTERN_PARENT_SENTINEL": "present"}, clear=False):
+            before = os.environ.copy()
+            child = _build_pty_env({"TERM": "custom-term", "PI_UNICODE": "Việt🙂"})
+            self.assertEqual(child["LANTERN_PARENT_SENTINEL"], "present")
+            self.assertEqual(child["TERM"], "custom-term")
+            self.assertEqual(child["LANG"], os.environ.get("LANG", "en_US.UTF-8"))
+            self.assertEqual(child["PI_UNICODE"], "Việt🙂")
+            self.assertEqual(os.environ, before)
+            child["LANTERN_PARENT_SENTINEL"] = "changed"
+            self.assertEqual(os.environ["LANTERN_PARENT_SENTINEL"], "present")
+
+        with self.assertRaisesRegex(TypeError, "strings"):
+            _build_pty_env({"BAD": 1})
+
+
+    def test_structured_spawn_dispatches_same_argv_env_contract_to_native_backend(self) -> None:
+        captured = []
+
+        def backend(argv, cwd, cols, rows, on_data, on_exit, env_overlay=None):
+            captured.append((list(argv), cwd, cols, rows, dict(env_overlay or {})))
+            return FakePty(on_data, on_exit)
+
+        argv = ["node", "cli.js", "a&b", "日本語"]
+        overlay = {"TERM": "custom", "PI_FLAG": "値"}
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(Path(td), lambda _event: None)
+            for platform, target in (("nt", "WinConPty"), ("posix", "PosixPty")):
+                captured.clear()
+                with patch("lantern.terminal.os.name", platform), patch(
+                    f"lantern.terminal.{target}", side_effect=backend
+                ):
+                    manager._spawn_native(
+                        "x",
+                        Path(td),
+                        80,
+                        24,
+                        lambda _data: None,
+                        lambda _code: None,
+                        argv=argv,
+                        env=overlay,
+                    )
+                self.assertEqual(
+                    captured,
+                    [(argv, str(Path(td)), 80, 24, overlay)],
+                    f"{target} must receive the same structured argv/env contract",
+                )
+
+    def test_ordinary_create_keeps_legacy_factory_signature(self) -> None:
+        calls = []
+
+        def legacy_factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            calls.append((term_id, str(cwd), cols, rows, command))
+            return FakePty(on_data, on_exit)
+
+        with tempfile.TemporaryDirectory() as td:
+            manager = TerminalManager(Path(td), lambda _event: None, pty_factory=legacy_factory)
+            manager.create("shell", td, 80, 24, "Shell")
+            manager.run_command("cmd", td, "echo hi", "Command")
+            self.assertEqual(calls[0][-1], None)
+            self.assertEqual(calls[1][-1], "echo hi")
+
+
+    def test_kill_if_generation_never_kills_replacement_generation(self) -> None:
+        spawned = {}
+
+        def factory(term_id, cwd, cols, rows, on_data, on_exit, command=None):
+            p = FakePty(on_data, on_exit)
+            spawned.setdefault(term_id, []).append(p)
+            return p
+
+        with tempfile.TemporaryDirectory() as td:
+            events = []
+            manager = TerminalManager(Path(td), events.append, pty_factory=factory)
+            first = manager.create("same-id", td)
+            manager.kill("same-id")
+            second = manager.create("same-id", td)
+            self.assertNotEqual(first["generation"], second["generation"])
+
+            self.assertFalse(
+                manager.kill_if_generation("same-id", first["generation"]),
+                "stale registry generation must not kill a replacement PTY",
+            )
+            live = {item["id"]: item for item in manager.list()}
+            self.assertTrue(live["same-id"]["running"])
+            self.assertEqual(live["same-id"]["generation"], second["generation"])
+            self.assertFalse(spawned["same-id"][1].closed)
+
+            self.assertTrue(manager.kill_if_generation("same-id", second["generation"]))
+            self.assertTrue(spawned["same-id"][1].closed)
+            exit_events = [
+                event
+                for event in events
+                if event.get("type") == "terminal_exit"
+                and event.get("terminalId") == "same-id"
+            ]
+            self.assertEqual(
+                [event.get("generation") for event in exit_events],
+                [first["generation"], second["generation"]],
+            )
 
     def test_resize_rename_input_and_restart_exited_id(self) -> None:
         events = []

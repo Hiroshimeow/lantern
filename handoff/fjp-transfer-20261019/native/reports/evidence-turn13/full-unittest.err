@@ -1,0 +1,16 @@
+[02:18:30] 127.0.0.1 - "GET /api/info HTTP/1.1" 200 -
+[02:18:30] 127.0.0.1 - "GET /api/list?p=/ HTTP/1.1" 200 -
+[02:18:30] 127.0.0.1 - "GET /api/info HTTP/1.1" 200 -
+[02:18:30] 127.0.0.1 - "GET /api/list?p=/ HTTP/1.1" 200 -
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 404: 'Not Found'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 403: 'POST Origin must match Host'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+C:\Users\admin\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\Lib\tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 409: 'Conflict'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+----------------------------------------------------------------------
+Ran 357 tests in 81.754s
+
+OK (skipped=132)

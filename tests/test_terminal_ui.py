@@ -144,6 +144,56 @@ class TerminalUiParityTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+
+    def test_v2_client_tracks_utf8_replay_continuity_without_changing_rendering(self) -> None:
+        client = json.dumps(str(CLIENT))
+        script = textwrap.dedent(f"""
+            const assert = require('assert');
+            global.location = {{protocol:'http:', host:'lantern.test'}};
+            global.document = {{querySelector:()=>null, addEventListener:()=>{{}}, hidden:false}};
+            global.addEventListener = ()=>{{}};
+            global.setInterval = ()=>0;
+            class FakeWebSocket {{ static OPEN=1; constructor(){{this.readyState=1}} send(){{}} close(){{}} }}
+            global.WebSocket = FakeWebSocket;
+            require({client});
+            const api = global.__lanternTerminalScm;
+            assert.equal(api.utf8Length('A\\u65e5\\ud83d\\ude42'), 8);
+            assert.equal(api.isReplayContinuous(7, 8, 13), false);
+            assert.equal(api.isReplayContinuous(8, 8, 13), true);
+            assert.equal(api.isReplayContinuous(13, 8, 13), true);
+            assert.equal(api.isReplayContinuous(14, 8, 13), false);
+
+            const writes=[];
+            const t={{
+              meta:{{id:'x',generation:'g1',running:true}},
+              term:{{reset(){{}},write(s,done){{writes.push(s);done?.()}}}},
+              pending:false,pendingChunks:new Map(),replayTok:0,seq:null,
+              replayStartUtf8:null,streamUtf8:null,
+            }};
+            api.state.terms.set('x',t);
+            api.state.serverProtocol='v2';
+            api.state.subscribed='x';
+            api.handleMessage({{
+              type:'terminal_replay',terminalId:'x',meta:{{id:'x',generation:'g1'}},
+              seq:1,output:'TAIL',truncated:false,replayStartUtf8:8,replayEndUtf8:13,
+            }});
+            assert.equal(t.replayStartUtf8,8);
+            assert.equal(t.streamUtf8,13);
+            api.handleMessage({{
+              type:'terminal_output',terminalId:'x',generation:'g1',seq:2,data:'\\u65e5\\ud83d\\ude42',
+            }});
+            assert.equal(t.streamUtf8,20);
+            api.handleMessage({{type:'terminal_list',terminals:[{{id:'x',generation:'g2',running:true}}]}});
+            assert.equal(t.replayStartUtf8,null);
+            assert.equal(t.streamUtf8,null);
+            assert.deepEqual(writes,['TAIL','\\u65e5\\ud83d\\ude42']);
+        """)
+        result = subprocess.run(
+            ["node", "-e", script], cwd=ROOT, text=True, capture_output=True,
+            check=False, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_browser_client_parses_as_javascript(self) -> None:
         result = subprocess.run(
             ["node", "--check", str(CLIENT)],
@@ -442,8 +492,8 @@ class TerminalUiParityTests(unittest.TestCase):
                 this.buffer={{active:{{length:0,getLine:()=>null}}}};
               }}
               loadAddon(){{}} open(){{}} reset(){{}} write(){{}} dispose(){{}}
-              attachCustomKeyEventHandler(){{}}
-              onData(){{ return {{dispose:()=>{{}}}}; }}
+              attachCustomKeyEventHandler(handler){{ this.keyHandler=handler; }}
+              onData(callback){{ this.dataHandler=callback; return {{dispose:()=>{{}}}}; }}
               hasSelection(){{ return false; }}
               focus(){{ this.focusCount++; }}
             }}
@@ -463,9 +513,31 @@ class TerminalUiParityTests(unittest.TestCase):
               global.__lanternTerminalScm.handleMessage({{type:'terminal_auth',required:false,authenticated:true,configured:false}});
               global.newTerminalSession();
               await sleep(60);
-              const state=global.__lanternTerminalScm.state;
+              const api=global.__lanternTerminalScm;
+              const state=api.state;
               const t=state.terms.get(state.active);
               assert(t, 'terminal should exist');
+              assert.equal(typeof t.term.keyHandler, 'function', 'capture real xterm key handler');
+              assert.equal(typeof t.term.dataHandler, 'function', 'capture real xterm onData handler');
+              api.handleMessage({{type:'terminal_created',terminalId:t.meta.id,meta:{{running:true}}}});
+              assert.equal(t.pending, false, 'server confirmation must enable raw input forwarding');
+              const nativeKeydowns = [
+                {{type:'keydown',key:'Unidentified',keyCode:231}},
+                {{type:'keydown',key:'Backspace',keyCode:8}},
+              ];
+              nativeKeydowns.forEach(ev => assert.equal(
+                t.term.keyHandler(ev), true, 'xterm must own UniKey synthetic and Backspace keydowns',
+              ));
+              const payloads = ['a', '·', '\\u007f', '\\u007f', 'á'];
+              assert.deepEqual(payloads.map(data=>data.charCodeAt(0)), [97,183,127,127,225]);
+              payloads.forEach(data => t.term.dataHandler(data));
+              assert.deepEqual(
+                state.ws.sent.filter(m=>m.type==='terminal_input').map(m=>m.data),
+                payloads,
+                'native onData payloads must be forwarded without dropping, rewriting, or reordering',
+              );
+              assert.equal(state.ws.sent.filter(m=>m.type==='terminal_key').length, 0,
+                'keydowns owned by xterm must not emit parallel key messages');
               const before=t.term.focusCount;
               assert(before>0, 'new terminal should initially focus xterm');
               global.openTerminal();

@@ -11,7 +11,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from uuid import uuid4
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
 MAX_TERMINALS = 16
 MAX_HISTORY = 32
@@ -80,6 +80,20 @@ def _inside(root: Path, candidate: Path) -> bool:
         return False
 
 
+def _build_pty_env(overlay: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    if overlay is not None and any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in overlay.items()
+    ):
+        raise TypeError("PTY environment keys and values must be strings")
+    env = os.environ.copy()
+    env.setdefault("TERM", "xterm-256color")
+    env.setdefault("LANG", "en_US.UTF-8")
+    if overlay:
+        env.update(overlay)
+    return env
+
+
 def resolve_shell() -> tuple[str, list[str], str]:
     """Prefer a native Windows shell under ConPTY; keep Git Bash opt-in.
 
@@ -132,14 +146,13 @@ class WinConPty(NativePty):
         rows: int,
         on_data: Callable[[str], None],
         on_exit: Callable[[int], None],
+        env_overlay: Optional[Mapping[str, str]] = None,
     ) -> None:
         try:
             from winpty import Backend, PtyProcess
         except ImportError as exc:
             raise RuntimeError("Windows terminal requires pywinpty in the Python environment running Lantern; with uv use: uv run main.py ...") from exc
-        env = os.environ.copy()
-        env.setdefault("TERM", "xterm-256color")
-        env.setdefault("LANG", "en_US.UTF-8")
+        env = _build_pty_env(env_overlay)
         requested = os.environ.get("LANTERN_PTY_BACKEND", "conpty").strip().lower()
         if requested not in {"conpty", "winpty"}:
             raise RuntimeError("LANTERN_PTY_BACKEND must be 'conpty' or 'winpty'")
@@ -248,6 +261,7 @@ class PosixPty(NativePty):
         rows: int,
         on_data: Callable[[str], None],
         on_exit: Callable[[int], None],
+        env_overlay: Optional[Mapping[str, str]] = None,
     ) -> None:
         import fcntl
         import pty
@@ -261,9 +275,7 @@ class PosixPty(NativePty):
         self._struct = struct
         self._termios = termios
         self.resize(cols, rows)
-        env = os.environ.copy()
-        env.setdefault("TERM", "xterm-256color")
-        env.setdefault("LANG", "en_US.UTF-8")
+        env = _build_pty_env(env_overlay)
         self._proc = subprocess.Popen(
             argv, cwd=cwd, stdin=slave, stdout=slave, stderr=slave, env=env,
             close_fds=True, preexec_fn=os.setsid,
@@ -327,8 +339,10 @@ class TerminalEntry:
     running: bool = True
     exit_code: Optional[int] = None
     output: str = ""
-    output_offset: int = 0
+    retained_start_utf8: int = 0
+    stream_end_utf8: int = 0
     command: Optional[str] = None
+    control_owner: Optional[str] = None
     generation: str = field(default_factory=lambda: uuid4().hex)
     seq: int = 0
 
@@ -370,18 +384,33 @@ class TerminalManager:
             candidate = candidate.parent
         return candidate
 
-    def _spawn_native(self, term_id, cwd, cols, rows, on_data, on_exit, command=None):
-        shell, args, family = resolve_shell()
-        argv = [shell, *args]
-        if command:
-            if family in {"bash", "posix"}:
-                argv = [shell, "-lc", command]
-            elif family == "cmd":
-                argv = [shell, "/D", "/S", "/C", command]
-            elif family == "powershell":
-                argv = [shell, "-NoProfile", "-Command", command]
+    def _spawn_native(
+        self,
+        term_id,
+        cwd,
+        cols,
+        rows,
+        on_data,
+        on_exit,
+        command=None,
+        *,
+        argv: Optional[Sequence[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ):
+        if argv is None:
+            shell, args, family = resolve_shell()
+            spawn_argv = [shell, *args]
+            if command:
+                if family in {"bash", "posix"}:
+                    spawn_argv = [shell, "-lc", command]
+                elif family == "cmd":
+                    spawn_argv = [shell, "/D", "/S", "/C", command]
+                elif family == "powershell":
+                    spawn_argv = [shell, "-NoProfile", "-Command", command]
+        else:
+            spawn_argv = list(argv)
         cls = WinConPty if os.name == "nt" else PosixPty
-        return cls(argv, str(cwd), cols, rows, on_data, on_exit)
+        return cls(spawn_argv, str(cwd), cols, rows, on_data, on_exit, env)
 
     def _validate_id(self, term_id: str) -> None:
         if not _VALID_ID.fullmatch(term_id or ""):
@@ -393,56 +422,160 @@ class TerminalManager:
         if len(self.live) >= self.max_live:
             raise RuntimeError(f"Terminal limit reached ({self.max_live})")
 
-    def create(self, term_id: str, cwd: str | Path, cols: int = 80, rows: int = 24, title: str = "Terminal", command: Optional[str] = None) -> Dict[str, Any]:
+    def create(
+        self,
+        term_id: str,
+        cwd: str | Path,
+        cols: int = 80,
+        rows: int = 24,
+        title: str = "Terminal",
+        command: Optional[str] = None,
+        *,
+        argv: Optional[Sequence[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        control_owner: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if not self.enabled:
             raise RuntimeError("Terminal is disabled in config")
+        if argv is not None and command is not None:
+            raise ValueError("Terminal spawn cannot use both argv and command")
+        if argv is not None:
+            if isinstance(argv, (str, bytes)):
+                raise TypeError("Structured terminal argv must be a sequence of argument strings")
+            if not argv:
+                raise ValueError("Structured terminal argv must not be empty")
+            if any(not isinstance(arg, str) for arg in argv):
+                raise TypeError("Structured terminal argv entries must be strings")
+        elif env is not None:
+            raise ValueError("Structured terminal env requires argv")
+        if env is not None and any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in env.items()
+        ):
+            raise TypeError("Structured terminal env keys and values must be strings")
         self._validate_id(term_id)
-        with self.lock:
-            if term_id in self.live:
-                return self._info(self.live[term_id])
-            self._ensure_slot(term_id)
-            self.history.pop(term_id, None)
-            safe_cwd = self._safe_cwd(cwd)
-            cols = max(2, int(cols or 80))
-            rows = max(2, int(rows or 24))
-            holder: Dict[str, Any] = {"early_data": []}
+        rollback_entry: Optional[TerminalEntry] = None
+        try:
+            with self.lock:
+                if term_id in self.live:
+                    return self._info(self.live[term_id])
+                self._ensure_slot(term_id)
+                self.history.pop(term_id, None)
+                safe_cwd = self._safe_cwd(cwd)
+                cols = max(2, int(cols or 80))
+                rows = max(2, int(rows or 24))
+                holder: Dict[str, Any] = {"early_data": []}
 
-            def on_data(data: str) -> None:
-                entry = holder.get("entry")
-                if entry is not None:
-                    self._queue_output(entry, data)
+                def on_data(data: str) -> None:
+                    entry = holder.get("entry")
+                    if entry is not None:
+                        self._queue_output(entry, data)
+                    else:
+                        holder["early_data"].append(data)
+
+                def on_exit(code: int) -> None:
+                    entry = holder.get("entry")
+                    if entry is not None:
+                        self._handle_exit(entry, code)
+                    else:
+                        holder["early_exit"] = code
+
+                if argv is None and env is None:
+                    pty_obj = self.pty_factory(term_id, safe_cwd, cols, rows, on_data, on_exit, command)
                 else:
-                    holder["early_data"].append(data)
+                    pty_obj = self.pty_factory(
+                        term_id,
+                        safe_cwd,
+                        cols,
+                        rows,
+                        on_data,
+                        on_exit,
+                        command,
+                        argv=list(argv) if argv is not None else None,
+                        env=dict(env) if env is not None else None,
+                    )
+                entry = TerminalEntry(
+                    term_id,
+                    title.strip() or "Terminal",
+                    str(safe_cwd),
+                    cols,
+                    rows,
+                    pty_obj,
+                    command=command,
+                    control_owner=control_owner,
+                )
+                holder["entry"] = entry
+                self.live[term_id] = entry
+                try:
+                    for data in holder["early_data"]:
+                        self._queue_output(entry, data)
+                    if "early_exit" in holder:
+                        self._handle_exit(entry, int(holder["early_exit"]))
+                    else:
+                        self._emit_list()
+                    return self._info(entry)
+                except Exception:
+                    if self.live.get(term_id) is entry:
+                        self.live.pop(term_id, None)
+                    if self.history.get(term_id) is entry:
+                        self.history.pop(term_id, None)
+                    entry.running = False
+                    rollback_entry = entry
+                    raise
+        except Exception:
+            if rollback_entry is not None:
+                try:
+                    rollback_entry.pty.close(graceful=False)
+                except Exception:
+                    pass
+            raise
 
-            def on_exit(code: int) -> None:
-                entry = holder.get("entry")
-                if entry is not None:
-                    self._handle_exit(entry, code)
-                else:
-                    holder["early_exit"] = code
-
-            pty_obj = self.pty_factory(term_id, safe_cwd, cols, rows, on_data, on_exit, command)
-            entry = TerminalEntry(term_id, title.strip() or "Terminal", str(safe_cwd), cols, rows, pty_obj, command=command)
-            holder["entry"] = entry
-            self.live[term_id] = entry
-            for data in holder["early_data"]:
-                self._queue_output(entry, data)
-            if "early_exit" in holder:
-                self._handle_exit(entry, int(holder["early_exit"]))
-            else:
-                self._emit_list()
-            return self._info(entry)
+    def create_argv(
+        self,
+        term_id: str,
+        cwd: str | Path,
+        argv: Sequence[str],
+        cols: int = 80,
+        rows: int = 24,
+        title: str = "Terminal",
+        *,
+        env: Optional[Mapping[str, str]] = None,
+        control_owner: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.create(
+            term_id,
+            cwd,
+            cols,
+            rows,
+            title,
+            argv=argv,
+            env=env,
+            control_owner=control_owner,
+        )
 
     def run_command(self, term_id: str, cwd: str | Path, command: str, title: str, cols: int = 80, rows: int = 24) -> Dict[str, Any]:
         self.kill(term_id, emit_exit=False)
         return self.create(term_id, cwd, cols, rows, title, command=command)
 
+    def control_owner(self, term_id: str, *, include_history: bool = False) -> Optional[str]:
+        with self.lock:
+            entry = self.live.get(term_id)
+            if entry is not None and entry.running:
+                return entry.control_owner
+            if include_history:
+                entry = self.history.get(term_id)
+                if entry is not None:
+                    return entry.control_owner
+            return None
+
     def _append_retained(self, entry: TerminalEntry, data: str) -> None:
         entry.output += data
+        entry.stream_end_utf8 += len(data.encode("utf-8"))
         if len(entry.output) > self.max_output:
             drop = len(entry.output) - self.max_output
+            removed = entry.output[:drop]
             entry.output = entry.output[drop:]
-            entry.output_offset += drop
+            entry.retained_start_utf8 += len(removed.encode("utf-8"))
 
     def _queue_output(self, entry: TerminalEntry, data: str) -> None:
         if not data:
@@ -453,7 +586,7 @@ class TerminalManager:
             self._append_retained(entry, data)
             entry.seq += 1
             seq = entry.seq
-        self.emit({"type": "terminal_output", "terminalId": entry.id, "generation": entry.generation, "seq": seq, "data": data})
+        self.emit({"type": "terminal_output", "terminalId": entry.id, "generation": entry.generation, "seq": seq, "data": data, "_controlOwner": entry.control_owner})
 
     def _handle_exit(self, entry: TerminalEntry, code: int) -> None:
         evicted = []
@@ -473,7 +606,7 @@ class TerminalManager:
                 old.pty.close(graceful=False)
             except Exception:
                 pass
-        self.emit({"type": "terminal_exit", "terminalId": entry.id, "exitCode": code})
+        self.emit({"type": "terminal_exit", "terminalId": entry.id, "generation": entry.generation, "exitCode": code, "_controlOwner": entry.control_owner})
         self._emit_list()
 
     def input(self, term_id: str, data: str) -> None:
@@ -519,7 +652,7 @@ class TerminalManager:
             except Exception:
                 pass
             if emit_exit:
-                self.emit({"type": "terminal_exit", "terminalId": term_id, "exitCode": None})
+                self.emit({"type": "terminal_exit", "terminalId": term_id, "generation": entry.generation, "exitCode": None, "_controlOwner": entry.control_owner})
             self._emit_list()
             return
         if hist:
@@ -528,6 +661,29 @@ class TerminalManager:
             except Exception:
                 pass
             self._emit_list()
+
+    def kill_if_generation(
+        self,
+        term_id: str,
+        expected_generation: str,
+        *,
+        emit_exit: bool = True,
+    ) -> bool:
+        """Kill a live terminal only when its current generation is the expected one."""
+        with self.lock:
+            entry = self.live.get(term_id)
+            if entry is None or entry.generation != expected_generation:
+                return False
+            self.live.pop(term_id, None)
+            entry.running = False
+        try:
+            entry.pty.close(graceful=True)
+        except Exception:
+            pass
+        if emit_exit:
+            self.emit({"type": "terminal_exit", "terminalId": term_id, "generation": entry.generation, "exitCode": None, "_controlOwner": entry.control_owner})
+        self._emit_list()
+        return True
 
     def kill_all(self) -> None:
         with self.lock:
@@ -561,17 +717,36 @@ class TerminalManager:
         with self.lock:
             return [self._info(x) for x in [*self.live.values(), *self.history.values()]]
 
-    def replay_one(self, term_id: str) -> tuple[Dict[str, Any], str, int]:
-        """Capture one bounded PTY tail and its output sequence atomically."""
+    def replay_view(self, term_id: str) -> tuple[Dict[str, Any], str, int, int, int]:
+        """Capture one bounded PTY tail, sequence and UTF-8 stream interval atomically."""
         with self.lock:
             entry = self.live.get(term_id) or self.history.get(term_id)
             if entry is None:
                 raise ValueError("Unknown terminal id")
-            return self._info(entry), entry.output, entry.seq
+            return (
+                self._info(entry),
+                entry.output,
+                entry.seq,
+                entry.retained_start_utf8,
+                entry.stream_end_utf8,
+            )
+
+    def replay_one(self, term_id: str) -> tuple[Dict[str, Any], str, int]:
+        """Capture one bounded PTY tail and its output sequence atomically."""
+        meta, output, seq, _start_utf8, _end_utf8 = self.replay_view(term_id)
+        return meta, output, seq
 
     def replay(self) -> Iterable[tuple[str, str]]:
         with self.lock:
             return [(e.id, e.output) for e in [*self.live.values(), *self.history.values()] if e.output]
+
+    def replay_excluding_control_owner(self, owner: str) -> Iterable[tuple[str, str]]:
+        with self.lock:
+            return [
+                (entry.id, entry.output)
+                for entry in [*self.live.values(), *self.history.values()]
+                if entry.output and entry.control_owner != owner
+            ]
 
     def _emit_list(self) -> None:
         self.emit({"type": "terminal_list", "terminals": self.list()})
