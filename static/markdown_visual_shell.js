@@ -505,7 +505,7 @@
       await renderDraftPreview(next);
       preview.hidden = false;
     } else if (view.mode === 'source' && view.instance?.replaceExternalText) {
-      if (view.instance.replaceExternalText(next)) view.revision += 1;
+      if (view.instance.replaceExternalText(next, {acknowledge: backed})) view.revision += 1;
     } else if (view.mode === 'visual') {
       const engine = await loadBundle();
       const host = view.host?.querySelector('.md-visual-host');
@@ -599,6 +599,96 @@
   // Every edit goes to the project .md, not md_temp. A CAS rejects writes
   // based on stale file versions (VS Code, bot, or another browser).
   let writingReal = null;
+
+  const flushSourcePatches = async () => {
+    if (!view.version || !view.instance?.takePendingPatches) return false;
+    if (view.conflict) {
+      await drafts.write(getEditorText()).catch(() => {});
+      status('Resolve the concurrent Source edit before writing again.', 'error');
+      return false;
+    }
+    if (writingReal) await writingReal;
+    if (!view.instance?.hasPendingPatches?.()) return true;
+
+    const task = (async () => {
+      while (view.instance?.hasPendingPatches?.()) {
+        const batch = view.instance.takePendingPatches();
+        if (!batch) break;
+        try {
+          const result = await api('/api/work/patch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              path,
+              patches: batch.patches,
+              expectHash: view.workHash || null,
+              baseVersion: view.version,
+            }),
+          });
+          view.instance.acknowledgePatches(batch);
+          const persistedText = batch.after.toString();
+          view.workHash = result.hash || null;
+          view.currentVersion = result.currentVersion;
+          view.workState = result.state;
+          view.ackedText = persistedText;
+          view.lastSaved = persistedText;
+          view.conflict = false;
+          view.dirty = cleanLineEndings(persistedText) !== cleanLineEndings(view.baseline);
+          renderDraftDiff();
+        } catch (error) {
+          view.instance?.rejectPatches?.(batch);
+          const local = getEditorText();
+          await drafts.write(local).catch(() => {});
+          if (error.status === 409) {
+            try {
+              const state = await fetchWorkState();
+              if (state?.saved) {
+                const actual = state.work?.content ?? state.saved.content;
+                const merge = diffApi()?.merge3(view.ackedText, local, actual);
+                view.currentVersion = state.currentVersion;
+                view.workHash = state.work?.hash || null;
+                view.workState = state.state || (view.workHash ? 'pending' : 'clean');
+                if (merge && !merge.conflicts?.length) {
+                  // Rebase only against the freshly fetched CAS version. Reset
+                  // the Source adapter's acknowledged coordinates to that real
+                  // text, then re-queue the merged local delta as new patches.
+                  adoptSavedBaseline(state);
+                  view.lastSaved = actual;
+                  view.ackedText = actual;
+                  view.instance.replaceExternalText(actual, {acknowledge: true});
+                  view.instance.replaceExternalText(merge.text, {acknowledge: false});
+                  renderDraftDiff();
+                  continue;
+                }
+              }
+            } catch (_) {}
+            view.conflict = true;
+            status('Real .md changed concurrently. Overlapping Source edits are retained locally; review before retrying.', 'error');
+            return false;
+          }
+          if (error.status === 404) {
+            view.conflict = true;
+            view.workState = 'missing';
+            syncStatusVisibility();
+            status('Project .md unavailable; local Source recovery text retained.', 'error');
+            return false;
+          }
+          status('Cannot patch project .md: ' + error.message + '. Local Source edit retained.', 'error');
+          return false;
+        }
+      }
+      if (view.instance?.hasPendingPatches?.())
+        await drafts.write(getEditorText()).catch(() => {});
+      else
+        await drafts.clear().catch(() => {});
+      return true;
+    })();
+
+    writingReal = task;
+    try { return await task; }
+    finally { if (writingReal === task) writingReal = null; }
+  };
+
   const flushWorkingCopy = async (text = getEditorText()) => {
     if (!view.version) return false;
     if (view.piTurn) {
@@ -606,6 +696,7 @@
       status('LanternBot is editing the real .md; your typing will merge when its turn ends.', 'warn');
       return false;
     }
+    if (view.mode === 'source') return flushSourcePatches();
     if (writingReal) {
       await writingReal;
       if (view.active && view.instance && matchesLastSaved(getEditorText())) return true;
@@ -683,6 +774,8 @@
       await drafts.write(text).catch(() => {});
       return false;
     }
+    if (view.mode === 'source' && view.instance?.hasPendingPatches?.())
+      return flushWorkingCopy(text);
     if (matchesLastSaved(text)) return true;
     return flushWorkingCopy(text);
   };
@@ -978,7 +1071,10 @@
       if (kind === 'visual') {
         view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
       } else if (kind === 'source') {
-        view.instance = engine.createSourceMarkdown(view.sourceHost, contents, changed, actionHunk);
+        view.instance = engine.createSourceMarkdown(
+          view.sourceHost, contents, changed, actionHunk,
+          {acknowledgedText: view.ackedText}
+        );
       }
       const converted = getEditorText();
       const safeRoundtrip = cleanLineEndings(converted) === cleanLineEndings(contents);
@@ -1178,7 +1274,10 @@
       if (kind === 'visual') {
         view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
       } else if (kind === 'source') {
-        view.instance = engine.createSourceMarkdown(view.sourceHost, contents, changed, actionHunk);
+        view.instance = engine.createSourceMarkdown(
+          view.sourceHost, contents, changed, actionHunk,
+          {acknowledgedText: view.ackedText}
+        );
       }
       view.mode = kind;
       const restoredDraft = contents !== doc.content;

@@ -219,5 +219,47 @@ class WorkingCopyHttpTests(unittest.TestCase):
         caught.exception.close()
 
 
+    def test_source_patch_endpoint_preserves_mixed_eol_and_rejects_stale_hash(self):
+        real = self.root / "patch.md"
+        original = (
+            b"\xef\xbb\xbfHead\r\n" +
+            "日本語🏮 here\n".encode("utf-8") +
+            b"Tail"
+        )
+        real.write_bytes(original)
+        clean = self.get_work("patch.md")
+        payload = {
+            "path": "patch.md",
+            "expectHash": clean["currentVersion"],
+            "baseVersion": clean["saved"]["version"],
+            "patches": [
+                {
+                    "from": {"line": 2, "column": 6},
+                    "to": {"line": 2, "column": 10},
+                    "insert": "HERE\n新行",
+                    "expected": "here",
+                }
+            ],
+        }
+        try:
+            result = self.post("/api/work/patch", payload)
+        except urllib.error.HTTPError as exc:
+            self.fail(f"/api/work/patch unavailable: HTTP {exc.code}")
+        self.assertEqual(result["state"], "pending")
+        expected = (
+            b"\xef\xbb\xbfHead\r\n" +
+            "日本語🏮 HERE\n新行\n".encode("utf-8") +
+            b"Tail"
+        )
+        self.assertEqual(real.read_bytes(), expected)
+
+        stale = dict(payload)
+        stale["expectHash"] = "0" * 64
+        code, body = self.error("/api/work/patch", stale)
+        self.assertEqual(code, 409)
+        self.assertEqual(body["reason"], "stale")
+        self.assertEqual(real.read_bytes(), expected)
+
+
 if __name__ == "__main__":
     unittest.main()

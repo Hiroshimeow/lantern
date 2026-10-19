@@ -262,9 +262,15 @@
     if (mode === 'preview' && !preview.hidden) return restorePreview(preview, bookmark);
     if (mode === 'source') {
       const instance = globalThis.__lanternMdVisual?.state?.instance;
-      return typeof instance?.restoreBookmark === 'function'
-        ? !!instance.restoreBookmark(bookmark)
-        : false;
+      if (typeof instance?.restoreBookmark !== 'function') return false;
+      const matched = !!instance.restoreBookmark(bookmark);
+      if (matched && typeof requestAnimationFrame === 'function') {
+        // CodeMirror applies scrollIntoView during its measure cycle. Do not
+        // report the cross-mode restore complete until that viewport work ran.
+        await new Promise(resolve =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
+      return matched;
     }
     if (mode === 'visual' || mode === 'paged') {
       const paged = globalThis.__lanternMdPaged;

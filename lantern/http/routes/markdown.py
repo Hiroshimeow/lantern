@@ -32,6 +32,19 @@ class MarkdownRoutes:
         except WorkingCopyError as exc:
             self.send_json(exc.status, {"error": str(exc), **exc.details})
 
+    def api_work_patch(self) -> None:
+        data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 2)
+        try:
+            result = self._work_store().patch(
+                data.get("path"),
+                data.get("patches"),
+                expect_hash=data.get("expectHash"),
+                base_version=data.get("baseVersion"),
+            )
+            self.send_json(200, {"ok": True, **result})
+        except WorkingCopyError as exc:
+            self.send_json(exc.status, {"error": str(exc), **exc.details})
+
     def api_work_save(self) -> None:
         data = self.read_json(max_bytes=MAX_MARKDOWN_EDITOR_BYTES * 2)
         try:

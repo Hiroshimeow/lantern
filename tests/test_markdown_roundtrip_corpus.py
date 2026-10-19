@@ -262,7 +262,9 @@ class MarkdownRoundtripCorpusE2E(unittest.TestCase):
             no_op_real = target.read_bytes()
             no_op_temp = temp_path.read_bytes()
 
-            value = area.input_value()
+            value = page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown()"
+            )
             self.assertEqual(value.count("EDIT_TARGET"), 1, fixture_name)
             edited = value.replace("EDIT_TARGET", SOURCE_REPLACEMENT.decode("ascii"), 1)
             area.fill(edited)

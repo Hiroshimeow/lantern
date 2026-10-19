@@ -27,7 +27,7 @@ from pathlib import Path
 from tests._markdown_characterization_settle import wait_for_stable_markdown_write
 
 ROOT = Path(__file__).resolve().parent.parent
-EVIDENCE = ROOT / ".plan" / "lantern-markdown-main-20261018" / "dev_turn6_source_typing_perf.json"
+EVIDENCE = ROOT / ".plan" / "lantern-markdown-main-20261018" / "dev_turn15_source_typing_perf.json"
 
 
 def _sha(raw: bytes) -> str:
@@ -173,9 +173,12 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
     def _install_observers(self, page) -> dict[str, int]:
         return page.evaluate(
             """() => {
-              const area = document.querySelector('textarea.md-source-area');
-              const backdrop = document.querySelector('.md-source-diff-backdrop-content');
-              if (!area || !backdrop) throw new Error('Source instrumentation target missing');
+              const editor = document.querySelector('.cm-editor');
+              const area = document.querySelector('.cm-editor .cm-content');
+              const instance = window.__lanternMdVisual?.state?.instance;
+              if (!editor || !area || !instance?.debugMetrics)
+                throw new Error('CodeMirror Source instrumentation target missing');
+              const initialMetrics = instance.debugMetrics();
               const data = window.__sourceP0 = {
                 inputs: 0, paintMs: [], longTasks: [], mutationRecords: 0,
                 added: 0, removed: 0, maxAdded: 0, maxRemoved: 0,
@@ -200,18 +203,24 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                   data.maxRemoved = Math.max(data.maxRemoved, removed);
                 }
               });
-              data.mutationObserver.observe(backdrop, {childList:true, subtree:false});
+              data.mutationObserver.observe(editor, {childList:true, subtree:true});
               area.addEventListener('input', () => {
                 const begin = performance.now();
+                const current = instance.selectionOffsets();
                 data.inputs += 1;
-                data.caretStarts.push(area.selectionStart);
+                data.caretStarts.push(current.head);
                 requestAnimationFrame(() => {
                   data.paintMs.push(performance.now() - begin);
                   if (document.activeElement !== area) data.focusLost = true;
-                  data.caretEnds.push(area.selectionStart);
+                  data.caretEnds.push(instance.selectionOffsets().head);
                 });
               }, true);
-              return {backdropLines: backdrop.children.length, valueBytes: new Blob([area.value]).size};
+              return {
+                docLines: initialMetrics.docLines,
+                renderedLines: initialMetrics.renderedLines,
+                domNodes: initialMetrics.domNodes,
+                valueBytes: new Blob([instance.getMarkdown()]).size
+              };
             }"""
         )
 
@@ -219,17 +228,21 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
         begin = time.perf_counter()
         page.evaluate(
             """value => {
-              const area = document.querySelector('textarea.md-source-area');
+              const area = document.querySelector('.cm-editor .cm-content');
               area.focus();
-              const start = area.selectionStart;
-              const end = area.selectionEnd;
-              area.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
-              area.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:value}));
-              area.setRangeText(value, start, end, 'end');
-              area.dispatchEvent(new InputEvent('input', {
-                bubbles:true, inputType:'insertCompositionText', data:value, isComposing:true
-              }));
-              area.dispatchEvent(new CompositionEvent('compositionend', {bubbles:true, data:value}));
+              area.dispatchEvent(new CompositionEvent(
+                'compositionstart', {bubbles:true, data:''}));
+              area.dispatchEvent(new CompositionEvent(
+                'compositionupdate', {bubbles:true, data:value}));
+            }""",
+            value,
+        )
+        page.keyboard.insert_text(value)
+        page.evaluate(
+            """value => {
+              const area = document.querySelector('.cm-editor .cm-content');
+              area.dispatchEvent(new CompositionEvent(
+                'compositionend', {bubbles:true, data:value}));
             }""",
             value,
         )
@@ -241,9 +254,17 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
         page = context.new_page()
         navigations: list[str] = []
         requests: list[tuple[str, str]] = []
+        patch_payload_bytes: list[int] = []
         page_errors: list[str] = []
+
+        def on_request(req) -> None:
+            url = req.url.split("?")[0]
+            requests.append((req.method, url))
+            if req.method == "POST" and url.endswith("/api/work/patch"):
+                patch_payload_bytes.append(len((req.post_data or "").encode("utf-8")))
+
         page.on("framenavigated", lambda frame: navigations.append(frame.url) if frame == page.main_frame else None)
-        page.on("request", lambda req: requests.append((req.method, req.url.split("?")[0])))
+        page.on("request", on_request)
         page.on("pageerror", lambda err: page_errors.append(str(err)))
         try:
             page.goto(
@@ -254,7 +275,29 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             area = page.get_by_role("textbox", name="Markdown source")
             area.wait_for(timeout=45000)
-            page.wait_for_function("() => !!window.__lanternMdVisual?.state?.currentVersion", timeout=20000)
+            try:
+                page.wait_for_function(
+                    "() => document.querySelector('.cm-editor .cm-content')"
+                    " && window.__lanternMdVisual?.state?.instance?.kind === 'codemirror-source'",
+                    timeout=20000,
+                )
+            except Exception as exc:
+                debug = page.evaluate(
+                    """() => ({
+                      mode:window.__lanternMdVisual?.state?.mode,
+                      kind:window.__lanternMdVisual?.state?.instance?.kind,
+                      loading:window.__lanternMdVisual?.state?.loading,
+                      status:document.querySelector('[data-md-status]')?.textContent,
+                      cm:document.querySelectorAll('.cm-editor').length,
+                      textarea:document.querySelectorAll('textarea.md-source-area').length,
+                      scripts:[...document.scripts].map(s=>s.src).filter(Boolean)
+                    })"""
+                )
+                raise AssertionError({
+                    "case": name,
+                    "debug": debug,
+                    "page_errors": page_errors,
+                }) from exc
 
             state = page.evaluate(
                 """name => fetch('/api/work?p=' + encodeURIComponent(name + '.md'))
@@ -269,6 +312,7 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
             # Ignore the initial document navigation and startup API traffic.
             navigations.clear()
             requests.clear()
+            patch_payload_bytes.clear()
             area.click()
             page.keyboard.press("Control+Home")
             wall_ms: list[float] = []
@@ -285,7 +329,9 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                 # to fire.  Do not mask the full-backdrop cost with a long debounce.
                 page.wait_for_timeout(330)
 
-            final_value = area.input_value()
+            final_value = page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown()"
+            )
             settled = wait_for_stable_markdown_write(
                 page,
                 rel=name + ".md",
@@ -300,16 +346,19 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
             observed = page.evaluate(
                 """() => {
                   const data = window.__sourceP0;
-                  const area = document.querySelector('textarea.md-source-area');
-                  const backdrop = document.querySelector('.md-source-diff-backdrop-content');
+                  const instance = window.__lanternMdVisual?.state?.instance;
+                  const metrics = instance.debugMetrics();
                   return {
                     inputs:data.inputs, paintMs:data.paintMs, longTasks:data.longTasks,
                     mutationRecords:data.mutationRecords, added:data.added, removed:data.removed,
                     maxAdded:data.maxAdded, maxRemoved:data.maxRemoved,
                     focusLost:data.focusLost, caretStarts:data.caretStarts, caretEnds:data.caretEnds,
-                    backdropLines:backdrop.children.length,
+                    docLines:metrics.docLines, renderedLines:metrics.renderedLines,
+                    domNodes:metrics.domNodes, viewportFrom:metrics.viewportFrom,
+                    viewportTo:metrics.viewportTo,
                     activeClass:document.activeElement?.className || '',
-                    selectionStart:area.selectionStart, valuePrefix:area.value.slice(0,40),
+                    selectionStart:metrics.selection.head,
+                    valuePrefix:instance.getMarkdown().slice(0,40),
                     currentVersion:window.__lanternMdVisual?.state?.currentVersion,
                     savedVersion:window.__lanternMdVisual?.state?.version,
                     workHash:window.__lanternMdVisual?.state?.workHash
@@ -324,17 +373,43 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                 method_name == "GET" and url.endswith("/api/work")
                 for method_name, url in requests
             )
-            backdrop_reference = max(1, int(initial["backdropLines"]))
-            full_rebuild = (
-                observed["maxAdded"] >= math.floor(backdrop_reference * 0.9)
-                and observed["maxRemoved"] >= math.floor(backdrop_reference * 0.9)
+            source_line_count = len(self.workloads[name].splitlines())
+            rendered_peak = max(
+                int(initial["renderedLines"]),
+                int(observed["renderedLines"]),
+            )
+            viewport_bounded = (
+                source_line_count <= 250
+                or rendered_peak <= 200
+            )
+            full_rebuild = bool(
+                source_line_count > 250
+                and (
+                    observed["maxAdded"] >= math.floor(source_line_count * 0.9)
+                    or observed["maxRemoved"] >= math.floor(source_line_count * 0.9)
+                    or observed["renderedLines"] >= math.floor(source_line_count * 0.9)
+                )
+            )
+            patch_post_count = sum(
+                method_name == "POST" and url.endswith("/api/work/patch")
+                for method_name, url in requests
+            )
+            full_write_post_count = sum(
+                method_name == "POST" and url.endswith("/api/work/write")
+                for method_name, url in requests
+            )
+            max_patch_payload = max(patch_payload_bytes, default=0)
+            patch_network_ok = (
+                patch_post_count >= 1
+                and full_write_post_count == 0
+                and 0 < max_patch_payload < 64 * 1024
             )
             p50 = _percentile(wall_ms, 0.50)
             p95 = _percentile(wall_ms, 0.95)
             paint_p95 = _percentile([float(x) for x in observed["paintMs"]], 0.95)
             focus_preserved = (
                 not observed["focusLost"]
-                and "md-source-area" in observed["activeClass"]
+                and "cm-content" in observed["activeClass"]
                 and len(observed["caretEnds"]) == observed["inputs"]
             )
             write_through = real_after["sha256"] != real_before["sha256"] and post_write >= 1
@@ -342,7 +417,12 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
             no_navigation = len(navigations) == 0
             fixed_target = name == "lines-5500"
             within_budget = (
-                bool(p95 is not None and p95 < 40.0 and not full_rebuild)
+                bool(
+                    p95 is not None
+                    and p95 < 40.0
+                    and not full_rebuild
+                    and viewport_bounded
+                )
                 if fixed_target else None
             )
             contract_ok = (
@@ -351,6 +431,9 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                 and temp_unchanged
                 and no_navigation
                 and focus_preserved
+                and viewport_bounded
+                and not full_rebuild
+                and patch_network_ok
             )
             if fixed_target:
                 acceptance = "PASS" if within_budget and contract_ok else "FAIL"
@@ -371,15 +454,24 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
                 "long_tasks": observed["longTasks"],
                 "long_task_count": len(observed["longTasks"]),
                 "mutation_records": observed["mutationRecords"],
-                "backdrop_dom_added": observed["added"],
-                "backdrop_dom_removed": observed["removed"],
-                "backdrop_max_added_one_record": observed["maxAdded"],
-                "backdrop_max_removed_one_record": observed["maxRemoved"],
-                "backdrop_lines_before": initial["backdropLines"],
-                "backdrop_lines_after": observed["backdropLines"],
-                "full_backdrop_rebuild": full_rebuild,
+                "source_dom_added": observed["added"],
+                "source_dom_removed": observed["removed"],
+                "source_max_added_one_record": observed["maxAdded"],
+                "source_max_removed_one_record": observed["maxRemoved"],
+                "doc_lines": observed["docLines"],
+                "rendered_lines_before": initial["renderedLines"],
+                "rendered_lines_after": observed["renderedLines"],
+                "source_dom_nodes_before": initial["domNodes"],
+                "source_dom_nodes_after": observed["domNodes"],
+                "viewport_bounded": viewport_bounded,
+                "full_document_dom_rebuild": full_rebuild,
                 "main_document_navigation_count": len(navigations),
                 "write_post_count": post_write,
+                "patch_post_count": patch_post_count,
+                "full_write_post_count": full_write_post_count,
+                "patch_payload_bytes": patch_payload_bytes,
+                "max_patch_payload_bytes": max_patch_payload,
+                "patch_network_ok": patch_network_ok,
                 "work_get_count": get_work,
                 "write_settle_poll_count": settled["poll_count"],
                 "write_settle_quiet_ms": settled["quiet_ms"],
@@ -407,12 +499,14 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
 
     def test_source_typing_characterization(self) -> None:
         result: dict[str, object] = {
-            "schema": 1,
+            "schema": 2,
             "browser": {"channel": "msedge", "version": self.browser_version},
             "target": {
                 "case": "lines-5500",
                 "key_wall_p95_lt_ms": 40.0,
-                "full_backdrop_rebuild": False,
+                "full_document_dom_rebuild": False,
+                "viewport_bounded": True,
+                "full_write_post_count": 0,
             },
             "cases": [],
         }
@@ -430,7 +524,8 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
         measured_5500 = by_name["lines-5500"]
         expected_budget = (
             measured_5500["key_wall_p95_ms"] < 40.0
-            and not measured_5500["full_backdrop_rebuild"]
+            and not measured_5500["full_document_dom_rebuild"]
+            and measured_5500["viewport_bounded"]
         )
         self.assertEqual(measured_5500["within_budget"], expected_budget)
         self.assertEqual(
@@ -442,6 +537,7 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
             and measured_5500["md_temp_unchanged"]
             and measured_5500["main_document_navigation_count"] == 0
             and measured_5500["focus_preserved"]
+            and measured_5500["patch_network_ok"]
             else "FAIL",
         )
         for case in result["cases"]:
@@ -455,6 +551,12 @@ class SourceTypingPerformanceE2E(unittest.TestCase):
             self.assertEqual(case["current_md_temp_version"], case["md_temp_after"]["sha256"])
             self.assertTrue(case["write_settled"])
             self.assertGreaterEqual(case["write_settle_quiet_ms"], 600)
+            self.assertTrue(case["viewport_bounded"])
+            self.assertFalse(case["full_document_dom_rebuild"])
+            self.assertTrue(case["patch_network_ok"])
+            self.assertEqual(case["full_write_post_count"], 0)
+            self.assertGreaterEqual(case["patch_post_count"], 1)
+            self.assertLess(case["max_patch_payload_bytes"], 64 * 1024)
             self.assertEqual(case["page_errors"], [])
 
 

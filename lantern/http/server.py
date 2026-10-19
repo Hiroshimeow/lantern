@@ -182,6 +182,7 @@ class Handler(AppRoutes,PluginRoutes,MediaRoutes,CropRoutes,MarkdownRoutes,Files
             if route == "/api/image/overwrite": return self.api_image_overwrite(parsed.query)
             if route == "/api/save": return self.api_save()
             if route == "/api/work/write": return self.api_work_write()
+            if route == "/api/work/patch": return self.api_work_patch()
             if route == "/api/work/save": return self.api_work_save()
             if route == "/api/work/accept-hunk": return self.api_work_accept_hunk()
             if route == "/api/work/discard": return self.api_work_discard()

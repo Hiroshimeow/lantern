@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-WORK_WRITE_SUFFIX = "/api/work/write"
+WORK_WRITE_SUFFIXES = ("/api/work/write", "/api/work/patch")
 # Markdown's current input/diff/write timers are 90/110/120 ms.  A stable
 # signature must survive five times the longest timer; this is a quiescence
 # condition, not a one-shot sleep.
@@ -19,8 +19,9 @@ def sha256_bytes(raw: bytes) -> str:
 
 
 def count_work_write_posts(requests: list[tuple[str, str]]) -> int:
+    """Count durable Markdown mutations, including Source patch batches."""
     return sum(
-        method == "POST" and url.endswith(WORK_WRITE_SUFFIX)
+        method == "POST" and any(url.endswith(suffix) for suffix in WORK_WRITE_SUFFIXES)
         for method, url in requests
     )
 

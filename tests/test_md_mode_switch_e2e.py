@@ -61,6 +61,32 @@ class MarkdownModesE2E(unittest.TestCase):
                 cls.proc.wait(timeout=5)
             cls.tmp.cleanup()
 
+    @staticmethod
+    def source_text(page):
+        return page.evaluate(
+            "() => window.__lanternMdVisual.state.instance.getMarkdown()"
+        )
+
+    @staticmethod
+    def source_position(page):
+        return page.evaluate("""() => {
+          const instance=window.__lanternMdVisual.state.instance;
+          const bookmark=instance.sourceBookmark();
+          const metrics=instance.debugMetrics();
+          const scroller=document.querySelector('.md-source-editor .cm-scroller');
+          const editor=document.querySelector('.md-source-editor');
+          return {
+            line:bookmark.line,
+            column:bookmark.column,
+            innerScroll:scroller?.scrollTop || 0,
+            visible:editor?.getBoundingClientRect().top || 0,
+            pageScroll:scrollY,
+            viewportFrom:metrics.viewportFrom,
+            viewportTo:metrics.viewportTo,
+            selection:metrics.selection,
+          };
+        }""")
+
     def test_preview_underscores_comments_and_escapes_without_source_mutation(self):
         original = (
             "# Long_file_name_2026\n\n"
@@ -94,7 +120,7 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             source = page.get_by_role("textbox", name="Markdown source")
             source.wait_for()
-            self.assertEqual(source.input_value(), original)
+            self.assertEqual(self.source_text(page), original)
             page.get_by_role("button", name="Preview", exact=True).click()
             preview.wait_for(state="visible")
             self.assertEqual(path.read_text(encoding="utf-8"), original)
@@ -128,7 +154,7 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             area = page.get_by_role("textbox", name="Markdown source")
             area.wait_for(timeout=11000)
-            self.assertEqual(area.input_value(), initial)
+            self.assertEqual(self.source_text(page), initial)
             self.assertFalse(any("lantern-crepe.min.js" in url for url in requests))
             area.fill(initial.replace("Three modes", "Three modes updated"))
             page.keyboard.press("Control+s")
@@ -150,7 +176,7 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertIn("invisible comment", editor.inner_text())
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for(timeout=12000)
-            self.assertEqual(area.input_value(), saved)
+            self.assertEqual(self.source_text(page), saved)
             page.get_by_role("button", name="Preview", exact=True).click()
             preview.wait_for(state="visible", timeout=12000)
             self.assertEqual(len(navs), navigations, "clean mode switching should not reload")
@@ -188,13 +214,14 @@ class MarkdownModesE2E(unittest.TestCase):
             area.wait_for(timeout=12000)
             self.assertFalse(page.locator('.content > .note').is_visible())
             self.assertFalse(page.locator('.content > .muted').is_visible())
-            position = page.evaluate("""() => {
-                const el = document.querySelector('.md-source-area');
-                return {line:el.value.slice(0,el.selectionStart).split('\\n').length,
-                  innerScroll:el.scrollTop, visible:el.getBoundingClientRect().top};
-            }""")
+            position = self.source_position(page)
             self.assertEqual(position["line"], 243)
-            self.assertGreater(position["innerScroll"], 800)
+            self.assertLessEqual(
+                position["viewportFrom"], position["selection"]["head"], position
+            )
+            self.assertGreaterEqual(
+                position["viewportTo"], position["selection"]["head"], position
+            )
             self.assertLessEqual(abs(page.locator(".md-bar").bounding_box()["y"]), 2)
             self.assertTrue(page.locator('[data-action="md-save"]').is_visible())
             self.assertTrue(page.locator('[data-action="md-download-draft"]').is_visible())
@@ -229,10 +256,7 @@ class MarkdownModesE2E(unittest.TestCase):
             }""")
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for(timeout=12000)
-            repeated = page.evaluate("""() => {
-                const el = document.querySelector('.md-source-area');
-                return el.value.slice(0, el.selectionStart).split('\\n').length;
-            }""")
+            repeated = self.source_position(page)["line"]
             self.assertEqual(repeated, expected_line)
             page.get_by_role("button", name="Preview", exact=True).click()
             marker.wait_for(state="visible", timeout=12000)
@@ -310,10 +334,7 @@ class MarkdownModesE2E(unittest.TestCase):
             self.assertEqual(bookmark["line"], 203, bookmark)
             page.get_by_role("button", name="Source", exact=True).click()
             page.get_by_role("textbox", name="Markdown source").wait_for(timeout=12000)
-            line = page.evaluate("""() => {
-              const a=document.querySelector('.md-source-area');
-              return a.value.slice(0,a.selectionStart).split('\\n').length;
-            }""")
+            line = self.source_position(page)["line"]
             self.assertEqual(line, 203)
             self.assertIn("Editor paragraph 100 unique content. UPDATED", path.read_text(encoding="utf-8"))
         finally:
@@ -338,8 +359,9 @@ class MarkdownModesE2E(unittest.TestCase):
                 "Source paragraph 100 unique content.",
                 "Source paragraph 100 changed by user.",
             ))
-            page.evaluate("() => window.LanternAnchorBridge.selectLine("
-                          "document.querySelector('.md-source-area'), 203)")
+            page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.restoreBookmark({line:203})"
+            )
             page.get_by_role("button", name="Edit visually", exact=True).click()
             editor = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
             editor.wait_for(timeout=24000)
@@ -378,7 +400,7 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             area = page.get_by_role("textbox", name="Markdown source")
             area.wait_for(timeout=12000)
-            source = area.input_value()
+            source = self.source_text(page)
             source = source.replace(
                 "Pending block 126 unique content.",
                 "Pending block 126 changed pending content.",
@@ -393,10 +415,10 @@ class MarkdownModesE2E(unittest.TestCase):
 
             # Put the Source viewport/caret back at the changed block before the
             # repeated mode switches.
-            page.evaluate("""line => {
-              const area=document.querySelector('.md-source-area');
-              window.LanternAnchorBridge.selectLine(area,line,{line});
-            }""", expected)
+            page.evaluate(
+                "line => window.__lanternMdVisual.state.instance.restoreBookmark({line})",
+                expected,
+            )
 
             for cycle in range(3):
                 page.get_by_role("button", name="Preview", exact=True).click()
@@ -426,15 +448,14 @@ class MarkdownModesE2E(unittest.TestCase):
 
                 page.get_by_role("button", name="Source", exact=True).click()
                 area.wait_for(timeout=12000)
-                pos = page.evaluate("""() => {
-                  const a=document.querySelector('.md-source-area');
-                  return {
-                    line:a.value.slice(0,a.selectionStart).split('\\n').length,
-                    top:a.scrollTop,
-                  };
-                }""")
+                pos = self.source_position(page)
                 self.assertGreater(pos["line"], 200)
-                self.assertGreater(pos["top"], 800)
+                self.assertLessEqual(
+                    pos["viewportFrom"], pos["selection"]["head"], pos
+                )
+                self.assertGreaterEqual(
+                    pos["viewportTo"], pos["selection"]["head"], pos
+                )
 
             self.assertEqual(target.read_text(encoding="utf-8"), source)
             self.assertEqual(errors, [])
@@ -462,7 +483,7 @@ class MarkdownModesE2E(unittest.TestCase):
 
             for cycle in range(3):
                 page.get_by_role("button", name="Source", exact=True).click()
-                page.locator("textarea.md-source-area").wait_for(timeout=12000)
+                page.get_by_role("textbox", name="Markdown source").wait_for(timeout=12000)
                 page.get_by_role("button", name="Preview", exact=True).click()
                 page.locator("article.md-preview").wait_for(state="visible", timeout=12000)
                 after_source = page.evaluate(
@@ -542,7 +563,7 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             area = page.get_by_role("textbox", name="Markdown source")
             area.wait_for(timeout=16000)
-            self.assertIn("appended", area.input_value())
+            self.assertIn("appended", self.source_text(page))
             self.assertTrue(page.evaluate("window.__lanternMdVisual.state.dirty"))
             self.assertIn("appended", path.read_text(encoding="utf-8"))
             page.keyboard.press("Control+s")
@@ -613,14 +634,14 @@ class MarkdownModesE2E(unittest.TestCase):
                 """() => window.__lanternMdVisual?.state?.baseline?.includes('VS Code edit.')""",
                 timeout=10000,
             )
-            self.assertEqual(area.input_value(), draft)
+            self.assertEqual(self.source_text(page), draft)
             self.assertFalse(page.evaluate("() => window.__lanternMdVisual.state.conflict"))
             page.locator(".md-visual-status").filter(
                 has_text="File changed outside Lantern"
             ).wait_for(timeout=10000)
             self.assertIn(
                 "VS Code edit.",
-                "\n".join(page.locator(".md-source-deletion").all_inner_texts()),
+                "\n".join(page.locator(".cm-lantern-deletion").all_inner_texts()),
             )
 
             # Explicit Save means the current working copy wins, but still through
@@ -661,7 +682,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 "() => Number(document.documentElement.dataset.mdPendingHunks || '0') > 0",
                 timeout=8000,
             )
-            self.assertNotIn("EXTRA", area.input_value())
+            self.assertNotIn("EXTRA", self.source_text(page))
             self.assertEqual(path.read_text(encoding="utf-8"), saved_with_extra)
             self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
             self.assertEqual(errors, [])
@@ -699,7 +720,7 @@ class MarkdownModesE2E(unittest.TestCase):
 
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for(timeout=14000)
-            self.assertEqual(area.input_value(), draft)
+            self.assertEqual(self.source_text(page), draft)
             self.assertTrue(page.evaluate("() => window.__lanternMdVisual.state.dirty"))
         finally:
             context.close()
@@ -720,14 +741,14 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             area = page.get_by_role("textbox", name="Markdown source")
             area.wait_for(timeout=17000)
-            self.assertEqual(area.input_value(), original)
+            self.assertEqual(self.source_text(page), original)
             page.get_by_role("button", name="Edit visually", exact=True).click()
             page.wait_for_function(
                 "() => !!window.__lanternMdPaged?.active", timeout=33000)
             self.assertEqual(page.evaluate("window.__lanternMdVisual.state.mode"), "paged")
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for(timeout=20000)
-            self.assertEqual(area.input_value(), original)
+            self.assertEqual(self.source_text(page), original)
             self.assertEqual(page.evaluate("window.__lanternMdVisual.state.mode"), "source")
             page.get_by_role("button", name="Preview", exact=True).click()
             page.locator("article.md-preview").wait_for(state="visible", timeout=15000)
@@ -761,7 +782,7 @@ class MarkdownModesE2E(unittest.TestCase):
             # Dirty edits are already on the original: no Save gate or draft loss.
             page.get_by_role("button", name="Source", exact=True).click()
             page.get_by_role("textbox", name="Markdown source").wait_for(timeout=17000)
-            self.assertIn("DRAFT", page.get_by_role("textbox", name="Markdown source").input_value())
+            self.assertIn("DRAFT", self.source_text(page))
         finally:
             context.close()
 
@@ -878,7 +899,7 @@ class MarkdownModesE2E(unittest.TestCase):
 
             page.get_by_role("button", name="Source", exact=True).click()
             area.wait_for()
-            self.assertEqual(area.input_value(), draft)
+            self.assertEqual(self.source_text(page), draft)
             self.assertEqual(prompts, [])
         finally:
             context.close()
@@ -910,13 +931,13 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button",name="Source",exact=True).click()
             area=page.get_by_role("textbox",name="Markdown source")
             area.wait_for()
-            self.assertEqual(area.input_value(),original)
+            self.assertEqual(self.source_text(page),original)
             self.assertEqual(len(prompts),1)
             page.get_by_role("button",name="Preview",exact=True).click()
             page.locator("article.md-preview").wait_for(state="visible")
             page.get_by_role("button",name="Source",exact=True).click()
             area.wait_for()
-            self.assertEqual(area.input_value(),original)
+            self.assertEqual(self.source_text(page),original)
             self.assertEqual(len(prompts),1,"Dismissed cache should not prompt again")
         finally:
             context.close()
@@ -1083,16 +1104,16 @@ class MarkdownModesE2E(unittest.TestCase):
                 timeout=8000,
             )
 
-            self.assertGreater(page.locator(".md-source-diff-line.md-diff-add").count(), 0)
-            self.assertGreater(page.locator(".md-source-diff-line.md-diff-mod").count(), 0)
-            deletion = page.locator(".md-source-deletion")
+            self.assertGreater(page.locator(".cm-lantern-diff-add").count(), 0)
+            self.assertGreater(page.locator(".cm-lantern-diff-mod").count(), 0)
+            deletion = page.locator(".cm-lantern-deletion")
             self.assertGreater(deletion.count(), 0)
             deletion_text = "\n".join(deletion.all_inner_texts())
             self.assertIn("delete me", deletion_text)
 
             # Diff chrome is outside the draft value and never serializes.
-            self.assertEqual(source.input_value(), changed)
-            self.assertNotIn("Removed near line", source.input_value())
+            self.assertEqual(self.source_text(page), changed)
+            self.assertNotIn("Removed near line", self.source_text(page))
             self.assertEqual(path.read_text(encoding="utf-8"), changed)
 
             page.keyboard.press("Control+S")
@@ -1105,7 +1126,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 timeout=5000,
             )
             self.assertEqual(path.read_text(encoding="utf-8"), changed)
-            self.assertEqual(page.locator(".md-source-deletion").count(), 0)
+            self.assertEqual(page.locator(".cm-lantern-deletion").count(), 0)
             self.assertEqual(errors, [])
         finally:
             context.close()
@@ -1158,7 +1179,7 @@ class MarkdownModesE2E(unittest.TestCase):
                 {"hash": update["hash"]},
             )
             merged = "# Pi merge\nalpha\nHUMAN BETA\ngamma\nPI OMEGA\n"
-            self.assertEqual(source.input_value(), merged)
+            self.assertEqual(self.source_text(page), merged)
             self.assertEqual(path.read_text(encoding="utf-8"), initial)
             working = page.evaluate("""async () =>
               await (await fetch('/api/work?p='+encodeURIComponent('pi-working-merge.md'),
@@ -1176,7 +1197,7 @@ class MarkdownModesE2E(unittest.TestCase):
                      'pi-working-merge.md',hash,true)""",
                 {"hash": update2["hash"]},
             )
-            self.assertEqual(source.input_value(), human2)
+            self.assertEqual(self.source_text(page), human2)
             self.assertIn("overlapping hunk", page.locator(".md-visual-status").inner_text())
             self.assertEqual(path.read_text(encoding="utf-8"), initial)
 
@@ -1504,7 +1525,7 @@ class MarkdownModesE2E(unittest.TestCase):
             page.get_by_role("button", name="Source", exact=True).click()
             source = page.get_by_role("textbox", name="Markdown source")
             source.wait_for(timeout=12000)
-            self.assertEqual(source.input_value(), draft)
+            self.assertEqual(self.source_text(page), draft)
             page.keyboard.press("Control+S")
             page.wait_for_function(
                 "() => { const s=window.__lanternMdVisual?.state; return !!s && !s.saving && !s.dirty && !s.workHash; }",
@@ -1559,7 +1580,7 @@ class MarkdownModesE2E(unittest.TestCase):
 
             page.get_by_role("button", name="Source", exact=True).click()
             source.wait_for(timeout=12000)
-            self.assertEqual(source.input_value(), draft)
+            self.assertEqual(self.source_text(page), draft)
 
             page.keyboard.press("Control+S")
             page.wait_for_function(

@@ -19,7 +19,7 @@ from typing import Any, Iterable
 
 from .text_file import (
     MAX_TEXT_FILE_BYTES, TextFileError, read_text_snapshot,
-    save_text_cas, snapshot_from_bytes,
+    patch_text_cas, save_text_cas, snapshot_from_bytes,
 )
 from .working_copy import WorkingCopyError
 
@@ -146,6 +146,44 @@ class LiveMarkdownStore:
             return {"state": "pending" if changed else "clean",
                     "hash": result["version"] if changed else None,
                     "currentVersion": result["version"], "updatedAt": time.time()}
+
+    def patch(self, rel: str, patches: list[dict[str, Any]], *,
+              expect_hash: str | None, base_version: str) -> dict[str, Any]:
+        logical, real, identifier, temp = self._resolve(rel)
+        with self.lock:
+            baseline = self._baseline(real, identifier, temp)
+            if baseline["version"] != base_version:
+                raise WorkingCopyError(
+                    409,
+                    "Accepted Markdown baseline changed",
+                    reason="baseline_changed",
+                    currentVersion=baseline["version"],
+                )
+            before = self._read_real(real)
+            expected = expect_hash or base_version
+            if before["version"] != expected:
+                raise WorkingCopyError(
+                    409,
+                    "Project file changed in another editor",
+                    reason="stale",
+                    currentHash=(before["version"]
+                                 if before["version"] != base_version else None),
+                    currentVersion=before["version"],
+                )
+            try:
+                result = patch_text_cas(real, patches, expected, self.max_bytes)
+            except TextFileError as exc:
+                reason = "stale" if exc.status == 409 else "invalid_patch"
+                raise WorkingCopyError(exc.status, str(exc), reason=reason,
+                                       **exc.details) from exc
+            changed = result["version"] != baseline["version"]
+            return {
+                "path": logical,
+                "state": "pending" if changed else "clean",
+                "hash": result["version"] if changed else None,
+                "currentVersion": result["version"],
+                "updatedAt": time.time(),
+            }
 
     def save(self, rel: str, *, expect_hash: str | None,
              expect_saved_version: str) -> dict[str, Any]:

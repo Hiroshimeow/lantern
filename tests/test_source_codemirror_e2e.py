@@ -98,6 +98,255 @@ class SourceCodeMirrorE2E(unittest.TestCase):
         finally:
             ctx.close()
 
+
+    def test_source_persists_small_patch_without_normalizing_mixed_eol(self):
+        file = self.root / "patch-source.md"
+        before = b"# Mixed\r\n\r\nLine OLD.\nTail"
+        expected = b"# Mixed\r\n\r\nLine NEW.\nTail"
+        file.write_bytes(before)
+        ctx = self.browser.new_context(viewport={"width": 1100, "height": 760})
+        page = ctx.new_page()
+        posts = []
+        page.on(
+            "request",
+            lambda request: posts.append({
+                "url": request.url,
+                "method": request.method,
+                "data": request.post_data or "",
+            }) if request.method == "POST" else None,
+        )
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=patch-source.md")
+            page.get_by_role("button", name="Source", exact=True).click()
+            editor = page.get_by_role("textbox", name="Markdown source")
+            editor.wait_for(timeout=12000)
+            state = page.evaluate(
+                "async() => (await (await fetch('/api/work?p=patch-source.md')).json())"
+            )
+            temp = Path(state["tempPath"])
+            self.assertEqual(temp.read_bytes(), before)
+            posts.clear()
+
+            page.evaluate("""() => window.__lanternMdVisual.state.instance.restoreBookmark({
+              line:3, selectedText:'OLD'
+            })""")
+            page.keyboard.type("NEW")
+            deadline = time.time() + 12
+            while time.time() < deadline and file.read_bytes() != expected:
+                time.sleep(.05)
+            self.assertEqual(file.read_bytes(), expected)
+            self.assertEqual(temp.read_bytes(), before)
+            # Pump Playwright's event queue after the filesystem polling loop so
+            # request callbacks are delivered before network assertions.
+            page.wait_for_timeout(50)
+            patch_posts = [item for item in posts if "/api/work/patch" in item["url"]]
+            write_posts = [item for item in posts if "/api/work/write" in item["url"]]
+            self.assertGreaterEqual(len(patch_posts), 1, posts)
+            self.assertEqual(write_posts, [], posts)
+            self.assertLess(max(len(item["data"].encode("utf-8")) for item in patch_posts), 2048)
+            payload = __import__("json").loads(patch_posts[-1]["data"])
+            self.assertEqual(payload["patches"][0]["from"]["line"], 3)
+            self.assertEqual(payload["patches"][0]["expected"], "OLD")
+            self.assertFalse(file.read_bytes().endswith((b"\n", b"\r")))
+        finally:
+            ctx.close()
+
+
+    def test_source_external_refresh_keeps_editor_instance_and_ctrl_s_accepts(self):
+        file = self.root / "external-source.md"
+        original = "# External\n\nOld.\n"
+        external = "# External\n\nVS Code.\n"
+        local = "# External\n\nVS Code + local.\n"
+        file.write_text(original, encoding="utf-8", newline="")
+        ctx = self.browser.new_context(viewport={"width": 1100, "height": 760})
+        page = ctx.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=external-source.md")
+            page.get_by_role("button", name="Source", exact=True).click()
+            page.get_by_role("textbox", name="Markdown source").wait_for(timeout=12000)
+            state = page.evaluate(
+                "async() => (await (await fetch('/api/work?p=external-source.md')).json())"
+            )
+            temp = Path(state["tempPath"])
+            accepted = temp.read_bytes()
+            page.evaluate("() => { window.__sourceIdentity = window.__lanternMdVisual.state.instance; }")
+
+            file.write_text(external, encoding="utf-8", newline="")
+            page.evaluate("() => window.dispatchEvent(new Event('focus'))")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.instance.getMarkdown().includes('VS Code.')",
+                timeout=5000,
+            )
+            self.assertTrue(page.evaluate(
+                "() => window.__sourceIdentity === window.__lanternMdVisual.state.instance"
+            ))
+            self.assertEqual(page.locator(".cm-editor").count(), 1)
+            self.assertEqual(temp.read_bytes(), accepted)
+
+            editor = page.get_by_role("textbox", name="Markdown source")
+            editor.fill(local)
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('VS Code + local.')",
+                timeout=12000,
+            )
+            self.assertEqual(file.read_text(encoding="utf-8"), local)
+            self.assertEqual(temp.read_bytes(), accepted)
+            page.keyboard.press("Control+s")
+            page.wait_for_function(
+                "() => document.documentElement.dataset.mdPendingHunks === '0'",
+                timeout=12000,
+            )
+            self.assertEqual(temp.read_bytes(), file.read_bytes())
+        finally:
+            ctx.close()
+
+    def test_source_stale_overlap_keeps_local_recovery_and_external_bytes(self):
+        file = self.root / "source-stale.md"
+        original = "# Stale\n\nOLD\n"
+        first = "# Stale\n\nFIRST\n"
+        second = "# Stale\n\nSECOND\n"
+        file.write_text(original, encoding="utf-8", newline="")
+        ctx = self.browser.new_context(viewport={"width": 1100, "height": 760})
+        a, b = ctx.new_page(), ctx.new_page()
+        try:
+            for page in (a, b):
+                page.goto(self.base + "/api/plugin/preview?p=source-stale.md")
+                page.get_by_role("button", name="Source", exact=True).click()
+                page.get_by_role("textbox", name="Markdown source").wait_for(timeout=12000)
+            state = a.evaluate(
+                "async() => (await (await fetch('/api/work?p=source-stale.md')).json())"
+            )
+            temp = Path(state["tempPath"])
+            accepted = temp.read_bytes()
+
+            a.evaluate("""() => window.__lanternMdVisual.state.instance.restoreBookmark({
+              line:3, selectedText:'OLD'
+            })""")
+            a.keyboard.type("FIRST")
+            deadline = time.time() + 8
+            while time.time() < deadline and file.read_text(encoding="utf-8") != first:
+                time.sleep(.03)
+            self.assertEqual(file.read_text(encoding="utf-8"), first)
+
+            b.evaluate("""() => window.__lanternMdVisual.state.instance.restoreBookmark({
+              line:3, selectedText:'OLD'
+            })""")
+            b.keyboard.type("SECOND")
+            b.wait_for_function(
+                "() => window.__lanternMdVisual.state.conflict === true",
+                timeout=8000,
+            )
+            self.assertEqual(file.read_text(encoding="utf-8"), first)
+            self.assertEqual(temp.read_bytes(), accepted)
+            self.assertEqual(
+                b.evaluate("() => window.__lanternMdVisual.state.instance.getMarkdown()"),
+                second,
+            )
+            self.assertIn(
+                "Overlapping Source edits are retained locally",
+                b.locator("[data-md-status]").inner_text(),
+            )
+        finally:
+            ctx.close()
+
+
+    def test_source_to_visual_keeps_changed_block_and_anchor(self):
+        original = "# Source visual\n\n" + "\n\n".join(
+            f"Paragraph {i} unique text." for i in range(150)
+        ) + "\n"
+        changed = original.replace(
+            "Paragraph 100 unique text.",
+            "Paragraph 100 changed in Source.",
+        )
+        file = self.root / "source-visual.md"
+        file.write_text(original, encoding="utf-8", newline="")
+        ctx = self.browser.new_context(viewport={"width": 1100, "height": 820})
+        page = ctx.new_page()
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=source-visual.md")
+            page.get_by_role("button", name="Source", exact=True).click()
+            editor = page.get_by_role("textbox", name="Markdown source")
+            editor.wait_for(timeout=12000)
+            editor.fill(changed)
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('Paragraph 100 changed')",
+                timeout=12000,
+            )
+            page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.restoreBookmark({line:203})"
+            )
+            page.get_by_role("button", name="Edit visually", exact=True).click()
+            visual = page.locator(".md-visual-host .ProseMirror[contenteditable=true]")
+            visual.wait_for(timeout=24000)
+            target = visual.get_by_text("Paragraph 100 changed in Source.", exact=True)
+            target.wait_for(timeout=12000)
+            box = target.bounding_box()
+            self.assertIsNotNone(box)
+            self.assertGreater(page.evaluate("scrollY"), 800)
+            self.assertLess(box["y"], 820)
+            self.assertIn("Paragraph 100 changed in Source.", file.read_text(encoding="utf-8"))
+        finally:
+            ctx.close()
+
+    def test_synthetic_composition_undo_redo_persists_one_patch_per_change(self):
+        file = self.root / "composition.md"
+        original = "# IME\n\n日本語\n"
+        inserted = "# IME\n\n漢字日本語\n"
+        file.write_text(original, encoding="utf-8", newline="")
+        ctx = self.browser.new_context(viewport={"width": 1000, "height": 720})
+        page = ctx.new_page()
+        patch_posts = []
+        page.on(
+            "request",
+            lambda req: patch_posts.append(req.post_data or "")
+            if req.method == "POST" and "/api/work/patch" in req.url else None,
+        )
+        try:
+            page.goto(self.base + "/api/plugin/preview?p=composition.md")
+            page.get_by_role("button", name="Source", exact=True).click()
+            page.get_by_role("textbox", name="Markdown source").wait_for(timeout=12000)
+            page.evaluate(
+                "() => window.__lanternMdVisual.state.instance.restoreBookmark({line:3,column:0})"
+            )
+            patch_posts.clear()
+            page.evaluate("""() => {
+              const area=document.querySelector('[data-lantern-source-content]');
+              area.dispatchEvent(new CompositionEvent(
+                'compositionstart',{bubbles:true,data:''}));
+              area.dispatchEvent(new CompositionEvent(
+                'compositionupdate',{bubbles:true,data:'漢字'}));
+            }""")
+            page.keyboard.insert_text("漢字")
+            page.evaluate("""() => {
+              const area=document.querySelector('[data-lantern-source-content]');
+              area.dispatchEvent(new CompositionEvent(
+                'compositionend',{bubbles:true,data:'漢字'}));
+            }""")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('漢字日本語')",
+                timeout=12000,
+            )
+            self.assertEqual(file.read_text(encoding="utf-8"), inserted)
+            page.wait_for_timeout(100)
+            self.assertEqual(len(patch_posts), 1, patch_posts)
+
+            page.keyboard.press("Control+z")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved === '# IME\\n\\n日本語\\n'",
+                timeout=12000,
+            )
+            self.assertEqual(file.read_text(encoding="utf-8"), original)
+            page.keyboard.press("Control+y")
+            page.wait_for_function(
+                "() => window.__lanternMdVisual.state.lastSaved.includes('漢字日本語')",
+                timeout=12000,
+            )
+            self.assertEqual(file.read_text(encoding="utf-8"), inserted)
+            page.wait_for_timeout(100)
+            self.assertEqual(len(patch_posts), 3, patch_posts)
+        finally:
+            ctx.close()
+
     def test_source_preview_source_preserves_text_and_keyboard_history(self):
         file = self.root / "switch.md"
         original = "# Switch\n\nBody.\n"

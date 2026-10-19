@@ -1,6 +1,6 @@
 // Lantern Source editor: CodeMirror owns editing/viewport/history while
 // LanternMarkdownDiff remains the only hunk/merge truth.
-import {EditorState, StateEffect, StateField} from '@codemirror/state';
+import {ChangeSet, EditorState, StateEffect, StateField, Text} from '@codemirror/state';
 import {
   Decoration,
   EditorView,
@@ -182,10 +182,41 @@ function minimalChange(current, next) {
   return {from: start, to: oldEnd, insert: next.slice(start, newEnd)};
 }
 
-function createSourceMarkdown(parent, content, onChange, onAction) {
-  let suppressChange = false;
+function pointFor(doc, position) {
+  const line = doc.lineAt(position);
+  return {line: line.number, column: position - line.from};
+}
+
+function patchesFor(baseDoc, changes) {
+  const patches = [];
+  changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    patches.push({
+      from: pointFor(baseDoc, fromA),
+      to: pointFor(baseDoc, toA),
+      insert: inserted.toString(),
+      expected: baseDoc.sliceString(fromA, toA),
+    });
+  });
+  return patches;
+}
+
+function createSourceMarkdown(parent, content, onChange, onAction, options = {}) {
+  const initialText = normalizedText(content);
+  const acknowledgedText = normalizedText(
+    options.acknowledgedText === undefined ? content : options.acknowledgedText
+  );
+  let acknowledgedDoc = Text.of(acknowledgedText.split('\n'));
+  const initialChange = minimalChange(acknowledgedText, initialText);
+  let pendingChanges = initialChange
+    ? ChangeSet.of(initialChange, acknowledgedDoc.length)
+    : ChangeSet.empty(acknowledgedDoc.length);
+  let inflight = null;
+  let batchId = 0;
+  let suppressCallback = false;
+  let suppressPending = false;
+
   const state = EditorState.create({
-    doc: normalizedText(content),
+    doc: initialText,
     extensions: [
       basicSetup,
       oneDark,
@@ -199,7 +230,23 @@ function createSourceMarkdown(parent, content, onChange, onAction) {
         spellcheck: 'false',
       }),
       EditorView.updateListener.of(update => {
-        if (update.docChanged && !suppressChange) onChange?.(update);
+        if (!update.docChanged) return;
+        if (!suppressPending) {
+          // Browser automation, paste, accessibility tools and some IMEs may
+          // surface a full-document CM transaction for a local edit. Refine
+          // each transaction to its actual changed prefix/suffix before
+          // composing it into the durable patch queue; otherwise a textarea-
+          // style whole replacement would normalize untouched mixed EOLs.
+          const refined = minimalChange(
+            update.startState.doc.toString(),
+            update.state.doc.toString(),
+          );
+          const changes = refined
+            ? ChangeSet.of(refined, update.startState.doc.length)
+            : ChangeSet.empty(update.startState.doc.length);
+          pendingChanges = pendingChanges.compose(changes);
+        }
+        if (!suppressCallback) onChange?.(update);
       }),
     ],
   });
@@ -222,17 +269,60 @@ function createSourceMarkdown(parent, content, onChange, onAction) {
         effects: setHunksEffect.of({hunks: Array.isArray(hunks) ? hunks : [], action: onAction}),
       });
     },
-    replaceExternalText(text) {
+    hasPendingPatches() {
+      return !!inflight || !pendingChanges.empty;
+    },
+    takePendingPatches() {
+      if (inflight) throw new Error('Source patch batch already in flight');
+      if (pendingChanges.empty) return null;
+      const changes = pendingChanges;
+      const before = acknowledgedDoc;
+      const after = changes.apply(before);
+      const patches = patchesFor(before, changes);
+      if (!patches.length) return null;
+      const batch = {
+        id: ++batchId,
+        patches,
+        before,
+        after,
+        changes,
+      };
+      inflight = batch;
+      pendingChanges = ChangeSet.empty(after.length);
+      return batch;
+    },
+    acknowledgePatches(batch) {
+      if (!inflight || inflight.id !== batch?.id)
+        throw new Error('Source patch acknowledgement is stale');
+      acknowledgedDoc = inflight.after;
+      inflight = null;
+      return true;
+    },
+    rejectPatches(batch) {
+      if (!inflight || inflight.id !== batch?.id) return false;
+      pendingChanges = inflight.changes.compose(pendingChanges);
+      inflight = null;
+      return true;
+    },
+    replaceExternalText(text, {acknowledge = true} = {}) {
+      if (inflight) throw new Error('Cannot replace Source while a patch is in flight');
       const next = normalizedText(text);
       const change = minimalChange(view.state.doc.toString(), next);
-      if (!change) return false;
-      suppressChange = true;
-      try {
-        view.dispatch({changes: change});
-      } finally {
-        suppressChange = false;
+      if (change) {
+        suppressCallback = true;
+        suppressPending = acknowledge;
+        try {
+          view.dispatch({changes: change});
+        } finally {
+          suppressPending = false;
+          suppressCallback = false;
+        }
       }
-      return true;
+      if (acknowledge) {
+        acknowledgedDoc = view.state.doc;
+        pendingChanges = ChangeSet.empty(acknowledgedDoc.length);
+      }
+      return !!change;
     },
     sourceBookmark() {
       const main = view.state.selection.main;
@@ -267,6 +357,13 @@ function createSourceMarkdown(parent, content, onChange, onAction) {
         selection: {anchor, head},
         effects: EditorView.scrollIntoView(anchor, {y: 'start', yMargin: 80}),
       });
+      // CodeMirror's scroll effect is applied during measure. For immediate
+      // cross-mode restoration also seed the editor scroller from its own
+      // virtual line block; this keeps the target visible without page reload.
+      try {
+        const block = view.lineBlockAt(anchor);
+        view.scrollDOM.scrollTop = Math.max(0, block.top - 80);
+      } catch (_) {}
       view.focus();
       return true;
     },
@@ -284,6 +381,9 @@ function createSourceMarkdown(parent, content, onChange, onAction) {
         viewportTo: viewport.to,
         focused: view.hasFocus,
         selection: api.selectionOffsets(),
+        pendingPatchCount: inflight?.patches?.length || (
+          pendingChanges.empty ? 0 : patchesFor(acknowledgedDoc, pendingChanges).length
+        ),
       };
     },
   };

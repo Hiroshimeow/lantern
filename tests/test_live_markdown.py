@@ -172,5 +172,103 @@ class LiveMarkdownTests(unittest.TestCase):
         self.assertFalse(changed.endswith((b"\n", b"\r")))
 
 
+    def test_patch_preserves_bom_mixed_eol_unicode_and_is_atomic(self):
+        self.assertTrue(hasattr(self.store, "patch"), "LiveMarkdownStore.patch is required")
+        original = (
+            b"\xef\xbb\xbfHead\r\n" +
+            "日本語🏮 here\n".encode("utf-8") +
+            b"Tail"
+        )
+        self.target.write_bytes(original)
+        state = self.store.get("report.md")
+        temp = Path(state["tempPath"])
+        self.assertEqual(temp.read_bytes(), original)
+
+        result = self.store.patch(
+            "report.md",
+            [
+                {
+                    "from": {"line": 1, "column": 0},
+                    "to": {"line": 1, "column": 4},
+                    "insert": "HEAD",
+                    "expected": "Head",
+                },
+                {
+                    "from": {"line": 2, "column": 6},
+                    "to": {"line": 2, "column": 10},
+                    "insert": "HERE\n新行",
+                    "expected": "here",
+                },
+                {
+                    "from": {"line": 3, "column": 0},
+                    "to": {"line": 3, "column": 4},
+                    "insert": "TailX",
+                    "expected": "Tail",
+                },
+            ],
+            expect_hash=state["currentVersion"],
+            base_version=state["saved"]["version"],
+        )
+        expected = (
+            b"\xef\xbb\xbfHEAD\r\n" +
+            "日本語🏮 HERE\n新行\n".encode("utf-8") +
+            b"TailX"
+        )
+        self.assertEqual(self.target.read_bytes(), expected)
+        self.assertEqual(temp.read_bytes(), original)
+        self.assertEqual(result["currentVersion"], self.store.get("report.md")["currentVersion"])
+
+        before_stale = self.target.read_bytes()
+        with self.assertRaises(WorkingCopyError) as ctx:
+            self.store.patch(
+                "report.md",
+                [{
+                    "from": {"line": 1, "column": 0},
+                    "to": {"line": 1, "column": 4},
+                    "insert": "FAIL",
+                    "expected": "HEAD",
+                }],
+                expect_hash="0" * 64,
+                base_version=state["saved"]["version"],
+            )
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertEqual(self.target.read_bytes(), before_stale)
+
+    def test_patch_uses_local_newline_policy_and_rejects_surrogate_split(self):
+        self.assertTrue(hasattr(self.store, "patch"), "LiveMarkdownStore.patch is required")
+        self.target.write_bytes(b"A\r\nB\r\n")
+        state = self.store.get("report.md")
+        self.store.patch(
+            "report.md",
+            [{
+                "from": {"line": 2, "column": 1},
+                "to": {"line": 2, "column": 1},
+                "insert": "\nC",
+                "expected": "",
+            }],
+            expect_hash=state["currentVersion"],
+            base_version=state["saved"]["version"],
+        )
+        self.assertEqual(self.target.read_bytes(), b"A\r\nB\r\nC\r\n")
+
+        self.target.write_bytes("X🏮Y\n".encode("utf-8"))
+        state2 = self.store.get("report.md")
+        before = self.target.read_bytes()
+        with self.assertRaises(WorkingCopyError) as ctx:
+            self.store.patch(
+                "report.md",
+                [{
+                    "from": {"line": 1, "column": 2},
+                    "to": {"line": 1, "column": 2},
+                    "insert": "!",
+                    "expected": "",
+                }],
+                expect_hash=state2["currentVersion"],
+                base_version=state2["saved"]["version"],
+            )
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertEqual(self.target.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

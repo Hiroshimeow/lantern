@@ -34,6 +34,12 @@ class LiveMarkdownE2E(unittest.TestCase):
         except subprocess.TimeoutExpired:cls.proc.kill()
         cls.tmp.cleanup()
 
+    @staticmethod
+    def source_text(page):
+        return page.evaluate(
+            "() => window.__lanternMdVisual.state.instance.getMarkdown()"
+        )
+
     def test_edit_source_real_written_before_accept_and_temp_only_after(self):
         file=self.root/"live.md"
         original="# Live\n\nOriginal text.\n"
@@ -52,8 +58,8 @@ class LiveMarkdownE2E(unittest.TestCase):
             state=page.evaluate("async()=>(await(await fetch('/api/work?p=live.md')).json())")
             self.assertEqual(state["saved"]["content"],original)
             self.assertEqual(state["work"]["content"],edited)
-            self.assertEqual(page.locator(".md-source-deletion").count(),1)
-            self.assertEqual(page.locator(".md-source-deletions").evaluate("e=>e.parentElement.className"),"md-source-diff-wrap")
+            self.assertEqual(page.locator(".cm-lantern-deletion").count(),1)
+            self.assertEqual(page.locator(".cm-lantern-diff-gutter").count(),1)
             page.keyboard.press("Control+s")
             page.wait_for_function("() => document.documentElement.dataset.mdPendingHunks === '0'",timeout=12000)
             state=page.evaluate("async()=>(await(await fetch('/api/work?p=live.md')).json())")
@@ -104,17 +110,17 @@ class LiveMarkdownE2E(unittest.TestCase):
             area.fill(edited)
             page.wait_for_function(
                 "() => !!window.__lanternMdVisual.state.workHash"
-                " && document.querySelectorAll('.md-source-deletion').length >= 2",timeout=12000)
+                " && document.querySelectorAll('.cm-lantern-deletion').length >= 2",timeout=12000)
             self.assertEqual(file.read_text(encoding="utf-8"),edited)
-            self.assertEqual(page.locator(".md-source-deletions").evaluate("e=>e.parentElement.className"),"md-source-diff-wrap")
-            page.locator(".md-source-deletion").first.get_by_role("button",name="Accept").click()
+            self.assertEqual(page.locator(".cm-lantern-diff-gutter").count(),1)
+            page.locator(".cm-lantern-deletion").first.get_by_role("button",name="Accept").click()
             page.wait_for_function(
-                "() => document.querySelectorAll('.md-source-deletion').length === 1",timeout=10000)
+                "() => document.querySelectorAll('.cm-lantern-deletion').length === 1",timeout=10000)
             state=page.evaluate("async()=>(await(await fetch('/api/work?p=partial.md')).json())")
             self.assertIn("First NEW.",state["saved"]["content"])
             self.assertIn("Last OLD.",state["saved"]["content"])
             self.assertEqual(file.read_text(encoding="utf-8"),edited)
-            page.locator(".md-source-deletion").first.get_by_role("button",name="Undo").click()
+            page.locator(".cm-lantern-deletion").first.get_by_role("button",name="Undo").click()
             page.wait_for_function("() => document.documentElement.dataset.mdPendingHunks === '0'",timeout=10000)
             self.assertIn("First NEW.",file.read_text(encoding="utf-8"))
             self.assertIn("Last OLD.",file.read_text(encoding="utf-8"))
@@ -146,17 +152,17 @@ class LiveMarkdownE2E(unittest.TestCase):
 
             file.write_bytes(edited)
             page.wait_for_function(
-                "() => document.querySelectorAll('.md-source-deletion').length === 2",
+                "() => document.querySelectorAll('.cm-lantern-deletion').length === 2",
                 timeout=9000)
-            page.locator(".md-source-deletion").first.get_by_role(
+            page.locator(".cm-lantern-deletion").first.get_by_role(
                 "button",name="Accept").click()
             page.wait_for_function(
-                "() => document.querySelectorAll('.md-source-deletion').length === 1",
+                "() => document.querySelectorAll('.cm-lantern-deletion').length === 1",
                 timeout=9000)
             self.assertEqual(file.read_bytes(),edited)
             self.assertEqual(temp.read_bytes(),accepted_first)
 
-            page.locator(".md-source-deletion").first.get_by_role(
+            page.locator(".cm-lantern-deletion").first.get_by_role(
                 "button",name="Undo").click()
             page.wait_for_function(
                 "() => document.documentElement.dataset.mdPendingHunks === '0'",
@@ -191,12 +197,12 @@ class LiveMarkdownE2E(unittest.TestCase):
 
             file.write_bytes(first)
             page.wait_for_function(
-                "() => document.querySelectorAll('.md-source-deletion').length === 1",
+                "() => document.querySelectorAll('.cm-lantern-deletion').length === 1",
                 timeout=9000)
             rendered_version=page.evaluate(
                 "() => window.__lanternMdVisual.state.currentVersion")
             file.write_bytes(newer)
-            page.locator(".md-source-deletion").first.get_by_role(
+            page.locator(".cm-lantern-deletion").first.get_by_role(
                 "button",name="Accept").click()
             page.wait_for_function(
                 "(old) => window.__lanternMdVisual.state.currentVersion !== old",
@@ -418,7 +424,7 @@ class LiveMarkdownE2E(unittest.TestCase):
             second.wait_for_function(
                 "() => window.__lanternMdVisual.state.conflict === true",timeout=10000)
             self.assertEqual(file.read_text(encoding="utf-8"),"# Concurrent\n\nClient A.\n")
-            self.assertIn("Client B.",second.get_by_role("textbox",name="Markdown source").input_value())
+            self.assertIn("Client B.",self.source_text(second))
             second.keyboard.press("Control+s")
             self.assertEqual(file.read_text(encoding="utf-8"),"# Concurrent\n\nClient A.\n")
         finally:ctx.close()
@@ -463,7 +469,7 @@ class LiveMarkdownE2E(unittest.TestCase):
 
             page.keyboard.press("Control+z")
             page.wait_for_timeout(700)
-            self.assertEqual(area.input_value(),accepted)
+            self.assertEqual(self.source_text(page),accepted)
             page.wait_for_function(
                 "() => window.__lanternMdVisual.state.lastSaved.endsWith('Accepted.\\n')",
                 timeout=12000)
@@ -511,7 +517,7 @@ class LiveMarkdownE2E(unittest.TestCase):
             self.assertFalse(second.evaluate(
                 "() => window.__lanternMdVisual.state.conflict"))
             self.assertEqual(
-                second.get_by_role("textbox",name="Markdown source").input_value(),
+                self.source_text(second),
                 merged)
             state=second.evaluate(
                 "async()=>(await(await fetch('/api/work?p=two-clients-nonoverlap.md')).json())")
@@ -548,7 +554,7 @@ class LiveMarkdownE2E(unittest.TestCase):
                     file.write_text(edited,encoding="utf-8",newline="")
                     if mode=="source":
                         page.wait_for_function(
-                            "() => document.querySelector('.md-source-area')?.value.includes('New block.')",
+                            "() => window.__lanternMdVisual.state.instance.getMarkdown().includes('New block.')",
                             timeout=9000)
                     else:
                         page.wait_for_function(
@@ -590,7 +596,7 @@ class LiveMarkdownE2E(unittest.TestCase):
                         timeout=9000)
                     self.assertFalse(file.exists())
                     if area is not None:
-                        self.assertEqual(area.input_value(),original)
+                        self.assertEqual(self.source_text(page),original)
                     else:
                         self.assertIn("Keep recovery text.",
                                       page.locator("article.md-preview").inner_text())
@@ -630,7 +636,7 @@ class LiveMarkdownE2E(unittest.TestCase):
                 if file.exists():
                     file.unlink()
             route.continue_()
-        page.route("**/api/work/write",delete_before_write)
+        page.route("**/api/work/patch",delete_before_write)
         try:
             page.goto(self.base+"/api/plugin/preview?p=delete-pending.md")
             page.get_by_role("button",name="Source",exact=True).click()
@@ -642,14 +648,14 @@ class LiveMarkdownE2E(unittest.TestCase):
                 timeout=12000)
             self.assertTrue(intercepted)
             self.assertFalse(file.exists())
-            self.assertEqual(area.input_value(),local)
+            self.assertEqual(self.source_text(page),local)
             status=page.locator("[data-md-status]").inner_text().lower()
             self.assertTrue(
                 "retained" in status or "unavailable" in status,
                 status)
             page.wait_for_timeout(1000)
             self.assertFalse(file.exists())
-            self.assertEqual(area.input_value(),local)
+            self.assertEqual(self.source_text(page),local)
         finally:
             ctx.close()
 
@@ -667,7 +673,7 @@ class LiveMarkdownE2E(unittest.TestCase):
                 intercepted.append(True)
                 file.write_text(external,encoding="utf-8",newline="")
             route.continue_()
-        page.route("**/api/work/write",race)
+        page.route("**/api/work/patch",race)
         try:
             page.goto(self.base+"/api/plugin/preview?p=external-overlap.md")
             page.get_by_role("button",name="Source",exact=True).click()
@@ -679,7 +685,7 @@ class LiveMarkdownE2E(unittest.TestCase):
                 timeout=12000)
             self.assertTrue(intercepted)
             self.assertEqual(file.read_text(encoding="utf-8"),external)
-            self.assertEqual(area.input_value(),local)
+            self.assertEqual(self.source_text(page),local)
             state=page.evaluate(
                 "async()=>(await(await fetch('/api/work?p=external-overlap.md')).json())")
             self.assertEqual(state["saved"]["content"],original)
@@ -709,7 +715,9 @@ class LiveMarkdownE2E(unittest.TestCase):
                 "() => window.__lanternMdVisual.state.lastSaved.includes('Edited.')",
                 timeout=12000)
             posts=lambda:sum(
-                method=="POST" and "/api/work/write" in url
+                method=="POST" and (
+                    "/api/work/write" in url or "/api/work/patch" in url
+                )
                 for method,url in requests)
             self.assertEqual(posts(),1,requests)
             posts_after_write=posts()
@@ -733,7 +741,10 @@ class LiveMarkdownE2E(unittest.TestCase):
             area=page.get_by_role("textbox",name="Markdown source")
             area.wait_for(timeout=18000)
             page.evaluate("""() => {
-              const host=document.querySelector('.md-source-diff-backdrop-content');
+              const content=document.querySelector('[data-lantern-source-content]');
+              const host=content?.closest('.cm-editor') ||
+                document.querySelector('.md-source-editor');
+              if(!host) throw new Error('CodeMirror Source missing');
               window.__pollMutations={records:0,added:0,removed:0};
               new MutationObserver(records=>{
                 for(const r of records){
@@ -749,7 +760,9 @@ class LiveMarkdownE2E(unittest.TestCase):
                 method=="GET" and "/api/work?p=poll-large.md" in url
                 for method,url in requests)
             work_posts=sum(
-                method=="POST" and "/api/work/write" in url
+                method=="POST" and (
+                    "/api/work/write" in url or "/api/work/patch" in url
+                )
                 for method,url in requests)
             mutations=page.evaluate("() => window.__pollMutations")
             self.assertGreaterEqual(work_gets,1,requests)
@@ -784,7 +797,7 @@ class LiveMarkdownE2E(unittest.TestCase):
               window.dispatchEvent(new Event('focus'));
             }""")
             page.wait_for_function(
-                "() => document.querySelector('.md-source-area')?.value"
+                "() => window.__lanternMdVisual.state.instance.getMarkdown()"
                 ".startsWith('# Large poll external')",
                 timeout=2000)
             self.assertLess(time.perf_counter()-started,2.0)
@@ -792,7 +805,9 @@ class LiveMarkdownE2E(unittest.TestCase):
                 method=="GET" and "/api/work?p=poll-large.md" in url
                 for method,url in requests)
             visible_posts=sum(
-                method=="POST" and "/api/work/write" in url
+                method=="POST" and (
+                    "/api/work/write" in url or "/api/work/patch" in url
+                )
                 for method,url in requests)
             self.assertGreaterEqual(visible_gets,1,requests)
             self.assertEqual(visible_posts,0,requests)
