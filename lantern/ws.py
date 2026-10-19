@@ -412,7 +412,9 @@ class WebSocketHub:
                 "pi_session_not_attached", "peer is not attached"
             )
         if route.get("writer") is peer:
-            return route["epoch"], []
+            raise PiSessionPermissionError(
+                "pi_session_not_viewer", "takeover requires a viewer"
+            )
         route["writer"] = peer
         route["epoch"] += 1
         return route["epoch"], self._pi_notices_locked(route)
