@@ -3,7 +3,7 @@ You are continuing the Lantern Native/Pi Terminal lane on FJP.
 Workspace:
 C:\Users\DuongNH66\Desktop\git\lantern-bot
 
-Branch / expected HEAD:
+Branch / implementation checkpoint (handoff commits may be on top):
 feat/lantern-bot
 3635c2e9010ecaf952fc1e2ad4bc3f01d9981964
 
@@ -23,10 +23,10 @@ Read FIRST, in order:
 13. specs/004-pi-native-harness/plan.md
 14. specs/004-pi-native-harness/tasks.md
 15. specs/004-pi-native-harness/CHAT_UX_AUDIT_2026-10-17.md
-16. .plan/lantern-pi-native-20261018/FJP_TRANSFER_HANDOFF_20261019.md
-17. .plan/lantern-pi-native-20261018/lantern-pi-native-20261018-dev_turn45_cdpa-idem-83600abd5f02df21942f316e.md
-18. .plan/lantern-pi-native-20261018/lantern-pi-native-20261018-review_turn40_cdpa-idem-83600abd5f02df21942f316e.md
-19. .plan/lantern-pi-native-20261018/lantern-pi-native-20261018-review_turn39_cdpa-idem-83600abd5f02df21942f316e.md
+16. handoff/fjp-transfer-20261019/native/reports/FJP_TRANSFER_HANDOFF_20261019.md
+17. handoff/fjp-transfer-20261019/native/reports/lantern-pi-native-20261018-dev_turn45_cdpa-idem-83600abd5f02df21942f316e.md
+18. handoff/fjp-transfer-20261019/native/reports/lantern-pi-native-20261018-review_turn40_cdpa-idem-83600abd5f02df21942f316e.md
+19. handoff/fjp-transfer-20261019/native/reports/lantern-pi-native-20261018-review_turn39_cdpa-idem-83600abd5f02df21942f316e.md
 
 Mission:
 Continue all legally actionable Native/Pi Terminal work remaining from Spec 001 Terminal/IME lane and Spec 004, plus shared Foundation work explicitly required by those contracts.

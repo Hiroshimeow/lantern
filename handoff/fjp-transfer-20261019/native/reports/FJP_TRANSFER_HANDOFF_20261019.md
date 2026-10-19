@@ -1,4 +1,4 @@
-# FJP transfer handoff — Lantern Native/Pi Terminal lane — 2026-10-19
+# FJP transfer handoff â€” Lantern Native/Pi Terminal lane â€” 2026-10-19
 
 ## Destination
 - Device: FJP / LPP00374779A
@@ -8,7 +8,7 @@
 - Commit: wip(pi): checkpoint FJP transfer with takeover contract pending
 - Remote: https://github.com/Hiroshimeow/lantern.git
 
-## Governing architecture/specs — read first
+## Governing architecture/specs â€” read first
 1. AGENTS.md
 2. docs/architecture/FOUNDATION_CURRENT.md
 3. docs/architecture/LANTERN_SYSTEM_ARCHITECTURE.md
@@ -52,7 +52,7 @@ Files in the transfer checkpoint:
 
 FJP existing clean worktree C:\Users\DuongNH66\Desktop\git\lantern-bot was fast-forwarded to 3635c2e.
 
-## Known failing acceptance — DO NOT HIDE
+## Known failing acceptance â€” DO NOT HIDE
 Focused transfer suite run on G6:
 py -3.12 -m unittest -q tests.test_pi_sessions tests.test_terminal_scm tests.test_pi_ws_contract
 
@@ -98,12 +98,12 @@ Treat the G6 CDPA workflow as historical provenance. Continue coding locally on 
 
 ## Last role reports / continuation evidence
 Read after specs:
-- .plan/lantern-pi-native-20261018/lantern-pi-native-20261018-dev_turn45_cdpa-idem-83600abd5f02df21942f316e.md
-- .plan/lantern-pi-native-20261018/lantern-pi-native-20261018-review_turn40_cdpa-idem-83600abd5f02df21942f316e.md
-- .plan/lantern-pi-native-20261018/lantern-pi-native-20261018-review_turn39_cdpa-idem-83600abd5f02df21942f316e.md
+- handoff/fjp-transfer-20261019/native/reports/lantern-pi-native-20261018-dev_turn45_cdpa-idem-83600abd5f02df21942f316e.md
+- handoff/fjp-transfer-20261019/native/reports/lantern-pi-native-20261018-review_turn40_cdpa-idem-83600abd5f02df21942f316e.md
+- handoff/fjp-transfer-20261019/native/reports/lantern-pi-native-20261018-review_turn39_cdpa-idem-83600abd5f02df21942f316e.md
 - relevant Spec 004 and Spec 001 Terminal/IME reports/tests
 
-All 111 files from the G6 team report directory are transferred to FJP.
+The FJP handoff tracks 269 Native report/evidence files from G6, including all role reports and evidence-turn directories. Only compiled Python cache artifacts (__pycache__ / .pyc) are intentionally excluded.
 
 ## Current implementation checkpoint
 The branch already contains substantial native work:
