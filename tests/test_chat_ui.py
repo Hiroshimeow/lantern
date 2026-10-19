@@ -28,8 +28,6 @@ class ChatUiTests(unittest.TestCase):
             html = views.page_shell("Lantern Test", "<main>body</main>", "/docs").decode("utf-8")
         self.assertIn('/static/chatbot.css?v=', html)
         self.assertIn('/static/chatbot.js?v=', html)
-        self.assertIn('/static/vendor/xterm.js?v=', html)
-        self.assertIn('/static/vendor/addon-fit.js?v=', html)
         self.assertIn('"currentPath":"docs"', html)
 
     def test_markdown_preview_loads_chat_assets_and_path_context(self):
@@ -40,55 +38,46 @@ class ChatUiTests(unittest.TestCase):
             md = folder / "spec.md"
             md.write_text("# Title\n\nBody", encoding="utf-8")
             html = plugin.render_preview_page(md, root, anchor_spike=True).decode("utf-8")
-        self.assertIn('/static/vendor/xterm.css', html)
-        self.assertIn('/static/vendor/xterm.js', html)
-        self.assertIn('/static/vendor/addon-fit.js', html)
         self.assertIn('/static/chatbot.css', html)
         self.assertIn('/static/chatbot.js', html)
         self.assertIn('data-lantern-chat-kind="markdown"', html)
         self.assertIn('data-lantern-chat-path="docs/spec.md"', html)
 
-    def test_shared_chat_script_hosts_native_pi_tui_and_protocol(self):
+    def test_shared_chat_script_has_session_model_context_and_lock_controls(self):
         script = (Path(__file__).parents[1] / "static" / "chatbot.js").read_text(encoding="utf-8")
         for token in (
-            "new Terminal",
-            "FitAddon.FitAddon",
-            "pi_session_sync",
-            "pi_session_create",
-            "pi_session_attach",
-            "pi_session_detach",
-            "pi_session_input",
-            "pi_session_resize",
-            "pi_session_takeover",
-            "pi_session_stop",
-            "pi_session_replay",
-            "pi_session_output",
-            "pi_session_ownership",
+            "chat_sync",
+            "chat_prompt",
+            "chat_new",
+            "chat_abort",
+            "chat_set_model",
             "terminal_auth",
             "LanternAnchorBridge",
             "__lanternMdVisual",
             "selectedArray",
             "currentPath",
-            "New Pi",
-            "Take over",
-        ):
-            self.assertIn(token, script)
-        for legacy in (
-            "chat_prompt",
-            "chat_sync",
-            "chat_set_model",
+            "prepareMarkdownTurn",
+            "chat_work_changed",
+            "workHash",
+            "beginBotTurn",
+            "onWorkChanged",
             "lanternChatProvider",
             "lanternChatModel",
-            "lantern-chat-msg",
-            "lantern-chat-tool",
+            "lanternChatAttachments",
+            "attachmentPaths",
+            "greeting",
+            "event.key !== 'Enter'",
+            "event.shiftKey || event.ctrlKey",
+            "New chat",
+            "Stop",
         ):
-            self.assertNotIn(legacy, script)
+            self.assertIn(token, script)
+        for old_label in ("Pi Chat", "Ask Pi", "Pi is working", "Starting a new Pi session"):
+            self.assertNotIn(old_label, script)
 
-    def test_chat_drawer_is_native_tui_panel_with_expand_mode(self):
+    def test_chat_drawer_is_side_panel_not_full_screen_modal(self):
         css = (Path(__file__).parents[1] / "static" / "chatbot.css").read_text(encoding="utf-8")
         self.assertIn(".lantern-chat-drawer", css)
-        self.assertIn(".lantern-pi-host", css)
-        self.assertIn('.lantern-chat-drawer[data-expanded="true"]', css)
         self.assertIn("width:min(", css)
         self.assertIn("@media(max-width:", css)
 

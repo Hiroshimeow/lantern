@@ -6,24 +6,45 @@
     open: false,
     connected: false,
     authenticated: null,
+    streaming: false,
     reconnect: null,
     reconnectDelay: 500,
-    sessions: [],
-    active: null,
-    role: null,
-    ownershipEpoch: null,
-    term: null,
-    fit: null,
-    host: null,
-    ro: null,
-    resizeTimer: null,
+    assistant: null,
+    toolRows: new Map(),
+    state: null,
+    models: [],
+    policy: {},
+    usage: {},
+    attachmentDismissed: new Set(),
+    selectedPaths: new Set(),
     contextTimer: null,
-    creating: false,
-    expanded: false,
+    logTimer: null,
   };
 
   const q = (sel, root = document) => root.querySelector(sel);
-  const activeKey = () => 'lantern-pi-active:' + location.origin;
+
+  function textContentOf(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    return content.map(part => {
+      if (typeof part === 'string') return part;
+      if (!part || typeof part !== 'object') return '';
+      if (part.type === 'text' && typeof part.text === 'string') return part.text;
+      if (typeof part.content === 'string') return part.content;
+      return '';
+    }).filter(Boolean).join('');
+  }
+
+  function displayUserText(raw) {
+    const text = String(raw || '');
+    const match = text.match(/<user_request>\s*\n([\s\S]*?)\n<\/user_request>\s*$/);
+    return match ? match[1] : text;
+  }
+
+  function roleOf(message) {
+    const role = String(message?.role || '');
+    return role === 'assistant' || role === 'user' ? role : 'system';
+  }
 
   function create(tag, cls, text) {
     const node = document.createElement(tag);
@@ -32,10 +53,387 @@
     return node;
   }
 
+  function buildUi() {
+    if (q('#lanternChatDrawer')) return;
+    const drawer = create('aside', 'lantern-chat-drawer');
+    drawer.id = 'lanternChatDrawer';
+    drawer.dataset.open = 'false';
+    drawer.setAttribute('aria-label', 'LanternBot');
+
+    const head = create('div', 'lantern-chat-head');
+    const title = create('div', 'lantern-chat-title', 'LanternBot');
+    const path = create('div', 'lantern-chat-path', 'Current location');
+    path.id = 'lanternChatPath';
+    path.title = 'Current Lantern context';
+
+    const provider = create('select', 'lantern-chat-provider');
+    provider.id = 'lanternChatProvider';
+    provider.title = 'Provider';
+    provider.disabled = true;
+
+    const model = create('select', 'lantern-chat-model');
+    model.id = 'lanternChatModel';
+    model.title = 'Model';
+    model.disabled = true;
+
+    const fresh = create('button', 'lantern-chat-iconbtn', 'New chat');
+    fresh.id = 'lanternChatNew';
+    fresh.type = 'button';
+    fresh.title = 'Start a new LanternBot conversation';
+
+    const close = create('button', 'lantern-chat-iconbtn lantern-chat-close', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Close chat');
+
+    head.append(title, path, provider, model, fresh, close);
+
+    const status = create('div', 'lantern-chat-status', 'Chat is idle');
+    status.id = 'lanternChatStatus';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+
+    const messages = create('div', 'lantern-chat-messages');
+    messages.id = 'lanternChatMessages';
+
+    const compose = create('div', 'lantern-chat-compose');
+    const attachments = create('div', 'lantern-chat-attachments');
+    attachments.id = 'lanternChatAttachments';
+    attachments.hidden = true;
+    const input = create('textarea', 'lantern-chat-input');
+    input.id = 'lanternChatInput';
+    input.rows = 3;
+    input.placeholder = 'Ask LanternBot about the current Lantern location…';
+    input.disabled = true;
+
+    const row = create('div', 'lantern-chat-compose-row');
+    const hint = create('div', 'lantern-chat-hint', 'Ctrl/⌘ + Enter to send');
+    const stop = create('button', 'lantern-chat-stop', 'Stop');
+    stop.id = 'lanternChatStop';
+    stop.type = 'button';
+    stop.hidden = true;
+    const send = create('button', 'lantern-chat-send', 'Send');
+    send.id = 'lanternChatSend';
+    send.type = 'button';
+    send.disabled = true;
+    row.append(hint, stop, send);
+    compose.append(attachments, input, row);
+
+    drawer.append(head, status, messages, compose);
+    document.body.append(drawer);
+
+    close.addEventListener('click', () => setOpen(false));
+    send.addEventListener('click', sendPrompt);
+    stop.addEventListener('click', abortTurn);
+    fresh.addEventListener('click', newChat);
+    provider.addEventListener('change', changeProvider);
+    model.addEventListener('change', changeModel);
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      event.preventDefault();
+      sendPrompt();
+    });
+  }
+
+  function injectLaunch() {
+    if (q('.lantern-chat-launch')) return;
+    const button = create('button', 'lantern-chat-launch', '✦ Chat');
+    button.type = 'button';
+    button.title = 'Open LanternBot';
+    button.addEventListener('click', () => setOpen(!S.open));
+
+    const actions = q('.top .actions');
+    if (actions) {
+      button.classList.add('btn');
+      actions.append(button);
+      return;
+    }
+    const bar = q('.md-bar .bar-top');
+    if (bar) {
+      button.classList.add('btn');
+      const grow = q('.grow', bar);
+      if (grow?.nextSibling) bar.insertBefore(button, grow.nextSibling);
+      else bar.append(button);
+      return;
+    }
+    button.classList.add('lantern-chat-float');
+    button.textContent = '✦';
+    document.body.append(button);
+  }
+
+  function setStatus(text, kind = '') {
+    const node = q('#lanternChatStatus');
+    if (!node) return;
+    node.textContent = text;
+    if (kind) node.dataset.kind = kind;
+    else delete node.dataset.kind;
+  }
+
+  function setStreaming(value) {
+    S.streaming = Boolean(value);
+    const stop = q('#lanternChatStop');
+    const send = q('#lanternChatSend');
+    const fresh = q('#lanternChatNew');
+    const launch = q('.lantern-chat-launch');
+    if (stop) stop.hidden = !S.streaming;
+    if (send) send.disabled = S.streaming || !S.connected || S.authenticated === false;
+    if (fresh) fresh.disabled = S.streaming || !S.connected || S.authenticated === false;
+    if (launch) launch.dataset.chatState = S.streaming ? 'busy' : 'idle';
+    if (!S.streaming && S.assistant) {
+      S.assistant.classList.remove('is-streaming');
+      S.assistant = null;
+    }
+  }
+
+  function setAccess(authenticated) {
+    S.authenticated = Boolean(authenticated);
+    const input = q('#lanternChatInput');
+    const provider = q('#lanternChatProvider');
+    const model = q('#lanternChatModel');
+    if (input) input.disabled = !S.connected || !S.authenticated;
+    if (provider) provider.disabled = !S.connected || !S.authenticated ||
+      !S.models.length || Boolean(S.policy?.lockProvider);
+    if (model) model.disabled = !S.connected || !S.authenticated ||
+      !S.models.length || Boolean(S.policy?.lockModel);
+    setStreaming(S.streaming);
+    if (!S.authenticated) {
+      setStatus('Terminal is locked. Unlock Terminal first; Chat uses the same access state.', 'warn');
+    }
+  }
+
+  // Browser-session event log: tool invocations are ephemeral in Pi's text
+  // transcript, but must survive F5 in this tab, including their order.
+  const logKey = sessionId => 'lanternbot-view:' + location.origin + ':' + sessionId;
+  function persistChatLog() {
+    clearTimeout(S.logTimer);
+    S.logTimer = setTimeout(() => {
+      const list = q('#lanternChatMessages');
+      const sessionId = String(S.state?.sessionId || '');
+      if (!sessionId || !list) return;
+      try {
+        const nodes = [...list.children].slice(-500).map(el => ({
+          kind:el.classList.contains('lantern-chat-tool') ? 'tool' : 'message',
+          role:el.dataset.role || 'system',
+          text:el.textContent || '',
+          id:el.dataset.toolCallId || '',
+          error:el.dataset.error || '',
+        }));
+        const lastUser = [...nodes].reverse().find(x => x.role === 'user')?.text || '';
+        const raw = JSON.stringify({at:Date.now(),lastUser,nodes});
+        if (raw.length < 1500000) sessionStorage.setItem(logKey(sessionId),raw);
+      } catch { /* Private mode or quota limits: continue without local replay. */ }
+    },180);
+  }
+  function restoreChatLog(messages) {
+    const id = String(S.state?.sessionId || '');
+    if (!id) return false;
+    let snapshot;
+    try { snapshot = JSON.parse(sessionStorage.getItem(logKey(id)) || 'null'); }
+    catch { return false; }
+    if (!snapshot || Date.now() - snapshot.at > 7*86400000 ||
+        !Array.isArray(snapshot.nodes) || !snapshot.nodes.length) return false;
+    const lastUser = [...(Array.isArray(messages) ? messages : [])].reverse()
+      .find(m => m?.role === 'user');
+    if ((lastUser ? displayUserText(textContentOf(lastUser.content)) : '') !== snapshot.lastUser)
+      return false;
+    const list = q('#lanternChatMessages');
+    if (!list) return false;
+    list.textContent = '';
+    S.toolRows.clear();
+    S.assistant = null;
+    for (const item of snapshot.nodes) {
+      if (item.kind === 'tool') {
+        const node = create('div', 'lantern-chat-tool', String(item.text || ''));
+        node.dataset.toolCallId = String(item.id || '');
+        if (item.error) node.dataset.error = item.error;
+        list.append(node);
+        if (item.id) S.toolRows.set(item.id, node);
+      } else {
+        appendMessage(item.role || 'system', String(item.text || ''));
+      }
+    }
+    list.scrollTop = list.scrollHeight;
+    return true;
+  }
+
+  function appendMessage(role, text, options = {}) {
+    const list = q('#lanternChatMessages');
+    if (!list) return null;
+    const node = create('div', 'lantern-chat-msg', text || '');
+    node.dataset.role = role;
+    if (options.streaming) node.classList.add('is-streaming');
+    list.append(node);
+    list.scrollTop = list.scrollHeight;
+    persistChatLog();
+    return node;
+  }
+
+  function appendSystem(text, kind = '') {
+    const node = appendMessage('system', text);
+    if (kind) node.dataset.kind = kind;
+    return node;
+  }
+
+  function renderHistory(messages, greeting = '') {
+    const list = q('#lanternChatMessages');
+    if (!list) return;
+    list.textContent = '';
+    S.assistant = null;
+    S.toolRows.clear();
+    let visible = 0;
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const role = roleOf(message);
+      if (role === 'system') continue;
+      const raw = textContentOf(message.content);
+      const text = role === 'user' ? displayUserText(raw) : raw;
+      if (text) {
+        appendMessage(role, text);
+        visible += 1;
+      }
+    }
+    if (!visible && greeting) appendMessage('assistant', greeting);
+  }
+
+  function modelsForProvider(provider) {
+    return S.models.filter(item => String(item.provider || '') === provider);
+  }
+
+  function renderModelOptions(provider, wantedId = '') {
+    const select = q('#lanternChatModel');
+    if (!select) return;
+    const items = modelsForProvider(provider);
+    select.textContent = '';
+    for (const item of items) {
+      const opt = document.createElement('option');
+      opt.value = String(item.id || '');
+      opt.textContent = String(item.name || item.id || '');
+      if (opt.value === wantedId) opt.selected = true;
+      select.append(opt);
+    }
+    if (wantedId && !items.some(item => String(item.id || '') === wantedId) && items.length) {
+      select.value = String(items[0].id || '');
+    }
+    select.disabled = !S.connected || S.authenticated === false ||
+      !items.length || Boolean(S.policy?.lockModel);
+  }
+
+  function renderModels(models, state, summary = null) {
+    S.models = Array.isArray(models) ? models : [];
+    if (summary?.policy) S.policy = summary.policy;
+    if (summary?.usage) S.usage = summary.usage;
+    const active = state?.model || S.state?.model || {};
+    const activeProvider = String(active.provider || '');
+    const activeId = String(active.id || '');
+    const provider = q('#lanternChatProvider');
+    if (!provider) return;
+    const providers = [...new Set(S.models.map(item => String(item.provider || '')).filter(Boolean))];
+    provider.textContent = '';
+    for (const value of providers) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      if (value === activeProvider) opt.selected = true;
+      provider.append(opt);
+    }
+    if (activeProvider && providers.includes(activeProvider)) provider.value = activeProvider;
+    else if (providers.length) provider.value = providers[0];
+    provider.disabled = !S.connected || S.authenticated === false ||
+      !providers.length || Boolean(S.policy?.lockProvider);
+    renderModelOptions(provider.value, provider.value === activeProvider ? activeId : '');
+  }
+
+  function sendRaw(payload) {
+    if (!S.ws || S.ws.readyState !== WebSocket.OPEN) throw new Error('Chat WebSocket is not connected');
+    S.ws.send(JSON.stringify(payload));
+  }
+
+  function connect() {
+    if (S.ws && (S.ws.readyState === WebSocket.OPEN || S.ws.readyState === WebSocket.CONNECTING)) return;
+    clearTimeout(S.reconnect);
+    setStatus('Connecting to Lantern…');
+    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const ws = new WebSocket(scheme + location.host + '/ws?v=2');
+    S.ws = ws;
+    ws.onopen = () => {
+      if (S.ws !== ws) return;
+      S.connected = true;
+      S.reconnectDelay = 500;
+      sendRaw({type: 'terminal_client_v2'});
+      sendRaw({type: 'chat_sync'});
+      setStatus('Loading LanternBot…');
+      const input = q('#lanternChatInput');
+      if (input) input.disabled = S.authenticated === false;
+    };
+    ws.onmessage = event => {
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      onMessage(message);
+    };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+    ws.onclose = () => {
+      if (S.ws !== ws) return;
+      S.connected = false;
+      S.ws = null;
+      const input = q('#lanternChatInput');
+      if (input) input.disabled = true;
+      const provider = q('#lanternChatProvider');
+      const model = q('#lanternChatModel');
+      if (provider) provider.disabled = true;
+      if (model) model.disabled = true;
+      setStatus('Chat disconnected. Reconnecting…', 'warn');
+      if (S.open) {
+        S.reconnect = setTimeout(connect, S.reconnectDelay);
+        S.reconnectDelay = Math.min(5000, Math.round(S.reconnectDelay * 1.6));
+      }
+    };
+  }
+
+  function selectedFilePaths() {
+    let selected = [];
+    try { selected = globalThis.selectedArray?.() || []; } catch {}
+    const current = new Set(selected.map(String));
+    for (const old of [...S.selectedPaths]) {
+      if (!current.has(old)) S.attachmentDismissed.delete(old);
+    }
+    S.selectedPaths = current;
+    return [...current].filter(path => {
+      const card = document.querySelector(`.card[data-rel="${CSS.escape(path)}"]`);
+      return !card || card.dataset.isdir !== '1';
+    });
+  }
+
+  function attachmentPaths() {
+    return selectedFilePaths().filter(path => !S.attachmentDismissed.has(path));
+  }
+
+  function refreshAttachments() {
+    const holder = q('#lanternChatAttachments');
+    if (!holder) return;
+    const paths = attachmentPaths();
+    holder.textContent = '';
+    holder.hidden = paths.length === 0;
+    for (const path of paths) {
+      const chip = create('span', 'lantern-chat-attachment');
+      const label = create('span', 'lantern-chat-attachment-label', path);
+      label.title = path;
+      const remove = create('button', 'lantern-chat-attachment-remove', '×');
+      remove.type = 'button';
+      remove.title = 'Detach from next LanternBot message';
+      remove.addEventListener('click', () => {
+        S.attachmentDismissed.add(path);
+        refreshAttachments();
+      });
+      chip.append(label, remove);
+      holder.append(chip);
+    }
+  }
+
   function currentMarkdownContext(path) {
     const mode = String(globalThis.__lanternMdVisual?.state?.mode || 'preview');
     let bookmark = null;
-    try { bookmark = globalThis.LanternAnchorBridge?.capture?.(mode) || null; } catch {}
+    try {
+      bookmark = globalThis.LanternAnchorBridge?.capture?.(mode) || null;
+    } catch {}
     if (!bookmark && mode === 'source') {
       const area = q('textarea.md-source-area');
       if (area) {
@@ -66,380 +464,35 @@
         if (custom && typeof custom === 'object') return custom;
       } catch {}
     }
-    const folder = String(
-      globalThis.currentPath?.() ?? globalThis.APP?.currentPath ?? ''
-    ).replace(/^\/+/, '');
+    const folder = String(globalThis.currentPath?.() ?? globalThis.APP?.currentPath ?? '').replace(/^\/+/, '');
     let selected = [];
     try { selected = globalThis.selectedArray?.() || []; } catch {}
-    const context = selected.length === 1
-      ? {kind: 'file', path: String(selected[0]), folder}
-      : {kind: 'folder', folder};
-    if (selected.length > 1) context.attachments = selected.map(String);
-    return context;
+    if (selected.length === 1) return {kind: 'file', path: String(selected[0]), folder};
+    return {kind: 'folder', folder};
   }
 
   function captureContext() {
     const body = document.body;
     const kind = body?.dataset?.lanternChatKind;
     const path = body?.dataset?.lanternChatPath;
-    return kind === 'markdown' && path
-      ? currentMarkdownContext(path)
-      : currentBrowserContext();
+    return kind === 'markdown' && path ? currentMarkdownContext(path) : currentBrowserContext();
   }
 
   function contextLabel(context) {
     const path = context?.path || context?.folder || '/';
-    const line = context?.line ? ':' + context.line : '';
     const mode = context?.markdownMode ? ' · ' + context.markdownMode : '';
+    const line = context?.line ? ':' + context.line : '';
     return String(path || '/') + line + mode;
   }
 
   function refreshContextLabel() {
-    const node = q('#lanternChatPath');
-    if (!node) return;
-    const label = contextLabel(captureContext());
-    node.textContent = label;
-    node.title = label;
-  }
-
-  function setStatus(text, kind = '') {
-    const node = q('#lanternChatStatus');
-    if (!node) return;
-    node.textContent = text;
-    if (kind) node.dataset.kind = kind;
-    else delete node.dataset.kind;
-  }
-
-  function send(payload) {
-    if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return false;
-    S.ws.send(JSON.stringify(payload));
-    return true;
-  }
-
-  function activeSession() {
-    return S.sessions.find(item => item.sessionId === S.active) || null;
-  }
-
-  function updateControls() {
-    const session = activeSession();
-    const select = q('#lanternPiSessions');
-    const fresh = q('#lanternPiNew');
-    const takeover = q('#lanternPiTakeover');
-    const stop = q('#lanternPiStop');
-    if (select) select.disabled = !S.connected || S.authenticated === false;
-    if (fresh) fresh.disabled = !S.connected || S.authenticated === false || S.creating;
-    if (takeover) {
-      takeover.hidden = S.role !== 'viewer';
-      takeover.disabled = !session?.running || !S.connected;
-    }
-    if (stop) stop.disabled = !session?.running || S.role !== 'writer' || !S.connected;
-    const role = q('#lanternPiRole');
-    if (role) role.textContent = session
-      ? (session.running ? (S.role === 'writer' ? '● Writer' : '○ Viewer') : 'Exited')
-      : 'No session';
-  }
-
-  function renderSessions() {
-    const select = q('#lanternPiSessions');
-    if (!select) return;
-    select.textContent = '';
-    for (const session of S.sessions) {
-      const opt = document.createElement('option');
-      opt.value = session.sessionId;
-      const ctx = session.contextRef || {};
-      const label = ctx.path || ctx.folder || session.cwd || session.sessionId.slice(0, 8);
-      opt.textContent = (session.running ? '● ' : '○ ') + label;
-      select.append(opt);
-    }
-    if (S.active && S.sessions.some(item => item.sessionId === S.active)) {
-      select.value = S.active;
-    }
-    updateControls();
-  }
-
-  function ensureTerminal() {
-    if (S.term) return;
-    if (!globalThis.Terminal || !globalThis.FitAddon?.FitAddon) {
-      setStatus('xterm.js assets are unavailable.', 'error');
-      return;
-    }
-    const host = q('#lanternPiHost');
-    if (!host) return;
-    const term = new Terminal({
-      cursorBlink: true,
-      scrollback: 8000,
-      fontSize: 13,
-      fontFamily: '"Cascadia Mono","JetBrains Mono",Consolas,ui-monospace,monospace',
-      theme: {
-        background: '#050709',
-        foreground: '#e6edf3',
-        cursor: '#73d18a',
-        selectionBackground: '#315c44',
-      },
-    });
-    const fit = new FitAddon.FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-    term.onData(data => {
-      const session = activeSession();
-      if (!session?.running || S.role !== 'writer' || !Number.isInteger(S.ownershipEpoch)) return;
-      send({
-        type: 'pi_session_input',
-        sessionId: session.sessionId,
-        generation: session.generation,
-        ownershipEpoch: S.ownershipEpoch,
-        data,
-      });
-    });
-    const ro = new ResizeObserver(() => scheduleFit(false));
-    ro.observe(host);
-    S.term = term;
-    S.fit = fit;
-    S.host = host;
-    S.ro = ro;
-    setTimeout(() => scheduleFit(false), 20);
-  }
-
-  function scheduleFit(focus = false) {
-    if (!S.term || !S.fit || !S.host || S.host.offsetWidth <= 0 || S.host.offsetHeight <= 0) return;
-    requestAnimationFrame(() => {
-      try {
-        S.fit.fit();
-        if (focus) S.term.focus();
-      } catch { return; }
-      const session = activeSession();
-      if (!session?.running || S.role !== 'writer' || !Number.isInteger(S.ownershipEpoch)) return;
-      clearTimeout(S.resizeTimer);
-      S.resizeTimer = setTimeout(() => {
-        send({
-          type: 'pi_session_resize',
-          sessionId: session.sessionId,
-          generation: session.generation,
-          ownershipEpoch: S.ownershipEpoch,
-          cols: S.term.cols || 80,
-          rows: S.term.rows || 24,
-        });
-      }, 80);
-    });
-  }
-
-  function attachSession(sessionId) {
-    const session = S.sessions.find(item => item.sessionId === sessionId);
-    if (!session?.running) {
-      if (session) setStatus('Selected Pi session has exited.', 'warn');
-      return;
-    }
-    if (S.active && S.active !== sessionId) {
-      send({type: 'pi_session_detach', sessionId: S.active});
-    }
-    S.active = sessionId;
-    S.role = null;
-    S.ownershipEpoch = null;
-    try { sessionStorage.setItem(activeKey(), sessionId); } catch {}
-    renderSessions();
-    setStatus('Attaching Pi session…');
-    send({
-      type: 'pi_session_attach',
-      sessionId: session.sessionId,
-      generation: session.generation,
-    });
-  }
-
-  function createSession() {
-    if (!S.connected || S.authenticated === false || S.creating) return;
-    ensureTerminal();
-    if (!S.term) return;
-    S.creating = true;
-    updateControls();
+    const path = q('#lanternChatPath');
+    if (!path) return;
     const context = captureContext();
-    const label = context.path || context.folder || '/';
-    setStatus('Starting native Pi…');
-    send({
-      type: 'pi_session_create',
-      context,
-      title: 'Pi · ' + label,
-      cols: S.term.cols || 100,
-      rows: S.term.rows || 32,
-    });
-  }
-
-  function stopSession() {
-    const session = activeSession();
-    if (!session?.running || S.role !== 'writer') return;
-    send({
-      type: 'pi_session_stop',
-      sessionId: session.sessionId,
-      generation: session.generation,
-    });
-    setStatus('Stopping Pi…', 'warn');
-  }
-
-  function takeover() {
-    const session = activeSession();
-    if (!session?.running || S.role !== 'viewer') return;
-    send({
-      type: 'pi_session_takeover',
-      sessionId: session.sessionId,
-      generation: session.generation,
-    });
-    setStatus('Taking control…');
-  }
-
-  function sendKey(key, modifiers = {}) {
-    const session = activeSession();
-    if (!session?.running || S.role !== 'writer' || !Number.isInteger(S.ownershipEpoch)) return;
-    send({
-      type: 'pi_session_key',
-      sessionId: session.sessionId,
-      generation: session.generation,
-      ownershipEpoch: S.ownershipEpoch,
-      key,
-      modifiers,
-    });
-    S.term?.focus();
-  }
-
-  function onMessage(message) {
-    const type = String(message?.type || '');
-    if (type === 'terminal_auth') {
-      S.authenticated = Boolean(message.authenticated);
-      if (!S.authenticated) setStatus('Terminal is locked. Unlock Terminal first.', 'warn');
-      updateControls();
-      return;
-    }
-    if (type === 'pi_session_state') {
-      S.sessions = Array.isArray(message.sessions) ? message.sessions : [];
-      let wanted = '';
-      try { wanted = sessionStorage.getItem(activeKey()) || ''; } catch {}
-      const candidate = S.sessions.find(item => item.sessionId === wanted && item.running)
-        || S.sessions.find(item => item.running);
-      renderSessions();
-      if (candidate) attachSession(candidate.sessionId);
-      else if (S.open && S.authenticated !== false) createSession();
-      return;
-    }
-    if (type === 'pi_session_created') {
-      S.creating = false;
-      const session = message.session || {};
-      S.sessions = [...S.sessions.filter(item => item.sessionId !== session.sessionId), session];
-      renderSessions();
-      attachSession(session.sessionId);
-      return;
-    }
-    if (type === 'pi_session_replay') {
-      if (message.sessionId !== S.active) return;
-      S.role = String(message.role || 'viewer');
-      S.ownershipEpoch = Number(message.ownershipEpoch);
-      ensureTerminal();
-      if (S.term) {
-        S.term.reset();
-        if (message.truncated) S.term.write('\x1b[90m[Earlier Pi history omitted from display; preserved on server]\x1b[0m\r\n');
-        S.term.write(String(message.output || ''), () => scheduleFit(true));
-      }
-      setStatus(S.role === 'writer' ? 'Native Pi · Writer' : 'Native Pi · Viewer');
-      updateControls();
-      return;
-    }
-    if (type === 'pi_session_output') {
-      if (message.sessionId === S.active) S.term?.write(String(message.data || ''));
-      return;
-    }
-    if (type === 'pi_session_ownership') {
-      if (message.sessionId !== S.active) return;
-      S.role = String(message.role || 'viewer');
-      S.ownershipEpoch = Number(message.ownershipEpoch);
-      setStatus(S.role === 'writer' ? 'Native Pi · Writer' : 'Native Pi · Viewer');
-      updateControls();
-      if (S.role === 'writer') scheduleFit(true);
-      return;
-    }
-    if (type === 'pi_session_exit') {
-      const session = S.sessions.find(item => item.sessionId === message.sessionId);
-      if (session) {
-        session.running = false;
-        session.exitCode = message.exitCode;
-      }
-      if (message.sessionId === S.active) {
-        S.term?.write('\r\n\x1b[90m[Pi exited' + (message.exitCode == null ? '' : ' with code ' + message.exitCode) + ']\x1b[0m\r\n');
-        setStatus('Pi exited.', 'warn');
-      }
-      renderSessions();
-      return;
-    }
-    if (type === 'pi_session_stopped') {
-      const stopped = message.session || {};
-      S.sessions = S.sessions.map(item => item.sessionId === stopped.sessionId ? stopped : item);
-      renderSessions();
-      setStatus('Pi stopped.', 'warn');
-      return;
-    }
-    if (type === 'pi_session_error') {
-      S.creating = false;
-      if (message.code === 'terminal_auth_required') {
-        S.authenticated = false;
-        setStatus('Terminal is locked. Unlock Terminal first.', 'warn');
-      } else {
-        setStatus(String(message.error || 'Pi session error'), 'error');
-      }
-      updateControls();
-    }
-  }
-
-  function connect() {
-    if (S.ws && [WebSocket.OPEN, WebSocket.CONNECTING].includes(S.ws.readyState)) return;
-    clearTimeout(S.reconnect);
-    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const ws = new WebSocket(scheme + location.host + '/ws?v=2');
-    S.ws = ws;
-    setStatus('Connecting…');
-    ws.onopen = () => {
-      if (S.ws !== ws) return;
-      S.connected = true;
-      S.reconnectDelay = 500;
-      send({type: 'terminal_client_v2'});
-      send({type: 'pi_session_sync'});
-      updateControls();
-    };
-    ws.onmessage = event => {
-      let message;
-      try { message = JSON.parse(event.data); } catch { return; }
-      onMessage(message);
-    };
-    ws.onerror = () => { try { ws.close(); } catch {} };
-    ws.onclose = () => {
-      if (S.ws !== ws) return;
-      S.connected = false;
-      S.ws = null;
-      S.role = null;
-      S.ownershipEpoch = null;
-      updateControls();
-      if (S.open) {
-        setStatus('Disconnected. Reconnecting…', 'warn');
-        S.reconnect = setTimeout(connect, S.reconnectDelay);
-        S.reconnectDelay = Math.min(5000, Math.round(S.reconnectDelay * 1.6));
-      }
-    };
-  }
-
-  function disconnect() {
-    clearTimeout(S.reconnect);
-    S.reconnect = null;
-    if (S.active) send({type: 'pi_session_detach', sessionId: S.active});
-    const ws = S.ws;
-    S.ws = null;
-    S.connected = false;
-    if (ws) try { ws.close(); } catch {}
-    S.role = null;
-    S.ownershipEpoch = null;
-    updateControls();
-  }
-
-  function setExpanded(value) {
-    S.expanded = Boolean(value);
-    const drawer = q('#lanternChatDrawer');
-    if (drawer) drawer.dataset.expanded = S.expanded ? 'true' : 'false';
-    q('#lanternPiExpand').textContent = S.expanded ? 'Dock' : 'Expand';
-    setTimeout(() => scheduleFit(true), 30);
+    const label = contextLabel(context);
+    path.textContent = label;
+    path.title = label;
+    refreshAttachments();
   }
 
   function setOpen(value) {
@@ -449,114 +502,292 @@
     if (drawer) drawer.dataset.open = S.open ? 'true' : 'false';
     document.body.classList.toggle('lantern-chat-open', S.open);
     if (S.open) {
-      ensureTerminal();
       refreshContextLabel();
       connect();
       clearInterval(S.contextTimer);
-      S.contextTimer = setInterval(refreshContextLabel, 800);
-      setTimeout(() => scheduleFit(true), 40);
+      S.contextTimer = setInterval(refreshContextLabel, 700);
+      setTimeout(() => q('#lanternChatInput')?.focus(), 80);
     } else {
       clearInterval(S.contextTimer);
       S.contextTimer = null;
-      disconnect();
     }
   }
 
-  function buildUi() {
-    if (q('#lanternChatDrawer')) return;
-    const drawer = create('aside', 'lantern-chat-drawer');
-    drawer.id = 'lanternChatDrawer';
-    drawer.dataset.open = 'false';
-    drawer.dataset.expanded = 'false';
-    drawer.setAttribute('aria-label', 'LanternBot Native Pi');
-
-    const head = create('div', 'lantern-chat-head');
-    const title = create('div', 'lantern-chat-title', 'LanternBot · Pi');
-    const path = create('div', 'lantern-chat-path', '/');
-    path.id = 'lanternChatPath';
-
-    const select = create('select', 'lantern-pi-sessions');
-    select.id = 'lanternPiSessions';
-    select.title = 'Attach or switch Pi session';
-    select.addEventListener('change', () => attachSession(select.value));
-
-    const fresh = create('button', 'lantern-chat-iconbtn', 'New Pi');
-    fresh.id = 'lanternPiNew';
-    fresh.type = 'button';
-    fresh.addEventListener('click', createSession);
-
-    const takeover = create('button', 'lantern-chat-iconbtn', 'Take over');
-    takeover.id = 'lanternPiTakeover';
-    takeover.type = 'button';
-    takeover.hidden = true;
-    takeover.addEventListener('click', takeover);
-
-    const stop = create('button', 'lantern-chat-iconbtn danger', 'Stop');
-    stop.id = 'lanternPiStop';
-    stop.type = 'button';
-    stop.addEventListener('click', stopSession);
-
-    const expand = create('button', 'lantern-chat-iconbtn', 'Expand');
-    expand.id = 'lanternPiExpand';
-    expand.type = 'button';
-    expand.addEventListener('click', () => setExpanded(!S.expanded));
-
-    const close = create('button', 'lantern-chat-iconbtn lantern-chat-close', '×');
-    close.type = 'button';
-    close.setAttribute('aria-label', 'Close Pi');
-    close.addEventListener('click', () => setOpen(false));
-
-    head.append(title, path, select, fresh, takeover, stop, expand, close);
-
-    const statusRow = create('div', 'lantern-chat-status');
-    const status = create('span', '', 'Native Pi idle');
-    status.id = 'lanternChatStatus';
-    const role = create('span', 'lantern-pi-role', 'No session');
-    role.id = 'lanternPiRole';
-    statusRow.append(status, role);
-
-    const host = create('div', 'lantern-pi-host');
-    host.id = 'lanternPiHost';
-
-    const keys = create('div', 'lantern-pi-mobile-keys');
-    for (const [label, key, mods] of [
-      ['Esc', 'Escape', {}], ['Tab', 'Tab', {}], ['↑', 'ArrowUp', {}],
-      ['↓', 'ArrowDown', {}], ['←', 'ArrowLeft', {}], ['→', 'ArrowRight', {}],
-      ['Ctrl+C', 'c', {ctrl: true}], ['Ctrl+P', 'p', {ctrl: true}],
-    ]) {
-      const button = create('button', '', label);
-      button.type = 'button';
-      button.addEventListener('click', () => sendKey(key, mods));
-      keys.append(button);
-    }
-
-    drawer.append(head, statusRow, host, keys);
-    document.body.append(drawer);
+  function ensureAssistant() {
+    if (S.assistant?.isConnected) return S.assistant;
+    S.assistant = appendMessage('assistant', '', {streaming: true});
+    return S.assistant;
   }
 
-  function injectLaunch() {
-    if (q('.lantern-chat-launch')) return;
-    const button = create('button', 'lantern-chat-launch', '✦ Pi');
-    button.type = 'button';
-    button.title = 'Open native Pi';
-    button.addEventListener('click', () => setOpen(!S.open));
-    const actions = q('.top .actions');
-    if (actions) {
-      button.classList.add('btn');
-      actions.append(button);
+  function appendAssistantDelta(delta) {
+    if (!delta) return;
+    const node = ensureAssistant();
+    node.textContent += delta;
+    const list = q('#lanternChatMessages');
+    if (list) list.scrollTop = list.scrollHeight;
+    persistChatLog();
+  }
+
+  function assistantDelta(event) {
+    if (typeof event?.delta === 'string') return event.delta;
+    const inner = event?.assistantMessageEvent || event?.event;
+    if (inner && inner.type === 'text_delta') {
+      if (typeof inner.delta === 'string') return inner.delta;
+      if (typeof inner.text === 'string') return inner.text;
+    }
+    return '';
+  }
+
+  function renderToolStart(event) {
+    const list = q('#lanternChatMessages');
+    if (!list) return;
+    const id = String(event.toolCallId || event.id || Math.random());
+    const row = create('div', 'lantern-chat-tool');
+    const name = create('span', 'lantern-chat-tool-name', '↳ ' + String(event.toolName || 'tool'));
+    const args = event.args && typeof event.args === 'object'
+      ? JSON.stringify(event.args).slice(0, 260) : '';
+    const detail = create('span', '', args);
+    row.append(name, detail);
+    row.dataset.toolCallId = id;
+    list.append(row);
+    list.scrollTop = list.scrollHeight;
+    S.toolRows.set(id, row);
+    S.assistant = null; // subsequent assistant response must appear after tool calls
+    persistChatLog();
+  }
+
+  function renderToolEnd(event) {
+    const id = String(event.toolCallId || event.id || '');
+    const row = S.toolRows.get(id);
+    if (!row) return;
+    const failed = Boolean(event.isError || event.error);
+    row.dataset.error = failed ? 'true' : 'false';
+    const suffix = create('span', '', failed ? 'failed' : 'done');
+    row.append(suffix);
+    persistChatLog();
+  }
+
+  function onBotEvent(event) {
+    const typ = String(event?.type || '');
+    if (typ === 'agent_start' || typ === 'turn_start') {
+      setStreaming(true);
+      setStatus('LanternBot is working…');
       return;
     }
-    const bar = q('.md-bar .bar-top');
-    if (bar) {
-      button.classList.add('btn');
-      const grow = q('.grow', bar);
-      if (grow?.nextSibling) bar.insertBefore(button, grow.nextSibling);
-      else bar.append(button);
+    if (typ === 'message_start' && event.message?.role === 'assistant') {
+      // No placeholder before the tool events: render a reply only once
+      // there is real text to place on the timeline.
       return;
     }
-    button.classList.add('lantern-chat-float');
-    button.textContent = 'Pi';
-    document.body.append(button);
+    if (typ === 'message_update') {
+      setStreaming(true);
+      appendAssistantDelta(assistantDelta(event));
+      return;
+    }
+    if (typ === 'message_end' && event.message?.role === 'assistant') {
+      const text = textContentOf(event.message.content);
+      const node = ensureAssistant();
+      if (!node.textContent && text) node.textContent = text;
+      persistChatLog();
+      const error = event.message.errorMessage;
+      if (error && !node.textContent) node.textContent = 'LanternBot error: ' + error;
+      return;
+    }
+    if (typ === 'tool_execution_start') {
+      renderToolStart(event);
+      return;
+    }
+    if (typ === 'tool_execution_end') {
+      renderToolEnd(event);
+      return;
+    }
+    if (typ === 'auto_retry_start') {
+      setStatus('LanternBot is retrying: ' + String(event.errorMessage || ''), 'warn');
+      return;
+    }
+    if (typ === 'agent_settled') {
+      setStreaming(false);
+      setStatus(event.aborted ? 'LanternBot stopped' : 'Ready');
+    }
+  }
+
+  function onMessage(message) {
+    const typ = String(message?.type || '');
+    if (typ === 'terminal_auth') {
+      setAccess(Boolean(message.authenticated));
+      return;
+    }
+    if (typ === 'chat_state') {
+      S.state = message.state || {};
+      S.policy = message.summary?.policy || {};
+      S.usage = message.summary?.usage || {};
+      renderModels(message.models || [], S.state, message.summary || {});
+      renderHistory(message.messages || [], String(S.policy?.greeting || ''));
+      restoreChatLog(message.messages || []);
+      setStreaming(Boolean(message.summary?.streaming));
+      setAccess(S.authenticated !== false);
+      setStatus('Ready');
+      refreshContextLabel();
+      return;
+    }
+    if (typ === 'chat_bot_event') {
+      onBotEvent(message.event || {});
+      return;
+    }
+    if (typ === 'chat_work_changed') {
+      const editor = globalThis.__lanternMdVisual;
+      if (!editor?.onWorkChanged) {
+        setStatus('Markdown working-copy controller is unavailable for LanternBot updates.', 'error');
+        return;
+      }
+      void Promise.resolve(editor.onWorkChanged(
+        String(message.path || ''),
+        message.hash || null,
+        Boolean(message.final),
+      )).then(() => {
+        setStatus(message.final
+          ? 'LanternBot updated the real .md; Ctrl+S accepts the diff.'
+          : 'LanternBot changed the real .md.');
+        refreshContextLabel();
+      }).catch(error => {
+        setStatus('LanternBot working-copy merge failed: ' + String(error?.message || error), 'error');
+        appendSystem('LanternBot working-copy merge failed: ' + String(error?.message || error), 'error');
+      });
+      return;
+    }
+    if (typ === 'chat_work_error') {
+      globalThis.__lanternMdVisual?.cancelBotTurn?.();
+      setStatus(String(message.error || 'LanternBot working-copy update failed'), 'error');
+      appendSystem('LanternBot working-copy error: ' + String(message.error || 'unknown error'), 'error');
+      return;
+    }
+    if (typ === 'chat_real_file_touched') {
+      globalThis.__lanternMdVisual?.cancelBotTurn?.();
+      setStatus('Saved Markdown changed outside the pending working copy. Save is blocked until you reconcile.', 'error');
+      appendSystem('Saved Markdown changed while LanternBot was working. The working copy was kept; reconcile before Save.', 'error');
+      return;
+    }
+    if (typ === 'chat_prompt_accepted') {
+      setStreaming(true);
+      setStatus('LanternBot is working…');
+      return;
+    }
+    if (typ === 'chat_model_changed') {
+      S.state = message.state || S.state;
+      renderModels(S.models, S.state, message.summary || null);
+      setStatus('Provider/model changed');
+      return;
+    }
+    if (typ === 'chat_session_changed') {
+      S.state = message.state || {};
+      return;
+    }
+    if (typ === 'chat_aborted') {
+      setStatus('Stopping LanternBot…', 'warn');
+      return;
+    }
+    if (typ === 'chat_process_exit') {
+      setStreaming(false);
+      setStatus('LanternBot runtime exited. Reopen chat to restart it.', 'error');
+      return;
+    }
+    if (typ === 'chat_error') {
+      globalThis.__lanternMdVisual?.cancelBotTurn?.();
+      setStreaming(false);
+      const locked = message.code === 'terminal_auth_required';
+      if (locked) setAccess(false);
+      else setStatus(String(message.error || 'Chat error'), 'error');
+      if (!locked) appendSystem('Chat error: ' + String(message.error || 'unknown error'), 'error');
+    }
+  }
+
+  async function prepareMarkdownTurn(context) {
+    if (context?.kind !== 'markdown') return null;
+    const editor = globalThis.__lanternMdVisual;
+    if (!editor?.beginBotTurn) throw new Error('Markdown working-copy controller is unavailable');
+    return await editor.beginBotTurn();
+  }
+
+  async function sendPrompt() {
+    const input = q('#lanternChatInput');
+    if (!input || input.disabled || S.streaming) return;
+    const message = input.value.trim();
+    if (!message) return;
+    try {
+      input.disabled = true;
+      const context = captureContext();
+      const attachments = attachmentPaths();
+      if (attachments.length) context.attachments = attachments;
+      const promptId = 'chat-' + Date.now().toString(36);
+      const workHash = await prepareMarkdownTurn(context);
+      refreshContextLabel();
+      appendMessage('user', message);
+      sendRaw({
+        type: 'chat_prompt',
+        reqId: promptId,
+        message,
+        context,
+        workHash,
+      });
+      input.value = '';
+      S.assistant = null;
+      setStreaming(true);
+      setStatus('Sending to LanternBot…');
+    } catch (error) {
+      globalThis.__lanternMdVisual?.cancelBotTurn?.();
+      setStreaming(false);
+      appendSystem(String(error?.message || error), 'error');
+      setStatus(String(error?.message || error), 'error');
+    } finally {
+      input.disabled = !S.connected || S.authenticated === false;
+    }
+  }
+
+  function abortTurn() {
+    if (!S.connected || !S.streaming) return;
+    try { sendRaw({type: 'chat_abort'}); setStatus('Stopping LanternBot…', 'warn'); }
+    catch (error) { setStatus(String(error?.message || error), 'error'); }
+  }
+
+  function newChat() {
+    if (!S.connected || S.streaming || S.authenticated === false) return;
+    try {
+      sendRaw({type: 'chat_new'});
+      renderHistory([], String(S.policy?.greeting || ''));
+      setStatus('Starting a new LanternBot conversation…');
+    } catch (error) {
+      setStatus(String(error?.message || error), 'error');
+    }
+  }
+
+  function selectedProviderModel() {
+    return {
+      provider: String(q('#lanternChatProvider')?.value || ''),
+      modelId: String(q('#lanternChatModel')?.value || ''),
+    };
+  }
+
+  function changeProvider() {
+    const provider = q('#lanternChatProvider');
+    if (!provider || !provider.value || S.streaming) return;
+    renderModelOptions(provider.value, '');
+    changeModel();
+  }
+
+  function changeModel() {
+    if (S.streaming) return;
+    const selected = selectedProviderModel();
+    if (!selected.provider || !selected.modelId) return;
+    try {
+      sendRaw({
+        type: 'chat_set_model',
+        provider: selected.provider,
+        modelId: selected.modelId,
+      });
+      setStatus('Changing provider/model…');
+    } catch (error) {
+      setStatus(String(error?.message || error), 'error');
+    }
   }
 
   function init() {
@@ -566,13 +797,11 @@
       open: () => setOpen(true),
       close: () => setOpen(false),
       captureContext,
+      prepareMarkdownTurn,
       refreshContext: refreshContextLabel,
     };
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init, {once: true});
-  } else {
-    init();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once: true});
+  else init();
 })();

@@ -1,49 +1,10 @@
 from __future__ import annotations
 
-import os
-import shutil
 from copy import deepcopy
 from pathlib import Path
 from string import ascii_letters, digits
 from typing import Any, Callable, Mapping, Optional, Sequence
 from uuid import uuid4
-
-
-def resolve_native_pi_argv() -> list[str]:
-    """Resolve the installed Pi CLI without shell-string wrapping."""
-    explicit = os.environ.get("LANTERN_PI_COMMAND", "").strip()
-    pi = explicit
-    if not pi:
-        if os.name == "nt":
-            pi = (
-                shutil.which("pi.cmd")
-                or shutil.which("pi.exe")
-                or shutil.which("pi")
-                or "pi.cmd"
-            )
-        else:
-            pi = shutil.which("pi") or "pi"
-
-    path = Path(pi)
-    node = shutil.which("node.exe") or shutil.which("node")
-    if os.name == "nt" and path.suffix.lower() in {".cmd", ".bat", ".ps1"}:
-        try:
-            cli = (
-                path.resolve().parent
-                / "node_modules"
-                / "@earendil-works"
-                / "pi-coding-agent"
-                / "dist"
-                / "bundle"
-                / "cli.js"
-            )
-        except OSError:
-            cli = Path()
-        if node and cli.is_file():
-            return [node, str(cli)]
-    if path.suffix.lower() in {".js", ".mjs", ".cjs"} and node:
-        return [node, str(path)]
-    return [pi]
 
 
 class PiSessionRegistry:
@@ -58,7 +19,6 @@ class PiSessionRegistry:
         *,
         env: Optional[Mapping[str, str]] = None,
         id_factory: Optional[Callable[[], str]] = None,
-        context_prompt_factory: Optional[Callable[[Mapping[str, Any]], str]] = None,
     ) -> None:
         if not pi_argv or isinstance(pi_argv, (str, bytes)):
             raise ValueError("pi_argv must be a non-empty sequence")
@@ -69,7 +29,6 @@ class PiSessionRegistry:
         self.pi_argv = tuple(pi_argv)
         self.env = dict(env or {})
         self.id_factory = id_factory or (lambda: uuid4().hex)
-        self.context_prompt_factory = context_prompt_factory
         self._sessions: dict[str, dict[str, Any]] = {}
 
     @staticmethod
@@ -79,42 +38,6 @@ class PiSessionRegistry:
             char not in allowed for char in session_id
         ):
             raise ValueError("Pi session id must be opaque ASCII letters/numbers/-/_")
-
-    def context_cwd(self, context_ref: Mapping[str, Any]) -> Path:
-        """Resolve immutable browser context to an existing cwd inside root."""
-        if not isinstance(context_ref, Mapping):
-            raise ValueError("Pi context must be an object")
-        kind = str(context_ref.get("kind") or "folder").strip().lower()
-        raw = context_ref.get("path") if kind in {"file", "markdown"} else context_ref.get("folder")
-        if raw in (None, ""):
-            raw = context_ref.get("folder") or ""
-        rel = str(raw or "").replace("\\", "/").lstrip("/")
-        candidate = (self.root / rel).resolve()
-        try:
-            candidate.relative_to(self.root)
-        except ValueError:
-            raise ValueError("Pi context cwd must stay inside the configured root") from None
-        if kind in {"file", "markdown"}:
-            candidate = candidate.parent
-        if not candidate.exists() or not candidate.is_dir():
-            raise ValueError("Pi context cwd must be an existing directory inside the configured root")
-        return candidate
-
-    def create_for_context(
-        self,
-        *,
-        context_ref: Mapping[str, Any],
-        cols: int = 80,
-        rows: int = 24,
-        title: str = "Pi",
-    ) -> dict[str, Any]:
-        return self.create(
-            cwd=self.context_cwd(context_ref),
-            context_ref=context_ref,
-            cols=cols,
-            rows=rows,
-            title=title,
-        )
 
     def _terminal_status(self, session: Mapping[str, Any]) -> Optional[dict[str, Any]]:
         terminal_id = session["terminalId"]
@@ -161,19 +84,15 @@ class PiSessionRegistry:
             raise ValueError(f"Pi terminal id collision: {terminal_id}")
 
         session_dir.mkdir()
-        argv = [*self.pi_argv]
-        if self.context_prompt_factory is not None:
-            prompt = str(self.context_prompt_factory(context_snapshot) or "").strip()
-            if prompt:
-                argv.extend(["--append-system-prompt", prompt])
-        argv.extend([
+        argv = [
+            *self.pi_argv,
             "--session-id",
             session_id,
             "--session-dir",
             str(session_dir),
             "--tui-mode",
             "regular",
-        ])
+        ]
         try:
             info = self.terminal.create_argv(
                 terminal_id,

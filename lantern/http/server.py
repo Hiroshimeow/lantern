@@ -115,7 +115,7 @@ class Handler(AppRoutes,PluginRoutes,MediaRoutes,CropRoutes,MarkdownRoutes,Files
             if parsed.path == "/ws":
                 if self.app.terminal is None or self.app.scm is None or self.app.terminal_access is None:
                     self.send_error(503, "runtime not initialized"); return
-                return upgrade_websocket(self, self.app.ws, self.app.terminal, self.app.scm, self.app.terminal_access, self.app.bot, self.app.pi)
+                return upgrade_websocket(self, self.app.ws, self.app.terminal, self.app.scm, self.app.terminal_access, self.app.bot)
             if parsed.path.startswith("/static/"):
                 return self.serve_app_asset(parsed.path)
             if parsed.path == "/api/terminal/auth":

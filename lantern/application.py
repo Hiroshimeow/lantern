@@ -1,6 +1,5 @@
+
 import getpass
-import hashlib
-import json
 import os
 import sys
 import threading
@@ -16,7 +15,6 @@ from .crop import CropService
 from .http.server import LanternHTTPServer, Handler
 from .terminal import TerminalManager
 from .pi_chat import LanternBotManager
-from .pi_sessions import PiSessionRegistry, resolve_native_pi_argv
 from .scm import ScmService
 from .terminal_auth import TerminalAccess, hash_password, update_password_yaml
 from .ws import WebSocketHub
@@ -27,26 +25,10 @@ try:
 except ImportError:
     LAN_PLUGIN = None
 
-
 def ensure_cache_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "thumbs").mkdir(parents=True, exist_ok=True)
     (path / "folder_previews").mkdir(parents=True, exist_ok=True)
-
-
-def _native_pi_context_prompt(config: AppConfig, context: dict[str, Any]) -> str:
-    snapshot = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
-    return (
-        config.lantern_bot.system_prompt.rstrip()
-        + "\n\n"
-        + "This native Pi session was created from an immutable Lantern context. "
-          "Use the context below as the user's initial workspace reference. "
-          "Do not infer a different active Lantern file merely because the browser navigates later. "
-          "Edit real project files with Pi's native tools; Lantern's Markdown layer observes file changes independently.\n"
-        + "<lantern_native_context>"
-        + snapshot
-        + "</lantern_native_context>"
-    )
 
 
 @dataclass
@@ -56,7 +38,6 @@ class Application:
     terminal_access: TerminalAccess
     terminal: TerminalManager
     bot: LanternBotManager
-    pi: PiSessionRegistry
     scm: ScmService
     work: LiveMarkdownStore
     files: FileService
@@ -76,12 +57,9 @@ class Application:
             self.scm.close()
         finally:
             try:
-                self.pi.close()
+                self.bot.close()
             finally:
-                try:
-                    self.bot.close()
-                finally:
-                    self.terminal.kill_all()
+                self.terminal.kill_all()
 
 
 def make_application(config: AppConfig, *, no_password: bool = False,
@@ -99,27 +77,12 @@ def make_application(config: AppConfig, *, no_password: bool = False,
     work = LiveMarkdownStore(config.root, work_dir, {".md", ".markdown"})
     bot = LanternBotManager(config.root, ws.broadcast, work_store=work,
                             bot_config=config.lantern_bot)
-    configured_pi_state = os.environ.get("LANTERN_PI_SESSION_DIR", "").strip()
-    if configured_pi_state:
-        pi_state_dir = Path(configured_pi_state).expanduser().resolve()
-    else:
-        root_identity = os.path.normcase(str(config.root.resolve())).encode("utf-8")
-        root_key = hashlib.sha256(root_identity).hexdigest()[:16]
-        pi_state_dir = (Path.home() / ".lantern" / "pi-native" / root_key).resolve()
-    pi = PiSessionRegistry(
-        config.root,
-        pi_state_dir,
-        terminal,
-        resolve_native_pi_argv(),
-        env={"LANTERN_PI_NATIVE_HARNESS": "1"},
-        context_prompt_factory=lambda context: _native_pi_context_prompt(config, dict(context)),
-    )
     scm = ScmService(config.root, ws.broadcast)
     files = FileService(config, plugin)
     media = MediaService(config, files)
     views = ViewService(config, files, media)
     crop = CropService(files)
-    return Application(config, ws, access, terminal, bot, pi, scm, work,
+    return Application(config, ws, access, terminal, bot, scm, work,
                        files, media, views, crop, plugin,
                        threading.BoundedSemaphore(value=2),
                        (Path(__file__).resolve().parents[1] / "static").resolve())
