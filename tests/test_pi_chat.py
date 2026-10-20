@@ -184,6 +184,7 @@ class LanternBotManagerTests(unittest.TestCase):
         self.assertTrue(self.settled.wait(2))
 
         messages = self.manager.get_messages()
+        self.assertGreaterEqual(len(messages), 2)
         prompt = messages[0]["content"]
         working = self.work.working_path("docs/spec.md")
         self.assertIsNotNone(working)
@@ -203,6 +204,13 @@ class LanternBotManagerTests(unittest.TestCase):
             self.work.get("docs/spec.md")["work"]["content"],
             "# Spec\n\nunsaved working copy\n",
         )
+        # Verify session .jsonl file persisted both user and assistant messages
+        jsonl_file = Path(self.tmp.name) / "sessions" / "fake-session-1.jsonl"
+        self.assertTrue(jsonl_file.is_file())
+        jsonl_lines = [json.loads(line) for line in jsonl_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        roles = [entry.get("message", {}).get("role") for entry in jsonl_lines if entry.get("type") == "message"]
+        self.assertIn("user", roles)
+        self.assertIn("assistant", roles)
         work_events = [item for item in self.events if item.get("type") == "chat_work_changed"]
         self.assertTrue(work_events)
         self.assertTrue(work_events[-1]["final"])
@@ -312,15 +320,82 @@ class LanternBotManagerTests(unittest.TestCase):
         command = manager._command()
         self.assertIn("--session", command)
         self.assertIn("--extension", command)
-        self.assertIn("--tools", command)
-        self.assertEqual(command[command.index("--tools") + 1], "*")
+        # v7 default localhost runs in Full / YOLO mode ("*") without restrictive flags
+        self.assertNotIn("--tools", command)
         self.assertNotIn("--no-extensions", command)
-        self.assertIn("--no-mcp", command)
+        self.assertNotIn("--no-mcp", command)
         self.assertIn("pi_working_copy_guard.ts", " ".join(command))
         self.assertEqual(command[command.index("--session") + 1], str(saved.resolve()))
         state = json.loads(manager.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["sessionFile"], str(saved))
         manager.close()
+
+        # Verify explicit YAML restrictions inject --tools, --no-extensions, --no-mcp
+        restricted_mgr = LanternBotManager(
+            self.root,
+            lambda _event: None,
+            work_store=store,
+            session_dir=saved.parent,
+            bot_config=LanternBotConfig.from_mapping({
+                "access": {
+                    "localhost": {
+                        "enabled": True,
+                        "tools": ["read", "grep", "find", "ls"],
+                        "extensions": False,
+                        "mcp": False,
+                    }
+                }
+            }),
+        )
+        restricted_cmd = restricted_mgr._command()
+        self.assertIn("--tools", restricted_cmd)
+        self.assertEqual(restricted_cmd[restricted_cmd.index("--tools") + 1], "read,grep,find,ls")
+        self.assertIn("--no-extensions", restricted_cmd)
+        self.assertIn("--no-mcp", restricted_cmd)
+        restricted_mgr.close()
+
+    def test_corrupted_session_file_is_auto_repaired_and_quarantined(self):
+        sdir = Path(self.tmp.name) / "sessions_repair"
+        sdir.mkdir(parents=True, exist_ok=True)
+        # Create a session file containing valid Pi entries plus a corrupted v7 line missing id/parentId
+        corrupt_file = sdir / "2026-10-20T06-29-12-989Z_01a157ff-ee9c-76e5-a1c9-ee6b94ed7772.jsonl"
+        corrupt_file.write_text(
+            "{\"type\":\"session\",\"version\":3,\"id\":\"01a157ff\"}\n"
+            "{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n"
+            "{\"type\":\"message\",\"sessionId\":\"01a157ff\",\"role\":\"user\",\"content\":\"corrupt_line_without_id\"}\n",
+            encoding="utf-8"
+        )
+        store = WorkingCopyStore(self.root, Path(self.tmp.name) / "work_repair", {".md"})
+        manager = LanternBotManager(self.root, lambda _event: None, work_store=store, session_dir=sdir)
+        manager._persist_state({
+            "sessionId": "01a157ff",
+            "sessionFile": str(corrupt_file),
+            "model": {"provider": "fake", "id": "gpt-6.1-sol"},
+        })
+        # _saved_session_file must auto-repair the file by dropping the malformed line
+        sf = manager._saved_session_file()
+        self.assertEqual(sf, str(corrupt_file.resolve()))
+        repaired_lines = [json.loads(l) for l in corrupt_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+        self.assertEqual(len(repaired_lines), 2)
+        self.assertEqual(repaired_lines[0]["type"], "session")
+        self.assertEqual(repaired_lines[1]["id"], "m1")
+        manager.close()
+
+        # If a session file has completely non-Pi content, it must be quarantined and sessionFile cleared
+        bad_file = sdir / "completely_broken.jsonl"
+        bad_file.write_text("NOT_JSON_OR_SESSION\n", encoding="utf-8")
+        manager2 = LanternBotManager(self.root, lambda _event: None, work_store=store, session_dir=sdir)
+        manager2._persist_state({
+            "sessionId": "broken-id",
+            "sessionFile": str(bad_file),
+            "model": {"provider": "fake", "id": "gpt-6.1-sol"},
+        })
+        sf2 = manager2._saved_session_file()
+        self.assertEqual(sf2, "")
+        cmd2 = manager2._command()
+        self.assertNotIn("--session", cmd2)
+        self.assertTrue(any(f.name.startswith("completely_broken.corrupted") for f in sdir.glob("*.bak")))
+        manager2.close()
 
 
 if __name__ == "__main__":

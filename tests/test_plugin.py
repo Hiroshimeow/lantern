@@ -496,7 +496,7 @@ class MarkdownPreviewTests(unittest.TestCase):
         )
         markdown_tail = (
             "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-            "connect-src 'self'; worker-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
+            "connect-src 'self' ws: wss:; worker-src 'self' blob:; base-uri 'none'; object-src 'none'; form-action 'none'"
         )
         pdf_tail = (
             "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "

@@ -383,7 +383,8 @@ class TerminalParityTests(unittest.TestCase):
         argv = ["node", "cli.js", "a&b", "日本語"]
         overlay = {"TERM": "custom", "PI_FLAG": "値"}
         with tempfile.TemporaryDirectory() as td:
-            manager = TerminalManager(Path(td), lambda _event: None)
+            td_path = Path(td)
+            manager = TerminalManager(td_path, lambda _event: None)
             for platform, target in (("nt", "WinConPty"), ("posix", "PosixPty")):
                 captured.clear()
                 with patch("lantern.terminal.os.name", platform), patch(
@@ -391,7 +392,7 @@ class TerminalParityTests(unittest.TestCase):
                 ):
                     manager._spawn_native(
                         "x",
-                        Path(td),
+                        td_path,
                         80,
                         24,
                         lambda _data: None,

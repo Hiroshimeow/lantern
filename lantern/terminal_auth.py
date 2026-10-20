@@ -26,6 +26,16 @@ FAIL_WINDOW = 5 * 60
 MAX_FAILURES = 5
 
 
+def is_loopback_ip(client_ip: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(str(client_ip or "").strip())
+        if getattr(ip, "ipv4_mapped", None) is not None:
+            ip = ip.ipv4_mapped
+        return bool(ip.is_loopback)
+    except ValueError:
+        return False
+
+
 def hash_password(password: str) -> str:
     if not isinstance(password, str) or len(password) < 12 or len(password) > 1024:
         raise ValueError("Terminal password must contain 12-1024 characters")
@@ -67,7 +77,10 @@ def update_password_yaml(config: Path, encoded: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(contents)
             stream.flush()
-            os.fsync(stream.fileno())
+            try:
+                os.fsync(stream.fileno())
+            except OSError:
+                pass
         if os.name != "nt":
             os.chmod(name, 0o600)
         os.replace(name, config)
@@ -95,6 +108,7 @@ class TerminalAccess:
         self.local_bypass = local_bypass
         self.sessions: dict[str, tuple[float, str]] = {}
         self.attempts: dict[str, deque[float]] = {}
+        self.lan_locked: bool = False
         self.lock = threading.RLock()
 
     @property
@@ -105,19 +119,46 @@ class TerminalAccess:
     def passwordless(self) -> bool:
         return self._hash.strip().casefold() in {"", "no-password"}
 
+    def is_local(self, client_ip: str) -> bool:
+        return bool(self.local_bypass and is_loopback_ip(client_ip))
+
+    def active_lan_sessions(self) -> int:
+        now = time.time()
+        with self.lock:
+            expired = [k for k, (exp, _) in self.sessions.items() if exp <= now]
+            for k in expired:
+                self.sessions.pop(k, None)
+            return len(self.sessions)
+
+    def revoke_all_lan(self, *, hard_lock: bool | None = None) -> int:
+        """Master lock action from localhost: revoke all active LAN sessions immediately."""
+        with self.lock:
+            count = len(self.sessions)
+            self.sessions.clear()
+            if hard_lock is not None:
+                self.lan_locked = bool(hard_lock)
+            return count
+
     def required(self, client_ip: str) -> bool:
+        if self.is_local(client_ip):
+            return False
+        with self.lock:
+            if self.lan_locked:
+                return True
         # Explicit opt-in: no configured password means no Terminal login,
         # including LAN/Tailscale; malformed hashes still fail closed.
         if self.passwordless:
             return False
         if not self.local_bypass:
             return True
-        try:
-            return not ipaddress.ip_address(client_ip).is_loopback
-        except ValueError:
-            return True
+        return not is_loopback_ip(client_ip)
 
     def permitted(self, client_ip: str, cookie_header: str) -> bool:
+        if self.is_local(client_ip):
+            return True
+        with self.lock:
+            if self.lan_locked:
+                return False
         if not self.required(client_ip):
             return True
         token = _token_from_cookie(cookie_header)
@@ -135,6 +176,9 @@ class TerminalAccess:
             return hmac.compare_digest(binding, client_ip)
 
     def login(self, client_ip: str, password: str) -> tuple[int, str]:
+        with self.lock:
+            if self.lan_locked and not self.is_local(client_ip):
+                return 403, ""
         if not self.configured:
             return 503, ""
         now = time.monotonic()

@@ -29,26 +29,29 @@ class DiffGutterMarker extends GutterMarker {
 }
 
 class DeletionWidget extends WidgetType {
-  constructor(index, hunk, action) {
+  constructor(index, hunk, action, subIdx = 0) {
     super();
     this.index = index;
-    this.text = Array.isArray(hunk.baseText) ? hunk.baseText.join(' ↵ ') : '';
+    this.subIdx = subIdx;
+    const arr = Array.isArray(hunk?.baseText) ? hunk.baseText : [];
+    this.text = arr.map(line => '− ' + line).join('\n');
     this.action = action;
   }
   eq(other) {
-    return other.index === this.index && other.text === this.text &&
+    return other.index === this.index && other.subIdx === this.subIdx &&
+      other.text === this.text &&
       other.action === this.action;
   }
   toDOM() {
     const row = document.createElement('div');
     row.className = 'cm-lantern-deletion';
     row.dataset.hunkIndex = String(this.index);
-    const text = document.createElement('span');
+    const text = document.createElement('div');
     text.className = 'cm-lantern-deletion-text';
-    text.textContent = this.text ? '− ' + this.text : 'Deleted content';
+    text.textContent = this.text || '− (Deleted empty line)';
     const actions = document.createElement('span');
     actions.className = 'md-hunk-actions';
-    for (const [action, label] of [['accept', 'Accept'], ['undo', 'Undo']]) {
+    for (const [action, label] of [['accept', '✓ Accept'], ['undo', '↶ Undo']]) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'md-hunk-button';
@@ -61,7 +64,7 @@ class DeletionWidget extends WidgetType {
       });
       actions.append(button);
     }
-    row.append(text, actions);
+    row.append(actions, text);
     return row;
   }
   ignoreEvent() { return true; }
@@ -88,15 +91,32 @@ function prepareDecorations(state, payload) {
       }
     }
     if (Array.isArray(hunk.baseText) && hunk.baseText.length) {
-      const lineNo = Math.max(1, Math.min(state.doc.lines, hunk.draftStart + 1));
-      const at = state.doc.line(lineNo).from;
-      ranges.push(
-        Decoration.widget({
-          widget: new DeletionWidget(index, hunk, payload?.action),
-          block: true,
-          side: -1,
-        }).range(at)
-      );
+      if (hunk.kind === 'mod' && Array.isArray(hunk.draftText) &&
+          hunk.baseText.length === hunk.draftText.length && hunk.baseText.length > 1) {
+        for (let k = 0; k < hunk.baseText.length; k++) {
+          if (hunk.baseText[k] !== hunk.draftText[k]) {
+            const lineNo = Math.max(1, Math.min(state.doc.lines, hunk.draftStart + k + 1));
+            const at = state.doc.line(lineNo).from;
+            ranges.push(
+              Decoration.widget({
+                widget: new DeletionWidget(index, {baseText: [hunk.baseText[k]]}, payload?.action, k),
+                block: true,
+                side: -1,
+              }).range(at)
+            );
+          }
+        }
+      } else {
+        const lineNo = Math.max(1, Math.min(state.doc.lines, hunk.draftStart + 1));
+        const at = state.doc.line(lineNo).from;
+        ranges.push(
+          Decoration.widget({
+            widget: new DeletionWidget(index, hunk, payload?.action, 0),
+            block: true,
+            side: -1,
+          }).range(at)
+        );
+      }
     }
   }
   return Decoration.set(ranges, true);
@@ -153,8 +173,8 @@ const diffGutter = gutter({
 });
 
 const sourceTheme = EditorView.theme({
-  '&': {height: 'min(74vh, 1000px)', minHeight: '340px'},
-  '.cm-scroller': {overflow: 'auto'},
+  '&': {height: '100%', minHeight: '78vh', display: 'flex', flexDirection: 'column', flex: '1'},
+  '.cm-scroller': {overflow: 'auto', flex: '1', height: '100%'},
   '.cm-content': {
     fontFamily: 'ui-monospace,SFMono-Regular,Consolas,monospace',
     fontSize: '13px',

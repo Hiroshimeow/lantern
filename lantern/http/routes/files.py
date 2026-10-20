@@ -100,7 +100,10 @@ class FilesRoutes:
                     written += len(chunk)
                     remaining -= len(chunk)
                 f.flush()
-                os.fsync(f.fileno())
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
             if written != total or remaining != 0:
                 raise BadRequest(f"incomplete upload: got {written} of {total} bytes")
             if conflict == "overwrite":
@@ -391,6 +394,7 @@ class FilesRoutes:
         <input id="q" type="search" placeholder="Tìm tên, đường dẫn, đuôi file...">
       </div>
       <div class="actions">
+        <div id="sysTelemetryPill" class="sys-telemetry-pill" onclick="refreshSysTelemetry()" title="GPU / VRAM &amp; RAM Status">🎮 <span>VRAM · GPU · RAM</span></div>
         <button class="btn primary" onclick="openUploadDialog()">⬆️ <span class="label">Upload</span></button>
         <button class="btn" onclick="mkdir()">➕ <span class="label">Thư mục</span></button>
         <button class="btn" onclick="newFile()">📝 <span class="label">File</span></button>

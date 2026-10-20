@@ -12,6 +12,17 @@ A local-first file manager for the browser: **files, Markdown visual editing, ac
 >
 > Naturally, it now has a Git panel, a Markdown editor, a PDF viewer and a terminal. Scope creep has excellent taste.
 
+## Integrated workspace
+
+The v7.4 workspace brings LanternBot, Markdown split views and system telemetry into the same Lantern server—no separate chat proxy is required.
+
+- **LanternBot:** Pi-backed chat with model selection and favorites, slash-command completion, attachments, session management and HTML transcript export. See [LanternBot configuration](docs/LANTERNBOT_CONFIG.md).
+- **Markdown split views:** Preview, Visual and Source panes, left/right swapping, scroll synchronization, inline diff actions and Source wrapping controls.
+- **File context:** attach selected files or paste/drop supported images into chat.
+- **System telemetry:** CPU and memory information, plus GPU/VRAM information when available on the host.
+
+LanternBot currently communicates with Pi through its RPC interface. The browser shell terminal is a separate PTY/ConPTY feature; the native interactive Pi harness described in the draft specifications is not the current chat transport.
+
 ## 🚀 Three actions. One Lantern.
 
 **Already cloned the repo on Windows?** You do **not** need to configure Python or YAML yourself.

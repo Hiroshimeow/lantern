@@ -1270,7 +1270,7 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         f"script-src 'nonce-{nonce}'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
-        + ("connect-src 'self'; worker-src 'self'; " if visual_markdown else "connect-src 'none'; ")
+        + ("connect-src 'self' ws: wss:; worker-src 'self' blob:; " if visual_markdown else "connect-src 'none'; ")
         + ("frame-src 'self'; " if is_pdf and not pdf_text else "")
         + "base-uri 'none'; "
         + "object-src 'none'; "
@@ -1341,10 +1341,11 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
         '<span class="md-global-status" data-md-status role="status" aria-live="polite" hidden></span>'
         '</div>' if visual_markdown else top_controls + mode_controls
     )
+    body_attrs = f' data-lantern-chat-kind="markdown" data-lantern-chat-path="{h(rel)}"' if visual_markdown else ""
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
 {mermaid_script}{table_style}{chat_style}{helper_script}{visual_script}</head>
-<body{" data-lantern-chat-kind=\"markdown\" data-lantern-chat-path=\"" + h(rel) + "\"" if visual_markdown else ""}>
+<body{body_attrs}>
 <div class="bar{' md-bar' if visual_markdown else ''}">{header}</div>
 <div class="content" data-doc-name="{h(p.stem)}"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
 </body></html>"""

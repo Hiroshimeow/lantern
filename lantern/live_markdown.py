@@ -58,6 +58,14 @@ class LiveMarkdownStore:
         identifier = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
         return logical, candidate, identifier, self.temp_dir / identifier / candidate.name
 
+    def _check_not_in_bot_turn(self, identifier: str) -> None:
+        if identifier in self.turns:
+            raise WorkingCopyError(
+                409,
+                "File is locked while LanternBot is editing it",
+                reason="pi_turn",
+            )
+
     def _read_real(self, real: Path) -> dict[str, Any]:
         try:
             return read_text_snapshot(real, self.max_bytes)
@@ -72,7 +80,10 @@ class LiveMarkdownStore:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
                 stream.flush()
-                os.fsync(stream.fileno())
+                try:
+                    os.fsync(stream.fileno())
+                except OSError:
+                    pass
             os.replace(tmp, dst)
         finally:
             if os.path.exists(tmp):
@@ -124,6 +135,7 @@ class LiveMarkdownStore:
               base_version: str) -> dict[str, Any]:
         logical, real, identifier, temp = self._resolve(rel)
         with self.lock:
+            self._check_not_in_bot_turn(identifier)
             baseline = self._baseline(real, identifier, temp)
             if baseline["version"] != base_version:
                 raise WorkingCopyError(409, "Accepted Markdown baseline changed",
@@ -151,6 +163,7 @@ class LiveMarkdownStore:
               expect_hash: str | None, base_version: str) -> dict[str, Any]:
         logical, real, identifier, temp = self._resolve(rel)
         with self.lock:
+            self._check_not_in_bot_turn(identifier)
             baseline = self._baseline(real, identifier, temp)
             if baseline["version"] != base_version:
                 raise WorkingCopyError(
@@ -189,6 +202,7 @@ class LiveMarkdownStore:
              expect_saved_version: str) -> dict[str, Any]:
         logical, real, identifier, temp = self._resolve(rel)
         with self.lock:
+            self._check_not_in_bot_turn(identifier)
             baseline = self._baseline(real, identifier, temp)
             if baseline["version"] != expect_saved_version:
                 raise WorkingCopyError(409, "Baseline changed in another browser",
@@ -215,6 +229,7 @@ class LiveMarkdownStore:
         """Accept only selected diff hunks into md_temp; never write real .md."""
         logical, real, identifier, temp = self._resolve(rel)
         with self.lock:
+            self._check_not_in_bot_turn(identifier)
             baseline = self._baseline(real, identifier, temp)
             current = self._read_real(real)
             if baseline["version"] != expect_saved_version or (
@@ -234,6 +249,7 @@ class LiveMarkdownStore:
         """Explicit Restore All: revert real .md to the accepted snapshot via CAS."""
         logical, real, identifier, temp = self._resolve(rel)
         with self.lock:
+            self._check_not_in_bot_turn(identifier)
             baseline = self._baseline(real, identifier, temp)
             current = self._read_real(real)
             if current["version"] != (expect_hash or baseline["version"]):

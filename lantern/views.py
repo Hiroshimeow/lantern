@@ -11,6 +11,21 @@ CSS = r"""
 
 
 
+
+/* --- GPU/VRAM Telemetry Pill & Grid Icon Aspect Fix + Performance --- */
+.sys-telemetry-pill{height:34px;padding:0 11px;border:1px solid rgba(104,227,122,.28);border-radius:11px;background:rgba(13,20,30,.92);color:#e2f1ff;font-size:11.5px;font-weight:750;display:inline-flex;align-items:center;gap:7px;cursor:pointer;user-select:none;white-space:nowrap;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.sys-telemetry-pill:hover{border-color:rgba(104,227,122,.6);background:#152234}
+.sys-vram-bar{width:38px;height:6px;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden;display:inline-block;vertical-align:middle}
+.sys-vram-fill{display:block;height:100%;background:linear-gradient(90deg,#54ee69,#7eaaff);transition:width .25s ease}
+.sys-vram-fill.warn{background:linear-gradient(90deg,#fbbf24,#f59e0b)}
+.sys-vram-fill.danger{background:linear-gradient(90deg,#f87171,#ef4444)}
+.grid{align-items:start!important;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))!important}
+.grid:not(.list) .card{min-height:0!important;height:auto!important;align-self:start!important;content-visibility:auto;contain-intrinsic-size:158px}
+.grid:not(.list) .card-main{height:auto!important;display:flex;flex-direction:column}
+.grid:not(.list) .thumbwrap{height:98px!important;flex:0 0 98px!important;max-height:98px!important}
+.grid:not(.list) .fileicon{font-size:32px!important;line-height:1!important;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px}
+.grid:not(.list) .name{display:-webkit-box!important;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden!important;max-height:2.45em;line-height:1.22!important;word-break:break-word}
+
 /* --- recursive search selector --- */
 .search{display:flex;align-items:center;min-width:220px}
 .search-depth{height:40px;max-width:86px;border:1px solid var(--line);border-right:0;border-radius:14px 0 0 14px;background:#111827;color:#f8fafc;padding:0 8px;outline:none;font-weight:800;cursor:pointer;color-scheme:dark}
@@ -126,7 +141,7 @@ function changePreviewAnimation(sel){state.previewAnimation=sel.value||'fade';sa
 function changeUploadConflict(sel){state.uploadConflict=sel.value||'ask';savePrefs({upload_conflict:state.uploadConflict})}
 function isArchiveCard(card){return !!(card&&card.dataset.isdir==='0'&&card.dataset.kind==='archive')}
 function selectedCards(){return selectedArray().map(rel=>document.querySelector(`.card[data-rel="${CSS.escape(rel)}"]`)).filter(Boolean)}
-function updateSelectionUI(){ if(!grid)return; $$('.card').forEach(c=>c.classList.toggle('selected',state.selected.has(c.dataset.rel))); const n=state.selected.size; const count=$('#selCount'); if(count)count.textContent=n?`${n} selected`:(state.loading?'Đang tải...':`${Math.max(0,state.items.filter(x=>!x.special).length)}${state.hasMore?'+':''} mục`); const one=n===1?document.querySelector(`.card[data-rel="${CSS.escape(selectedArray()[0]||'')}"]`):null; const oneFile=!!(one&&one.dataset.isdir==='0'); const canPreview=!!(oneFile&&one.dataset.preview==='1'); const canExtract=!!(one&&isArchiveCard(one)); $('#deleteBtn')?.classList.toggle('hidden',!n); $('#downloadBtn')?.classList.toggle('hidden',!n); $('#archiveBtn')?.classList.toggle('hidden',!n); $('#copyBtn')?.classList.toggle('hidden',!n); $('#moveBtn')?.classList.toggle('hidden',!n); $('#duplicateBtn')?.classList.toggle('hidden',!n); $('#batchRenameBtn')?.classList.toggle('hidden',n<2); $('#extractBtn')?.classList.toggle('hidden',!canExtract); $('#renameBtn')?.classList.toggle('hidden',n!==1); $('#shareBtn')?.classList.toggle('hidden',n!==1); $('#previewBtn')?.classList.toggle('hidden',!canPreview); }
+function updateSelectionUI(){ if(!grid)return; $$('.card').forEach(c=>{const want=state.selected.has(c.dataset.rel);if(c.classList.contains('selected')!==want)c.classList.toggle('selected',want)}); const n=state.selected.size; const count=$('#selCount'); if(count)count.textContent=n?`${n} selected`:(state.loading?'Đang tải...':`${Math.max(0,state.items.filter(x=>!x.special).length)}${state.hasMore?'+':''} mục`); const one=n===1?document.querySelector(`.card[data-rel="${CSS.escape(selectedArray()[0]||'')}"]`):null; const oneFile=!!(one&&one.dataset.isdir==='0'); const canPreview=!!(oneFile&&one.dataset.preview==='1'); const canExtract=!!(one&&isArchiveCard(one)); $('#deleteBtn')?.classList.toggle('hidden',!n); $('#downloadBtn')?.classList.toggle('hidden',!n); $('#archiveBtn')?.classList.toggle('hidden',!n); $('#copyBtn')?.classList.toggle('hidden',!n); $('#moveBtn')?.classList.toggle('hidden',!n); $('#duplicateBtn')?.classList.toggle('hidden',!n); $('#batchRenameBtn')?.classList.toggle('hidden',n<2); $('#extractBtn')?.classList.toggle('hidden',!canExtract); $('#renameBtn')?.classList.toggle('hidden',n!==1); $('#shareBtn')?.classList.toggle('hidden',n!==1); $('#previewBtn')?.classList.toggle('hidden',!canPreview); }
 function setPreviewSelection(rel,scroll=true){if(!rel)return;state.selected.clear();state.selected.add(rel);updateSelectionUI();if(scroll){requestAnimationFrame(()=>{const c=document.querySelector(`.card[data-rel="${CSS.escape(rel)}"]`);if(c)c.scrollIntoView({block:'nearest',inline:'nearest'})})}}
 function toggleSelect(rel,ev){if(ev){ev.preventDefault();ev.stopPropagation()} closeContextMenu(); if(!rel)return; if(state.selected.has(rel))state.selected.delete(rel);else state.selected.add(rel);updateSelectionUI()}
 function clearSel(){state.selected.clear();updateSelectionUI()}
@@ -840,6 +855,29 @@ if(grid){
   else loadMore(true);
   updateSelectionUI();
 }
+
+
+async function refreshSysTelemetry(){
+  const pill=document.getElementById('sysTelemetryPill');
+  if(!pill||document.hidden)return;
+  try{
+    const r=await fetch('/api/sysstats',{cache:'no-store'});
+    if(!r.ok)return;
+    const d=await r.json();
+    const g=d.gpu||{}, ram=d.ram||{}, cpu=d.cpu||{};
+    const vramUsed=(Number(g.vramUsedMb||0)/1024).toFixed(1);
+    const vramTot=(Number(g.vramTotalMb||0)/1024).toFixed(1);
+    const pct=Number(g.vramPercent||0);
+    const barCls=pct>=90?'sys-vram-fill danger':(pct>=72?'sys-vram-fill warn':'sys-vram-fill');
+    const gpuLabel=g.available
+      ? ('GPU '+(g.utilPercent||0)+'% · VRAM '+vramUsed+'/'+vramTot+'G')
+      : ('VRAM '+vramUsed+'/'+vramTot+'G · CPU '+(cpu.loadPercent||0)+'%');
+    pill.innerHTML='<span>🎮 '+gpuLabel+'</span><span class="sys-vram-bar"><span class="'+barCls+'" style="width:'+Math.min(100,Math.max(4,pct))+'%"></span></span><span>RAM '+(ram.percent||0)+'%</span>';
+    pill.title=(g.name||'System')+'\nVRAM: '+(g.vramUsedMb||0)+' / '+(g.vramTotalMb||0)+' MB ('+pct+'%)'+(g.tempC!=null?' · '+g.tempC+'°C':'')+'\nRAM: '+(ram.usedMb||0)+' / '+(ram.totalMb||0)+' MB ('+(ram.percent||0)+'%)';
+  }catch(_){}
+}
+setTimeout(refreshSysTelemetry, 120);
+setInterval(refreshSysTelemetry, 5000);
 
 // Terminal + SCM use xterm.js over the persistent WebSocket bridge in /static/terminal_scm.js.
 

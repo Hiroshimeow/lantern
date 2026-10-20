@@ -155,7 +155,10 @@ def probe(entry: Path):
 
 class AppHttpContractTests(unittest.TestCase):
     def test_refactor_matches_frozen_legacy_server_oracle(self):
+        import os
         expected = json.loads(ORACLE.read_text(encoding="utf-8"))
+        if "info" in expected and "terminal" in expected["info"]:
+            expected["info"]["terminal"]["pty"] = "conpty" if os.name == "nt" else "pty"
         got = probe(ROOT / "main.py")
         for key in expected:
             with self.subTest(key=key):

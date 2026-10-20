@@ -9,36 +9,36 @@
   },
   "artifacts": {
     "lantern-crepe.min.js": {
-      "bytes": 2788436,
-      "sha256": "667832894bc73312de8e19caaf7ed6949819ea0c01effedac3f9c3f853675240"
+      "bytes": 2788673,
+      "sha256": "a4f7f6ab1937f46e80612a73221d6b809de141b6b99e28ada728429638083539"
     },
     "lantern-crepe.min.css": {
-      "bytes": 78366,
-      "sha256": "e880d492012e75cb4b67655eef9597b5ef2aec7a60d01c0fb6d1cee52939b392"
+      "bytes": 78367,
+      "sha256": "97598aa195be3704401068d6e1110be4e7f4624dd915ed572238eedb14a839bf"
     },
     "lantern-crepe.min.js.LEGAL.txt": {
-      "bytes": 1679,
-      "sha256": "4b183b8b263a3204d495216972cfb7d092d8a4c6ce6dd077e72f78793003e9de"
+      "bytes": 1730,
+      "sha256": "189649bc1b8856733d0804386695f86e71acec95cb5fb09e07d1ef2652b6d650"
     },
     "lantern-image-crop.min.js": {
-      "bytes": 65167,
-      "sha256": "70194efa2d7bc71d9e2f693ebac90014ba236789588050d53cbf236495063f38"
+      "bytes": 65169,
+      "sha256": "b99e5497f057c73b0bfbb205f0f3d0269a5e4552971a9a9e0576e1c77b03f665"
     },
     "lantern-image-crop.min.js.LEGAL.txt": {
-      "bytes": 131,
-      "sha256": "c0605fd352112ada262c5bb11ca427af387b86ca7fc8a08431a1dbfa5198549b"
+      "bytes": 135,
+      "sha256": "469c9a6111a345ad900bb7f56e22535a7da80b4b9e770d094364a70c761a020d"
     },
     "lantern-md-segment-worker.min.js": {
-      "bytes": 150228,
-      "sha256": "636d1539996e69d150c0dd3a25939955cbd5d03c512fcb5b5e2d3d6380d66d3b"
+      "bytes": 150245,
+      "sha256": "bcaa6f0d297104ef7a2b24ebf3fbaf7618067dc04c41f70290cc7eedd5d35715"
     },
     "lantern-large-block.min.js": {
-      "bytes": 388898,
-      "sha256": "5c0226bcf50a54ab95040bc12dbcb9550b270aaeb617db1dbb972e606e1ff7dd"
+      "bytes": 388910,
+      "sha256": "5d0004e5f0c4ccc79952cc53d903fac16669fdd97d0bcdba4ee81e1e0ea57c99"
     },
     "lantern-source-editor.min.js": {
-      "bytes": 394779,
-      "sha256": "d58322ddac649ed54908401a45e2d63586017a6e238de8171392683319c75ebb"
+      "bytes": 395296,
+      "sha256": "302970a801eb7cf41c0b9c1eff338faa1dece75cf3a97c53f114623d8016dacd"
     }
   }
 }

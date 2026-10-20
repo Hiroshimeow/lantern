@@ -1,15 +1,13 @@
 # LanternBot configuration
 
-LanternBot uses the machine's native Pi runtime internally. Provider/model policy is
-scoped by the **actual WebSocket client IP**:
+LanternBot uses the machine's native Pi runtime internally. Tool, extension, MCP, and provider/model policies are configured strictly in `lan_drive_config.yaml` (never exposed as editable permissions in the web UI Settings) and scoped by the **actual WebSocket client IP**:
 
 - `127.0.0.1` / `::1` -> `localhost`
 - every other client IP -> `lan`
 
 Lantern does not trust `X-Forwarded-For` for this decision.
 
-The recommended default is **localhost = full native Pi inventory** while LAN is
-filtered or locked independently.
+The default configuration is **localhost = Full / YOLO mode (`"*"`)** (no restrictive `--tools`, `--no-extensions`, or `--no-mcp` CLI flags injected unless explicitly restricted in YAML), while **LAN is strictly read-only** (`[read, grep, find, ls]`, `extensions: false`, `mcp: false`) unless configured otherwise in YAML.
 
 ```yaml
 lantern_bot:
@@ -17,6 +15,11 @@ lantern_bot:
 
   access:
     localhost:
+      # Full / YOLO mode ("*") by default on localhost:
+      # No --tools, --no-extensions, or --no-mcp flags are injected unless restricted here.
+      tools: ["*"]
+      extensions: true
+      mcp: true
       provider_mode: all          # all | whitelist | blacklist
       providers: []
       model_mode: all             # all | whitelist | blacklist
@@ -30,6 +33,9 @@ lantern_bot:
         lock_model: false
 
     lan:
+      tools: [read, grep, find, ls]
+      extensions: false
+      mcp: false
       provider_mode: whitelist
       providers:
         - "cliproxy-*"
@@ -59,8 +65,8 @@ lantern_bot:
     max_tokens_per_day: null
 
   greeting: >-
-    🦸 Tôi là LanternBot — một thành viên của biệt đội Lantern.
-    Ở đâu có Lantern, ở đó có ánh sáng; file nào tối nghĩa cứ đưa đây, tôi soi cho.
+    Hi! I am Lanbot, your workspace assistant.
+    Select text, paste or drag files and images into chat, or type / for commands.
 
   lantern_context: |-
     You are LanternBot, the assistant embedded in Lantern.
@@ -89,6 +95,9 @@ To force LAN users onto one exact model:
 lantern_bot:
   access:
     localhost:
+      tools: ["*"]
+      extensions: true
+      mcp: true
       provider_mode: all
       model_mode: all
       selection:
@@ -98,6 +107,9 @@ lantern_bot:
         lock_model: false
 
     lan:
+      tools: [read, grep, find, ls]
+      extensions: false
+      mcp: false
       provider_mode: all
       model_mode: all
       selection:
@@ -121,8 +133,9 @@ can naturally use GitHub Copilot without changing Lantern code.
 If the inherited native model is forbidden by that scope's policy, LanternBot switches
 to the first allowed model before accepting the prompt.
 
-The browser selector is only presentation. Provider/model filters, locks, prompt
-limits and token limits are enforced server-side for every chat command.
+The browser selector is only presentation. Tool permissions, extensions, MCP, provider/model
+filters, locks, prompt limits and token limits are enforced server-side from `lan_drive_config.yaml`
+for every chat command.
 
 Selected file chips in the Lantern file manager are sent only inside
 `<lantern_context>` as attachment paths; they are not copied into the visible user

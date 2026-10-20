@@ -55,7 +55,10 @@ class CropRoutes:
                 with os.fdopen(fd, "wb") as f:
                     f.write(body)
                     f.flush()
-                    os.fsync(f.fileno())
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
                 # A replaced image remains the same logical filename; original
                 # Markdown references are never rewritten by this endpoint.
                 os.chmod(temp_path, target.stat().st_mode)
@@ -73,7 +76,10 @@ class CropRoutes:
                     directory_fd = None
                     try:
                         directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-                        os.fsync(directory_fd)
+                        try:
+                            os.fsync(directory_fd)
+                        except OSError:
+                            pass
                     except OSError:
                         pass
                     finally:

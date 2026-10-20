@@ -6,8 +6,8 @@ from typing import Any
 
 
 DEFAULT_GREETING = (
-    "🦸 Tôi là LanternBot — một thành viên của biệt đội Lantern. "
-    "Ở đâu có Lantern, ở đó có ánh sáng; file nào tối nghĩa cứ đưa đây, tôi soi cho."
+    "Hi! I am Lanbot, your workspace assistant. "
+    "Select text, paste or drag files and images into chat, or type / for commands."
 )
 
 DEFAULT_SYSTEM_PROMPT = """You are LanternBot, the assistant embedded in Lantern.
@@ -19,7 +19,13 @@ the difference against an accepted md_temp snapshot. Ctrl+S accepts the current
 project file as the new comparison baseline; it does not write your changes.
 Never edit Lantern's private md_temp snapshot. Preserve unrelated formatting
 and content; do not claim tests passed unless you actually ran them.
-Paths listed under attachments are user-selected context. Read them only when useful."""
+Context Efficiency Rule: Keep context lightweight. When line or selectedText is
+provided in <lantern_context>, use read with offset and limit around that line
+(e.g. 30-50 lines) rather than reading the entire file.
+Exact Edit & Target Continuity Rule: When calling edit, copy oldText byte-for-byte
+from the latest read output (never add or remove backslashes like Ref.\[3] vs Ref.\[3\]).
+If the user previously asked to edit file A and temporarily opened sample file B just to show a pattern, continue editing file A unless explicitly told to edit file B.
+Paths listed under attachments are user-selected context (including multi-file selection). Read or process all listed attachments when relevant."""
 
 _MODE_ALIASES = {
     "": "all",
@@ -33,6 +39,18 @@ _MODE_ALIASES = {
     "denylist": "blacklist",
     "black": "blacklist",
     "blacklist": "blacklist",
+}
+
+_TOOL_MODE_PRESETS: dict[str, tuple[str, ...]] = {
+    "*": ("*",),
+    "all": ("*",),
+    "full": ("*",),
+    "yolo": ("*",),
+    "code": ("read", "edit", "write", "grep", "find", "ls"),
+    "readonly": ("read", "grep", "find", "ls"),
+    "read-only": ("read", "grep", "find", "ls"),
+    "none": ("none",),
+    "chat": ("none",),
 }
 
 
@@ -49,6 +67,27 @@ def _as_list(value: Any) -> tuple[str, ...]:
         if text:
             result.append(text)
     return tuple(result)
+
+
+def _normalize_tools(raw_tools: Any, raw_tool_mode: Any, *, is_lan: bool) -> tuple[str, ...]:
+    if raw_tools is not None:
+        if isinstance(raw_tools, str):
+            preset = _TOOL_MODE_PRESETS.get(raw_tools.strip().lower())
+            if preset is not None:
+                return preset
+        parsed = _as_list(raw_tools)
+        if not parsed:
+            raise ValueError("lantern_bot.access tools must contain at least one allowed tool")
+        if any(item.lower() in {"*", "all", "full", "yolo"} for item in parsed):
+            return ("*",)
+        return parsed
+    if raw_tool_mode is not None:
+        mode_key = str(raw_tool_mode or "").strip().lower()
+        preset = _TOOL_MODE_PRESETS.get(mode_key)
+        if preset is not None:
+            return preset
+        raise ValueError(f"Unsupported lantern_bot.access tool_mode: {raw_tool_mode}")
+    return ("read", "grep", "find", "ls") if is_lan else ("*",)
 
 
 def _optional_limit(value: Any, name: str) -> int | None:
@@ -92,9 +131,14 @@ class LanternBotAccessPolicy:
     lock_provider: bool = False
     lock_model: bool = False
     # Tool names / globs are checked by the Pi tool-call guard per turn.
+    # Default for localhost is Full / YOLO mode ("*") with extensions & MCP enabled.
     tools: tuple[str, ...] = ("*",)
     extensions: bool = True
-    mcp: bool = False
+    mcp: bool = True
+
+    @property
+    def is_full_tools(self) -> bool:
+        return self.tools == ("*",) or "*" in self.tools
 
     @classmethod
     def from_mapping(
@@ -109,6 +153,7 @@ class LanternBotAccessPolicy:
         fallback_bypass: Any = None,
     ) -> "LanternBotAccessPolicy":
         raw = raw_value if isinstance(raw_value, dict) else {}
+        is_lan = raw.get("_scope") == "lan"
         selection = raw.get("selection") if isinstance(raw.get("selection"), dict) else {}
         if not selection and isinstance(fallback_selection, dict):
             selection = fallback_selection
@@ -146,14 +191,15 @@ class LanternBotAccessPolicy:
             raw["bypass_models"] if "bypass_models" in raw else fallback_bypass
         )
 
-        default_tools = ("read", "grep", "find", "ls") if raw.get("_scope") == "lan" else ("*",)
-        tools = _as_list(raw.get("tools", default_tools))
-        if not tools:
-            raise ValueError("lantern_bot.access tools must contain at least one allowed tool")
+        tools = _normalize_tools(
+            raw.get("tools") if "tools" in raw else None,
+            raw.get("tool_mode", raw.get("toolMode")),
+            is_lan=is_lan,
+        )
         return cls(
             tools=tools,
-            extensions=bool(raw.get("extensions", raw.get("_scope") != "lan")),
-            mcp=bool(raw.get("mcp", False)),
+            extensions=bool(raw.get("extensions", not is_lan)),
+            mcp=bool(raw.get("mcp", not is_lan)),
             provider_mode=provider_mode,
             providers=providers,
             model_mode=model_mode,
@@ -187,8 +233,6 @@ class LanternBotAccessPolicy:
         if not provider or not model_id:
             return False
 
-        # bypass_models bypasses only the provider/model list filters. An
-        # administrative lock is stronger and must always remain enforceable.
         bypassed = _matches_model(self.bypass_models, provider, model_id)
         if not bypassed:
             if not self._provider_allowed(provider):
@@ -227,6 +271,18 @@ class LanternBotConfig:
     greeting: str = DEFAULT_GREETING
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
+    @property
+    def localhost(self) -> LanternBotAccessPolicy:
+        return self.local_access
+
+    @property
+    def lan(self) -> LanternBotAccessPolicy:
+        return self.lan_access
+
+    @property
+    def access(self) -> "LanternBotConfig":
+        return self
+
     @classmethod
     def from_mapping(cls, value: Any) -> "LanternBotConfig":
         raw = value if isinstance(value, dict) else {}
@@ -234,8 +290,6 @@ class LanternBotConfig:
         policy = raw.get("policy") if isinstance(raw.get("policy"), dict) else {}
         access = raw.get("access") if isinstance(raw.get("access"), dict) else {}
 
-        # Legacy global allow-lists remain readable. They become the LAN fallback;
-        # localhost is full inventory by default in the new access-scoped schema.
         legacy_providers = policy.get("allowed_providers", raw.get("allowed_providers"))
         legacy_models = policy.get("allowed_models", raw.get("allowed_models"))
         legacy_bypass = policy.get(

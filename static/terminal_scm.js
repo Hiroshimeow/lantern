@@ -12,7 +12,8 @@ function replayWrite(t,out){const tok=t.replayTok=(t.replayTok||0)+1;t.term.rese
 function connect(){clearTimeout(S.retry);const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?v=2');S.ws=ws;ws.onopen=()=>{S.connected=true;S.termListReady=false;S.serverProtocol=null;S.subscribed=null;S.delay=300;status('online','Connected');if(S.view==='git')refreshScm(true,true)};ws.onclose=()=>{S.connected=false;S.termListReady=false;S.subscribed=null;for(const t of S.terms.values()){t.seq=null;t.replayStartUtf8=null;t.streamUtf8=null;t.pendingChunks?.clear();if(t.pending){t.pending=false;t.meta.running=false;t.meta.startInterrupted=true}}if(terminalShown()&&!activeLive())S.autoOpenPending=true;status('error','Reconnecting');const immediate=S.reconnectAfterLogin;S.reconnectAfterLogin=false;S.retry=setTimeout(connect,immediate?0:S.delay);if(!immediate)S.delay=Math.min(5000,Math.round(S.delay*1.6))};ws.onerror=()=>{try{ws.close()}catch(_){}};ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(_){return}onMessage(m)}}
 function onMessage(m){
  if(m.type==='terminal_auth'){
-   S.auth={required:!!m.required,authenticated:!!m.authenticated,configured:!!m.configured};
+   const isLoc = m.isLocal !== undefined ? !!m.isLocal : ['localhost','127.0.0.1','[::1]'].includes(location.hostname);
+   S.auth={required:!!m.required,authenticated:!!m.authenticated,configured:!!m.configured,isLocal:isLoc,lanSessions:Number(m.lanSessions||0),lanLocked:!!m.lanLocked};
    if(terminalLocked()){
      for(const id of [...S.terms.keys()])dispose(id,false);
      S.termListReady=false;S.autoOpenPending=false;
@@ -52,19 +53,44 @@ function subscribeActive(){if(S.serverProtocol!=='v2')return;const id=S.active;i
 
 function status(state,text){const e=q('#lxConn');if(e){e.dataset.state=state;e.textContent=text}}
 function terminalLocked(){return S.auth.required&&!S.auth.authenticated}
+function isLocalHostClient(){
+  return S.auth.isLocal !== undefined ? !!S.auth.isLocal : ['localhost','127.0.0.1','[::1]'].includes(location.hostname);
+}
 function updateAuthUI(){
   const locked=terminalLocked();
+  const isLoc=isLocalHostClient();
   q('#lxTermAuth')?.classList.toggle('hidden',!locked);
   q('#lxTermStack')?.classList.toggle('hidden',locked);
   q('#lxMobileKeys')?.classList.toggle('hidden',locked);
-  q('#lxTermLock')?.classList.toggle('hidden',!S.auth.required||locked);
+  const lockBtn=q('#lxTermLock');
+  if(lockBtn){
+    if(isLoc){
+      lockBtn.classList.remove('hidden');
+      if(S.auth.lanLocked){
+        lockBtn.textContent='🔓 Unlock LAN (Host Locked)';
+        lockBtn.title='LAN access is hard-locked by localhost. Click to allow LAN password login again.';
+      }else if(S.auth.lanSessions>0){
+        lockBtn.textContent=`🔒 Lock All LAN (${S.auth.lanSessions} active)`;
+        lockBtn.title='Immediately revoke all active LAN sessions and lock remote terminals.';
+      }else{
+        lockBtn.textContent='🔒 Lock All LAN';
+        lockBtn.title='Revoke all LAN sessions and hard-lock LAN access from localhost.';
+      }
+    }else{
+      lockBtn.classList.toggle('hidden',!S.auth.required||locked);
+      lockBtn.textContent='Lock Terminal';
+      lockBtn.title='End this browser session and lock Terminal';
+    }
+  }
   for(const id of ['#lxNewTerm','#lxRenameTerm','#lxKillTerm']){const b=q(id);if(b)b.disabled=locked}
   if(locked){
     const hint=q('#lxTermAuthHint');
     if(hint){
-      hint.textContent=S.auth.configured
-        ?'Password is created on the Lantern host. This unlocks Terminal only.'
-        :'Terminal password not configured. On the host run: python main.py --set-terminal-password, then restart Lantern.';
+      hint.textContent=S.auth.lanLocked
+        ?'LAN access is currently hard-locked by the localhost host.'
+        :(S.auth.configured
+          ?'Password is created on the Lantern host. This unlocks Terminal only.'
+          :'Terminal password not configured. On the host run: python main.py --set-terminal-password, then restart Lantern.');
       if(location.protocol==='http:'&&!['localhost','127.0.0.1','[::1]'].includes(location.hostname))
         hint.textContent+=' Use an encrypted Tailscale link or HTTPS; ordinary LAN HTTP exposes passwords in transit.';
     }
@@ -93,6 +119,26 @@ async function unlockTerminal(event){
   finally{button.disabled=false}
 }
 async function lockTerminal(){
+  if(isLocalHostClient()){
+    const nextHardLock = S.auth.lanSessions > 0 ? true : !S.auth.lanLocked;
+    try{
+      const r=await fetch('/api/terminal/logout',{
+        method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({hardLock:nextHardLock})
+      });
+      const d=await r.json().catch(()=>({}));
+      S.auth.lanSessions=Number(d.lanSessions||0);
+      S.auth.lanLocked=Boolean(d.lanLocked);
+      updateAuthUI();
+      if(typeof toast==='function'){
+        toast(S.auth.lanLocked
+          ? `🔒 Locked all LAN sessions (${d.revokedLanSessions||0} revoked) & blocked LAN login.`
+          : '🔓 LAN password login is now allowed.');
+      }
+    }catch(_){}
+    return;
+  }
   try{await fetch('/api/terminal/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'})}
   catch(_){}
   S.auth.authenticated=false;updateAuthUI();

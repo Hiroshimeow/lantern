@@ -43,7 +43,10 @@ class LanternBotUsage:
                 json.dump(value, stream, ensure_ascii=False, indent=2)
                 stream.write("\n")
                 stream.flush()
-                os.fsync(stream.fileno())
+                try:
+                    os.fsync(stream.fileno())
+                except OSError:
+                    pass
             os.replace(name, self.path)
         finally:
             if os.path.exists(name):

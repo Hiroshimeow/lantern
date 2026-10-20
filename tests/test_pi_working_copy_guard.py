@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +10,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSION = ROOT / "lantern" / "pi_working_copy_guard.ts"
 HARNESS = ROOT / "tests" / "pi_working_copy_guard_harness.mjs"
+
+
+def _node_cmd(*args: str) -> list[str]:
+    node = shutil.which("node") or "node"
+    probe = subprocess.run(
+        [node, "--experimental-strip-types", "-e", ""],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode == 0:
+        return [node, "--experimental-strip-types", *args]
+    return [node, *args]
 
 
 @unittest.skipUnless(shutil.which("node"), "Node is required for Pi guard contract test")
@@ -42,9 +53,7 @@ class PiWorkingCopyGuardTests(unittest.TestCase):
             )
 
             proc = subprocess.run(
-                [
-                    shutil.which("node"),
-                    "--experimental-strip-types",
+                _node_cmd(
                     str(HARNESS),
                     str(EXTENSION),
                     str(guard),
@@ -52,7 +61,7 @@ class PiWorkingCopyGuardTests(unittest.TestCase):
                     str(working),
                     str(guard),
                     str(other),
-                ],
+                ),
                 cwd=ROOT,
                 text=True,
                 encoding="utf-8",
@@ -85,9 +94,7 @@ class PiWorkingCopyGuardTests(unittest.TestCase):
             missing = base / "missing-guard.json"
 
             proc = subprocess.run(
-                [
-                    shutil.which("node"),
-                    "--experimental-strip-types",
+                _node_cmd(
                     str(HARNESS),
                     str(EXTENSION),
                     str(missing),
@@ -95,7 +102,7 @@ class PiWorkingCopyGuardTests(unittest.TestCase):
                     str(work),
                     str(private),
                     str(other),
-                ],
+                ),
                 cwd=ROOT,
                 text=True,
                 encoding="utf-8",
@@ -113,7 +120,7 @@ class PiWorkingCopyGuardTests(unittest.TestCase):
         from lantern.bot_config import LanternBotConfig
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            project = base / "project"
+            project = Path(td) / "project"
             project.mkdir()
             real = project / "doc.md"
             real.write_text("# Test\n", encoding="utf-8")
@@ -129,11 +136,22 @@ class PiWorkingCopyGuardTests(unittest.TestCase):
 
             def run(scope, tools):
                 store.set_runtime_scope(scope, tools)
-                result = subprocess.run([
-                    shutil.which("node"), "--experimental-strip-types", str(HARNESS),
-                    str(EXTENSION), str(store.guard_path), str(real), str(real),
-                    str(store.guard_path), str(real),
-                ], cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=15)
+                result = subprocess.run(
+                    _node_cmd(
+                        str(HARNESS),
+                        str(EXTENSION),
+                        str(store.guard_path),
+                        str(real),
+                        str(real),
+                        str(store.guard_path),
+                        str(real),
+                    ),
+                    cwd=ROOT,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    timeout=15,
+                )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return json.loads(result.stdout)
 

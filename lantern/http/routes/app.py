@@ -1,10 +1,11 @@
-
 import os
 import platform
 from typing import Any, Dict
 
 from lantern.config import (APP_NAME, config_to_dict, normalize_animation, normalize_conflict, normalize_fit, normalize_page_limit, normalize_sort, normalize_view, write_config_file)
 from lantern.media import HAS_PIL, FFMPEG, FFPROBE
+from lantern.system_telemetry import get_system_telemetry
+
 
 class AppRoutes:
     def api_terminal_auth(self) -> None:
@@ -13,10 +14,16 @@ class AppRoutes:
             self.send_json(503, {"error": "Terminal auth is not ready"})
             return
         ip = self.client_address[0]
+        is_local = access.is_local(ip) if hasattr(access, "is_local") else False
+        lan_sessions = access.active_lan_sessions() if hasattr(access, "active_lan_sessions") else 0
+        lan_locked = bool(getattr(access, "lan_locked", False))
         self.send_bytes(200, self.app.files.json_dumps({
             "required": access.required(ip),
             "authenticated": access.permitted(ip, self.headers.get("Cookie", "")),
             "configured": access.configured,
+            "isLocal": is_local,
+            "lanSessions": lan_sessions if is_local else 0,
+            "lanLocked": lan_locked,
         }).encode("utf-8"), "application/json; charset=utf-8", {"Cache-Control": "no-store"})
 
     def api_terminal_login(self) -> None:
@@ -28,9 +35,15 @@ class AppRoutes:
         data = self.read_json(max_bytes=4096)
         code, token = access.login(self.client_address[0], data.get("password"))
         if code != 200:
-            message = ("Set a Terminal password on the Lantern host first" if code == 503 else
-                       "Too many attempts. Try again in five minutes." if code == 429 else "Incorrect password")
+            message = (
+                "LAN access is locked by the localhost host" if code == 403 else
+                "Set a Terminal password on the Lantern host first" if code == 503 else
+                "Too many attempts. Try again in five minutes." if code == 429 else
+                "Incorrect password"
+            )
             self.send_json(code, {"error": message}); return
+        if hasattr(self.app.ws, "notify_local_auth_state"):
+            self.app.ws.notify_local_auth_state(access)
         secure = self.headers.get("X-Forwarded-Proto", "").lower() == "https"
         self.send_bytes(200, b'{"ok":true}', "application/json; charset=utf-8", {
             "Set-Cookie": access.cookie_header(token, secure=secure),
@@ -41,14 +54,49 @@ class AppRoutes:
         access = self.app.terminal_access
         if access is None:
             self.send_json(503, {"error": "Terminal auth is not ready"}); return
+        ip = self.client_address[0]
+        is_local = access.is_local(ip) if hasattr(access, "is_local") else False
+        try:
+            data = self.read_json(max_bytes=4096) if int(self.headers.get("Content-Length") or 0) > 0 else {}
+        except Exception:
+            data = {}
+        if is_local and hasattr(access, "revoke_all_lan"):
+            hard_lock = data.get("hardLock") if isinstance(data, dict) and "hardLock" in data else None
+            revoked = access.revoke_all_lan(hard_lock=hard_lock)
+            if hasattr(self.app.ws, "close_lan_peers"):
+                self.app.ws.close_lan_peers(access)
+            if hasattr(self.app.ws, "notify_local_auth_state"):
+                self.app.ws.notify_local_auth_state(access)
+            payload = self.app.files.json_dumps({
+                "ok": True,
+                "isLocal": True,
+                "revokedLanSessions": revoked,
+                "lanSessions": access.active_lan_sessions(),
+                "lanLocked": bool(getattr(access, "lan_locked", False)),
+            }).encode("utf-8")
+            self.send_bytes(200, payload, "application/json; charset=utf-8", {
+                "Cache-Control": "no-store",
+            })
+            return
+
         token = access.cookie_token(self.headers.get("Cookie", ""))
         access.logout(token)
         self.app.ws.close_token(token)
+        if hasattr(self.app.ws, "notify_local_auth_state"):
+            self.app.ws.notify_local_auth_state(access)
         secure = self.headers.get("X-Forwarded-Proto", "").lower() == "https"
         self.send_bytes(200, b'{"ok":true}', "application/json; charset=utf-8", {
             "Set-Cookie": access.clear_cookie(secure=secure),
             "Cache-Control": "no-store",
         })
+
+    def api_sysstats(self) -> None:
+        self.send_bytes(
+            200,
+            self.app.files.json_dumps(get_system_telemetry()).encode("utf-8"),
+            "application/json; charset=utf-8",
+            {"Cache-Control": "no-store"},
+        )
 
     def api_info(self) -> None:
         data = {

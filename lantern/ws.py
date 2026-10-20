@@ -196,6 +196,51 @@ class WebSocketHub:
             self.remove(peer)
             peer.close()
 
+    def close_lan_peers(self, access) -> int:
+        with self.lock:
+            lan_peers = [
+                peer for peer in self.peers
+                if not (hasattr(access, "is_local") and access.is_local(getattr(peer, "client_ip", "")))
+            ]
+        for peer in lan_peers:
+            try:
+                peer.send({
+                    "type": "terminal_auth",
+                    "required": True,
+                    "authenticated": False,
+                    "configured": bool(getattr(access, "configured", True)),
+                    "isLocal": False,
+                    "lanSessions": 0,
+                    "lanLocked": bool(getattr(access, "lan_locked", False)),
+                })
+            except Exception:
+                pass
+            self.remove(peer)
+            peer.close()
+        return len(lan_peers)
+
+    def notify_local_auth_state(self, access) -> None:
+        with self.lock:
+            local_peers = [
+                peer for peer in self.peers
+                if hasattr(access, "is_local") and access.is_local(getattr(peer, "client_ip", ""))
+            ]
+        lan_sessions = access.active_lan_sessions() if hasattr(access, "active_lan_sessions") else 0
+        lan_locked = bool(getattr(access, "lan_locked", False))
+        for peer in local_peers:
+            try:
+                peer.send({
+                    "type": "terminal_auth",
+                    "required": False,
+                    "authenticated": True,
+                    "configured": bool(getattr(access, "configured", True)),
+                    "isLocal": True,
+                    "lanSessions": lan_sessions,
+                    "lanLocked": lan_locked,
+                })
+            except Exception:
+                pass
+
     def subscribe(self, peer, term_id: str):
         with self.lock:
             if peer in self.peers:
@@ -563,6 +608,18 @@ class WebSocketHub:
                 and message.get("terminalId") not in peer.subscriptions
             ):
                 continue
+            if (
+                msg_type.startswith("chat_")
+                and msg_type not in {"chat_work_changed", "chat_work_error", "chat_real_file_touched", "chat_prefs_changed", "chat_favorites_changed"}
+            ):
+                msg_cid = str(message.get("clientSessionId") or "").strip()
+                peer_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
+                if msg_cid:
+                    if peer_cid != msg_cid:
+                        continue
+                else:
+                    if peer_cid and peer_cid != "default":
+                        continue
             try:
                 peer.send(client_message)
             except Exception:
@@ -656,8 +713,17 @@ def upgrade(handler, hub, terminal, scm, access=None, chat=None):
     legacy_timer.daemon = True
     try:
         if access is not None:
-            peer.send({"type": "terminal_auth", "required": access.required(handler.client_address[0]),
-                       "authenticated": peer.can_terminal(), "configured": access.configured})
+            is_local = access.is_local(handler.client_address[0]) if hasattr(access, "is_local") else False
+            lan_sessions = access.active_lan_sessions() if (is_local and hasattr(access, "active_lan_sessions")) else 0
+            peer.send({
+                "type": "terminal_auth",
+                "required": access.required(handler.client_address[0]),
+                "authenticated": peer.can_terminal(),
+                "configured": access.configured,
+                "isLocal": is_local,
+                "lanSessions": lan_sessions,
+                "lanLocked": bool(getattr(access, "lan_locked", False)),
+            })
         with terminal.lock:
             # Never reveal terminal metadata to unauthenticated LAN clients.
             if peer.can_terminal():
@@ -722,9 +788,14 @@ def _terminal_error_reply(message, error):
 
 
 def _chat_scope(peer) -> str:
-    raw = str(getattr(peer, "client_ip", "") or "")
+    raw = str(getattr(peer, "client_ip", "") or "").strip()
+    if raw.lower() == "localhost":
+        return "local"
     try:
-        return "local" if ipaddress.ip_address(raw).is_loopback else "lan"
+        ip = ipaddress.ip_address(raw)
+        if getattr(ip, "ipv4_mapped", None) is not None:
+            ip = ip.ipv4_mapped
+        return "local" if ip.is_loopback else "lan"
     except ValueError:
         return "lan"
 
@@ -794,20 +865,49 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         )
     if typ.startswith("chat_") and chat is None:
         raise RuntimeError("LanternBot is not initialized")
+    if typ.startswith("chat_"):
+        raw_cid = str(msg.get("clientSessionId") or "").strip()
+        if raw_cid:
+            setattr(peer, "chat_session_id", raw_cid)
+        active_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
+        if active_cid and hasattr(chat, "get_session_bot"):
+            chat = chat.get_session_bot(active_cid)
     if typ == "chat_sync":
         scope = _chat_scope(peer)
         state = chat.bootstrap_state(scope)
-        peer.send({
+        payload = {
             "type": "chat_state",
             "state": state,
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),
             "messages": chat.get_messages(),
-        })
+        }
+        if hasattr(chat, "list_sessions"):
+            try:
+                payload["sessions"] = chat.list_sessions()
+            except Exception:
+                pass
+        peer_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
+        if peer_cid:
+            payload["clientSessionId"] = peer_cid
+        peer.send(payload)
         return
     if typ == "chat_prompt":
-        context = msg.get("context") if isinstance(msg.get("context"), dict) else {}
+        context = dict(msg.get("context")) if isinstance(msg.get("context"), dict) else {}
         work_hash = msg.get("workHash")
+        if not work_hash and isinstance(context.get("workHash"), str):
+            work_hash = context.pop("workHash", None)
+        else:
+            context.pop("workHash", None)
+        if msg.get("steer") and hasattr(chat, "steer"):
+            res = chat.steer(
+                str(msg.get("message") or ""),
+                context,
+                work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
+                scope=_chat_scope(peer),
+            )
+            peer.send({"type": "chat_steer_accepted", "reqId": msg.get("reqId"), **res})
+            return
         chat.prompt(
             str(msg.get("message") or ""),
             context,
@@ -816,15 +916,44 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         )
         peer.send({"type": "chat_prompt_accepted", "reqId": msg.get("reqId")})
         return
+    if typ == "chat_steer":
+        context = dict(msg.get("context")) if isinstance(msg.get("context"), dict) else {}
+        work_hash = msg.get("workHash")
+        if not work_hash and isinstance(context.get("workHash"), str):
+            work_hash = context.pop("workHash", None)
+        else:
+            context.pop("workHash", None)
+        if hasattr(chat, "steer"):
+            res = chat.steer(
+                str(msg.get("message") or ""),
+                context,
+                work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
+                scope=_chat_scope(peer),
+            )
+        else:
+            chat.prompt(
+                str(msg.get("message") or ""),
+                context,
+                work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
+                scope=_chat_scope(peer),
+            )
+            res = {"ok": True, "steered": False}
+        peer.send({"type": "chat_steer_accepted", "reqId": msg.get("reqId"), **res})
+        return
     if typ == "chat_abort":
         chat.abort()
         peer.send({"type": "chat_aborted"})
         return
     if typ == "chat_new":
         scope = _chat_scope(peer)
-        state = chat.new_session(scope)
+        skip_empty = bool(msg.get("skipIfEmpty"))
+        try:
+            state = chat.new_session(scope, skip_if_empty=skip_empty) if skip_empty else chat.new_session(scope)
+        except TypeError:
+            state = chat.new_session(scope)
         peer.send({
             "type": "chat_state",
+            "isNew": True,
             "state": state,
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),
@@ -843,6 +972,91 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             "state": chat.get_state(),
             "summary": chat.summary(scope),
         })
+        return
+    if typ in ("chat_toggle_favorite", "chat_toggle_favorite_model"):
+        scope = _chat_scope(peer)
+        provider = str(msg.get("provider") or "").strip()
+        model_id = str(msg.get("modelId") or "").strip()
+        model_key = str(msg.get("modelKey") or "").strip()
+        if model_key and (not provider or not model_id):
+            if "/" in model_key:
+                provider, model_id = model_key.split("/", 1)
+            else:
+                model_id = model_key
+        res = chat.toggle_favorite_model(provider, model_id) if hasattr(chat, "toggle_favorite_model") else {"ok": False}
+        peer.send({
+            "type": "chat_favorites_changed",
+            **res,
+            "models": chat.available_models(scope),
+            "summary": chat.summary(scope),
+        })
+        return
+    if typ == "chat_set_thinking":
+        scope = _chat_scope(peer)
+        res = chat.set_thinking_level(str(msg.get("level") or "medium")) if hasattr(chat, "set_thinking_level") else {"ok": True}
+        peer.send({"type": "chat_prefs_changed", **res, "summary": chat.summary(scope)})
+        return
+    if typ == "chat_set_tool_mode":
+        scope = _chat_scope(peer)
+        res = chat.set_tool_preset(str(msg.get("mode") or "full")) if hasattr(chat, "set_tool_preset") else {"ok": True}
+        peer.send({"type": "chat_prefs_changed", **res, "summary": chat.summary(scope)})
+        return
+    if typ == "chat_set_prefs":
+        scope = _chat_scope(peer)
+        res = chat.update_custom_settings(
+            custom_system_prompt=msg.get("customSystemPrompt"),
+            use_global_skills=msg.get("useGlobalSkills"),
+            custom_skill_paths=msg.get("customSkillPaths"),
+        ) if hasattr(chat, "update_custom_settings") else {"ok": True}
+        peer.send({"type": "chat_prefs_changed", **res, "summary": chat.summary(scope)})
+        return
+    if typ == "chat_fork":
+        scope = _chat_scope(peer)
+        state = chat.fork_session(scope) if hasattr(chat, "fork_session") else chat.bootstrap_state(scope)
+        peer.send({
+            "type": "chat_state",
+            "state": state,
+            "summary": chat.summary(scope),
+            "models": chat.available_models(scope),
+            "messages": chat.get_messages(),
+            "sessions": chat.list_sessions() if hasattr(chat, "list_sessions") else [],
+        })
+        return
+    if typ == "chat_switch_session":
+        scope = _chat_scope(peer)
+        session_path = str(msg.get("sessionPath") or msg.get("sessionId") or "")
+        state = chat.switch_session(session_path, scope) if hasattr(chat, "switch_session") else chat.bootstrap_state(scope)
+        peer.send({
+            "type": "chat_state",
+            "state": state,
+            "summary": chat.summary(scope),
+            "models": chat.available_models(scope),
+            "messages": chat.get_messages(),
+            "sessions": chat.list_sessions() if hasattr(chat, "list_sessions") else [],
+            "isSwitch": True,
+        })
+        return
+    if typ == "chat_list_sessions":
+        peer.send({
+            "type": "chat_sessions_list",
+            "sessions": chat.list_sessions() if hasattr(chat, "list_sessions") else [],
+        })
+        return
+    if typ == "chat_compact":
+        scope = _chat_scope(peer)
+        res = chat.compact_session(str(msg.get("instructions") or "")) if hasattr(chat, "compact_session") else {"ok": True}
+        payload = {"type": "chat_compacted", "result": res}
+        try:
+            payload["state"] = chat.get_state()
+            payload["summary"] = chat.summary(scope)
+            payload["messages"] = chat.get_messages()
+        except Exception:
+            pass
+        peer.send(payload)
+        return
+    if typ == "chat_extension_ui_response":
+        res = chat.respond_extension_ui(str(msg.get("requestId") or ""), msg.get("value")) if hasattr(chat, "respond_extension_ui") else {"ok": True}
+        peer.send({"type": "chat_extension_ui_ack", **res})
         return
 
     if typ.startswith("pi_session_") and hub is None:

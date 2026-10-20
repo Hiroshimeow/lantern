@@ -1,4 +1,3 @@
-
 import json
 import socketserver
 import sys
@@ -12,11 +11,13 @@ from lantern.filesystem import BadRequest
 from lantern.ws import same_origin, upgrade as upgrade_websocket
 
 from lantern.http.routes.app import AppRoutes
+from lantern.http.routes.chatbot import ChatbotRoutes
 from lantern.http.routes.plugin import PluginRoutes
 from lantern.http.routes.media import MediaRoutes
 from lantern.http.routes.crop import CropRoutes
 from lantern.http.routes.markdown import MarkdownRoutes
 from lantern.http.routes.files import FilesRoutes
+
 
 class LanternHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
@@ -32,7 +33,17 @@ class LanternHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             return
         super().handle_error(request, client_address)
 
-class Handler(AppRoutes,PluginRoutes,MediaRoutes,CropRoutes,MarkdownRoutes,FilesRoutes,SimpleHTTPRequestHandler):
+
+class Handler(
+    AppRoutes,
+    ChatbotRoutes,
+    PluginRoutes,
+    MediaRoutes,
+    CropRoutes,
+    MarkdownRoutes,
+    FilesRoutes,
+    SimpleHTTPRequestHandler,
+):
     @property
     def app(self):
         return self.server.app
@@ -122,6 +133,8 @@ class Handler(AppRoutes,PluginRoutes,MediaRoutes,CropRoutes,MarkdownRoutes,Files
                 return self.api_terminal_auth()
             if parsed.path == "/api/info":
                 return self.api_info()
+            if parsed.path == "/api/sysstats":
+                return self.api_sysstats()
             if parsed.path == "/api/config":
                 return self.api_config_get()
             if parsed.path == "/api/list":
@@ -146,6 +159,18 @@ class Handler(AppRoutes,PluginRoutes,MediaRoutes,CropRoutes,MarkdownRoutes,Files
                 return self.api_plugin_info()
             if parsed.path in ("/api/plugin/preview", "/api/preview"):
                 return self.api_plugin_preview(parsed.query)
+            if parsed.path in ("/chat", "/lanbot"):
+                return self.serve_standalone_chat(parsed.query)
+            if parsed.path == "/api/chatbot/export":
+                return self.api_chatbot_export(parsed.query)
+            if parsed.path == "/api/chatbot/subagent-transcript":
+                return self.api_chatbot_subagent_transcript(parsed.query)
+            if parsed.path == "/api/chatbot/file-index":
+                return self.api_chatbot_file_index(parsed.query)
+            if parsed.path == "/api/chatbot/commands":
+                return self.api_chatbot_commands()
+            if parsed.path == "/api/chatbot/prefs":
+                return self.api_chatbot_prefs_get()
 
             target = self.app.files.safe_join(parsed.path)
             qs = urllib.parse.parse_qs(parsed.query)
@@ -169,8 +194,6 @@ class Handler(AppRoutes,PluginRoutes,MediaRoutes,CropRoutes,MarkdownRoutes,Files
 
     def do_POST(self) -> None:
         try:
-            # Browser-originated mutations must stay same-origin. Requests without
-            # Origin remain allowed for CLI/API clients on trusted networks.
             if self.headers.get("Origin") and not same_origin(self):
                 self.send_error(403, "POST Origin must match Host")
                 return
@@ -201,6 +224,8 @@ class Handler(AppRoutes,PluginRoutes,MediaRoutes,CropRoutes,MarkdownRoutes,Files
             if route == "/api/zip": return self.api_zip()
             if route == "/api/config": return self.api_config_post()
             if route == "/api/plugin/extensions": return self.api_plugin_extensions()
+            if route in ("/api/chatbot/prefs", "/api/chatbot/settings"): return self.api_chatbot_prefs_post()
+            if route == "/api/chatbot/upload": return self.api_chatbot_upload()
             self.send_error(404, "API not found")
         except BadRequest as e:
             self.send_json(400, {"error": str(e)})

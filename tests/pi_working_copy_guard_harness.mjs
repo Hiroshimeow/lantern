@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [extensionPath, statePath, realPath, workingPath, privatePath, otherPath] = process.argv.slice(2);
@@ -6,7 +8,20 @@ process.env.LANTERN_PI_GUARD_STATE = statePath;
 
 const handlers = new Map();
 const pi = { on(name, handler) { handlers.set(name, handler); } };
-const loaded = await import(pathToFileURL(extensionPath).href);
+
+let loaded;
+try {
+  loaded = await import(pathToFileURL(extensionPath).href);
+} catch {
+  const tempMjs = path.join(os.tmpdir(), `lantern-guard-${process.pid}-${Date.now()}.mjs`);
+  fs.copyFileSync(extensionPath, tempMjs);
+  try {
+    loaded = await import(pathToFileURL(tempMjs).href);
+  } finally {
+    try { fs.unlinkSync(tempMjs); } catch {}
+  }
+}
+
 loaded.default(pi);
 const handler = handlers.get("tool_call");
 if (!handler) throw new Error("tool_call handler was not registered");

@@ -38,17 +38,17 @@ folder_preview_include_video: true
 upload_auto_start: false
 upload_parallel: 3
 upload_conflict: "ask"
-# LanternBot uses Pi's native provider/model on localhost.
-# Remote LAN clients can be independently filtered or locked below.
+# Lanbot uses Pi's native provider/model on localhost in Full / YOLO mode ("*") by default.
+# All tool, extension, and MCP policies for localhost and LAN are configured strictly here in YAML.
 lantern_bot:
   enabled: true
   access:
     localhost:
-      # Full local Pi tools, including powershell/bash and installed extensions.
-      # Restrict this list to e.g. [read, edit, write, powershell] if preferred.
+      # Full / YOLO local Pi mode ("*"): no restrictive --tools, --no-extensions, or --no-mcp
+      # flags are injected unless explicitly restricted below.
       tools: ["*"]
       extensions: true
-      mcp: false                # set true to load configured Pi MCP servers
+      mcp: true
       provider_mode: "all"       # all | whitelist | blacklist
       providers: []
       model_mode: "all"          # all | whitelist | blacklist
@@ -60,7 +60,7 @@ lantern_bot:
         lock_provider: false
         lock_model: false
     lan:
-      # Strict per-tool enforcement, not merely a system-prompt instruction.
+      # Strict per-tool enforcement for remote LAN clients, configured exclusively in YAML.
       # Add 'edit'/'write' deliberately if LAN should modify project files.
       tools: [read, grep, find, ls]
       extensions: false         # extension tool calls denied unless listed above
@@ -82,8 +82,8 @@ lantern_bot:
     max_prompts_per_day: null
     max_tokens_per_day: null
   greeting: >-
-    🦸 Tôi là LanternBot — một thành viên của biệt đội Lantern.
-    Ở đâu có Lantern, ở đó có ánh sáng; file nào tối nghĩa cứ đưa đây, tôi soi cho.
+    Hi! I am Lanbot, your workspace assistant.
+    Select text, paste or drag files and images into chat, or type / for commands.
   lantern_context: |-
     You are LanternBot, the assistant embedded in Lantern.
     The newest <lantern_context> block is authoritative for the user's current location.

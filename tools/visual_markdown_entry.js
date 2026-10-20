@@ -641,6 +641,8 @@ function mountTableToolbar(root, crepe, onStatus) {
 
 async function createVisualMarkdown(root, content, onChange, documentPath, onUploadStatus) {
   const pendingDiff = makePendingDiffPlugin();
+  let initialDoc = null;
+  let hasUserDiverged = false;
   const crepe = new Crepe({
     root,
     defaultValue: content,
@@ -702,15 +704,30 @@ async function createVisualMarkdown(root, content, onChange, documentPath, onUpl
   crepe.on((listener) => {
     // Observe document mutations without serializing multi-megabyte Markdown on every keystroke.
     listener.updated((_ctx, nextDoc, previousDoc) => {
-      if (!nextDoc?.eq || !nextDoc.eq(previousDoc)) onChange();
+      if (!nextDoc?.eq || !nextDoc.eq(previousDoc)) {
+        if (initialDoc && nextDoc.eq(initialDoc) && !hasUserDiverged) return;
+        hasUserDiverged = !initialDoc || !nextDoc.eq(initialDoc);
+        onChange();
+      }
     });
   });
   await crepe.create();
+  try {
+    initialDoc = currentEditorPieces(crepe).view.state.doc;
+  } catch {}
   const pending = makePendingDiffController(crepe, pendingDiff.key);
   const unmountCrop = mountImageCrop(root, crepe, documentPath, onUploadStatus);
   const unmountTableToolbar = mountTableToolbar(root, crepe, onUploadStatus);
   return {
     getMarkdown() { return crepe.getMarkdown(); },
+    isCleanFromMount() {
+      try {
+        const curDoc = currentEditorPieces(crepe).view.state.doc;
+        return Boolean(initialDoc && curDoc.eq(initialDoc));
+      } catch {
+        return false;
+      }
+    },
     setPendingDiff(markdown, hunks) { return pending.setPendingDiff(markdown, hunks); },
     clearPendingDiff() { return pending.clearPendingDiff(); },
     debugBlockMap() { return pending.debugBlockMap(); },

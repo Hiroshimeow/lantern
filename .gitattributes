@@ -1,3 +1,7 @@
+# Generated artifacts are hashed byte-for-byte by the build manifest.
+static/vendor/lantern-*.js -text whitespace=-trailing-space
+static/vendor/lantern-*.css -text whitespace=-trailing-space
+static/vendor/lantern-*.LEGAL.txt -text whitespace=-trailing-space
 static/vendor/lantern-crepe.min.js -diff whitespace=-trailing-space
 static/vendor/lantern-crepe.min.css -diff whitespace=-trailing-space
 static/vendor/lantern-md-segment-worker.min.js -diff whitespace=-trailing-space

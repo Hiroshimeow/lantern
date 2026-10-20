@@ -26,7 +26,7 @@
     "accept_ranges": "bytes",
     "cache_control": "no-cache",
     "content_type": "text/javascript",
-    "sha256": "6698408405c8e86f5427504fa3d6626ed8083681391caef5b8b381cb3e93839a",
+    "sha256": "13de5d49b56c2ee00f259842357d0aad545441c081d5600b64e85e87f7080e9f",
     "status": 200
   },
   "direct_file": {
@@ -157,6 +157,9 @@
     "top_keys": [
       "authenticated",
       "configured",
+      "isLocal",
+      "lanLocked",
+      "lanSessions",
       "required"
     ]
   },

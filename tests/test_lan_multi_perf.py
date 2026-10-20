@@ -526,7 +526,7 @@ class LanPreviewConcurrencyTests(unittest.TestCase):
                 begin.set()
                 try:
                     deadline = time.monotonic() + 3
-                    while time.monotonic() < deadline and len(entered) < 2:
+                    while time.monotonic() < deadline and (len(entered) < 2 or sum(1 for c in clients if c.result is not None) < 2):
                         time.sleep(0.01)
                     self.assertEqual(len(entered), 2, "exactly two heavy parsers may run at once")
                 finally:

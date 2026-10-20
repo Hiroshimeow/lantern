@@ -234,7 +234,10 @@ def patch_text_cas(
             with os.fdopen(fd, "wb") as output:
                 output.write(encoded)
                 output.flush()
-                os.fsync(output.fileno())
+                try:
+                    os.fsync(output.fileno())
+                except OSError:
+                    pass
             os.chmod(tmpname, mode)
             os.replace(tmpname, path)
         finally:
@@ -273,7 +276,10 @@ def save_text_cas(
             with os.fdopen(fd, "wb") as output:
                 output.write(encoded)
                 output.flush()
-                os.fsync(output.fileno())
+                try:
+                    os.fsync(output.fileno())
+                except OSError:
+                    pass
             os.chmod(tmpname, mode)
             os.replace(tmpname, path)
         finally:

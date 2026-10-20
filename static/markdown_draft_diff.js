@@ -1,5 +1,5 @@
-/* Lantern Markdown draft diff/merge.
-   Baseline and draft remain plain Markdown; this module only describes changes. */
+/* Lantern Markdown draft diff/merge (v4).
+   Baseline and draft remain plain Markdown; this module describes line, word, and table cell changes. */
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
@@ -99,6 +99,70 @@
     return ops.reverse();
   }
 
+  /**
+   * Word-level intra-line diff for highlighting exact changed words/tokens
+   * inside modified paragraphs and table cells without strikethrough clutter.
+   */
+  function diffWords(oldStr, newStr) {
+    const aText = String(oldStr ?? '');
+    const bText = String(newStr ?? '');
+    if (aText === bText) {
+      return aText ? [{type: 'equal', text: aText}] : [];
+    }
+    const tokenize = s => s.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]+/gu) || [];
+    const a = tokenize(aText);
+    const b = tokenize(bText);
+    if (!a.length) return b.length ? [{type: 'add', text: bText}] : [];
+    if (!b.length) return a.length ? [{type: 'del', text: aText}] : [];
+
+    const ops = myers(a, b, 512);
+    if (!ops) {
+      return [
+        {type: 'del', text: aText},
+        {type: 'add', text: bText},
+      ];
+    }
+    const out = [];
+    for (const op of ops) {
+      const kind = op.type === 'equal' ? 'equal' : (op.type === 'delete' ? 'del' : 'add');
+      const prev = out[out.length - 1];
+      if (prev && prev.type === kind) {
+        prev.text += op.line;
+      } else {
+        out.push({type: kind, text: op.line});
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Parses a Markdown GFM pipe-table row into an array of trimmed cell strings.
+   * Returns null if the line is not a pipe table data/header row or is a separator row.
+   */
+  function parseTableRowCells(line) {
+    const raw = String(line ?? '').trim();
+    if (!raw.startsWith('|') || !raw.endsWith('|') || raw.length < 3) return null;
+    const inner = raw.slice(1, -1);
+    const cells = [];
+    let cur = '';
+    for (let i = 0; i < inner.length; i++) {
+      if (inner[i] === '\\' && i + 1 < inner.length && inner[i + 1] === '|') {
+        cur += '|';
+        i++;
+      } else if (inner[i] === '|') {
+        cells.push(cur.trim());
+        cur = '';
+      } else {
+        cur += inner[i];
+      }
+    }
+    cells.push(cur.trim());
+    // Reject table separator rows like | --- | :---: | ---: |
+    const isSeparator = cells.every(c => /^:?-{2,}:?$/.test(c));
+    if (isSeparator) return null;
+    return cells;
+  }
+
   function contentSpan(model, start, end) {
     if (start === end) {
       const at = start < model.lines.length
@@ -114,9 +178,6 @@
   }
 
   function addSpan(model, start, end, targetLineCount) {
-    // Insertions at EOF need their leading separator. Else the insertion point
-    // is at the next line's content and the replacement includes the separator
-    // that follows the inserted block.
     if (end === model.lines.length && start === targetLineCount) {
       const from = model.lines[start]?.tokenStart ?? model.source.length;
       return {start: from, end: model.source.length, text: model.source.slice(from)};
@@ -159,10 +220,6 @@
     let draftSpan;
 
     if (baseCount && draftCount) {
-      // A modification preserves the target document's outer line separators.
-      // Only the changed line-content region (and internal separators) is
-      // replaced, so a globally normalized editor string cannot rewrite an
-      // otherwise untouched CRLF before/after the hunk.
       baseSpan = contentSpan(baseModel, hunk.baseStart, hunk.baseEnd);
       draftSpan = contentSpan(draftModel, hunk.draftStart, hunk.draftEnd);
     } else if (!baseCount && draftCount) {
@@ -270,9 +327,6 @@
     if (!from || !to || !Number.isInteger(from.start) || !Number.isInteger(from.end))
       throw new Error('hunk exact source span is unavailable');
 
-    // Same-cardinality modifications replace line content only. Every target
-    // separator stays byte-for-byte as supplied by the target document, even
-    // when the replacement came from a textarea that normalized all EOLs.
     if (Array.isArray(fromLines) && Array.isArray(toLines) &&
         fromLines.length > 0 && fromLines.length === toLines.length) {
       const model = sourceModel(source);
@@ -327,11 +381,13 @@
         continue;
       }
       if (touching.length === 1 && equivalent(touching[0], their)) continue;
+      const ourLines = touching.flatMap(o => o.draftText || []);
       conflicts.push({
         baseStart: their.baseStart,
         baseEnd: their.baseEnd,
         draftStart: their.draftStart,
         draftEnd: their.draftEnd,
+        oursText: ourLines,
         piText: their.draftText.slice(),
         baseText: their.baseText.slice(),
       });
@@ -356,6 +412,8 @@
     linesOf,
     sourceModel,
     diffLines,
+    diffWords,
+    parseTableRowCells,
     applyHunk,
     merge3,
     overlaps,

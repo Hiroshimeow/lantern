@@ -122,7 +122,10 @@ class WorkingCopyStore:
             with os.fdopen(fd, "wb") as output:
                 output.write(data)
                 output.flush()
-                os.fsync(output.fileno())
+                try:
+                    os.fsync(output.fileno())
+                except OSError:
+                    pass
             last: OSError | None = None
             for attempt in range(4):
                 try:

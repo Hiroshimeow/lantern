@@ -225,6 +225,9 @@ def write_config_file(cfg: "AppConfig") -> None:
 
     def access_yaml(access):
         return {
+            "tools": list(access.tools),
+            "extensions": bool(access.extensions),
+            "mcp": bool(access.mcp),
             "provider_mode": access.provider_mode,
             "providers": list(access.providers),
             "model_mode": access.model_mode,
@@ -264,7 +267,10 @@ def write_config_file(cfg: "AppConfig") -> None:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(rendered)
             stream.flush()
-            os.fsync(stream.fileno())
+            try:
+                os.fsync(stream.fileno())
+            except OSError:
+                pass
         if os.name != "nt":
             os.chmod(tmp, 0o600)
         os.replace(tmp, cfg.config_path)

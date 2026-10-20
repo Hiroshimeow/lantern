@@ -1,4 +1,3 @@
-
 import urllib.parse
 
 from lantern.md_editor import MarkdownEditorError, read_document as read_markdown_document, save_document as save_markdown_document, MAX_MARKDOWN_EDITOR_BYTES
@@ -118,9 +117,10 @@ class MarkdownRoutes:
             self.send_json(400, {"error": "Markdown path required"}); return
         target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
         try:
-            # Section editing also changes the real .md. Pending diff merely
-            # means the accepted md_temp snapshot differs; it is not a lock.
-            self._work_store().get(rel)
+            # Block section-editor saves while LanternBot is actively editing this file.
+            state = self._work_store().get(rel)
+            if state.get("turnActive"):
+                raise WorkingCopyError(409, "File is locked while LanternBot is editing it", reason="pi_turn")
             result = save_markdown_document(target, data.get("content"), data.get("version"))
             self.send_json(200, {"ok": True, **result})
         except (MarkdownEditorError, WorkingCopyError) as exc:

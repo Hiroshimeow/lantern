@@ -35,6 +35,8 @@ node_modules/
 
 # Agent and review evidence (kept privately, not published)
 /.plan/
+/.pi/
+/handoff/
 /docs/reviews/
 
 # Git worktrees live only under the owning repository

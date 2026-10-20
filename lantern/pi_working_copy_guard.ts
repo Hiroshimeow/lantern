@@ -1,20 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-type Mapping = { real?: string; working?: string };
-type GuardState = {
-  staged?: Mapping[];
-  turnWritable?: string[];
-  protectedDir?: string;
-  activeScope?: string;
-  allowedTools?: string[];
-};
-
-type Loaded = { state: GuardState | null; error: string | null };
-
-function comparable(raw: string): string {
-  let resolved = path.resolve(raw);
+function comparable(raw) {
+  let resolved = path.resolve(String(raw || ""));
   try {
     if (fs.existsSync(resolved)) resolved = fs.realpathSync.native(resolved);
   } catch {}
@@ -22,7 +10,7 @@ function comparable(raw: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-function sameExistingFile(a: string, b: string): boolean {
+function sameExistingFile(a, b) {
   if (comparable(a) === comparable(b)) return true;
   try {
     const aa = fs.statSync(a);
@@ -33,51 +21,61 @@ function sameExistingFile(a: string, b: string): boolean {
   }
 }
 
-function inside(candidate: string, parent: string): boolean {
+function inside(candidate, parent) {
   const child = comparable(candidate);
   const root = comparable(parent);
   return child === root || child.startsWith(root + path.sep);
 }
 
-function loadState(): Loaded {
+function loadState() {
   const statePath = process.env.LANTERN_PI_GUARD_STATE;
   if (!statePath) return { state: null, error: "Lantern guard state path is unavailable." };
   try {
-    const parsed = JSON.parse(fs.readFileSync(statePath, "utf8")) as GuardState;
-    if (!parsed || !Array.isArray(parsed.staged) || !Array.isArray(parsed.turnWritable) ||
-        typeof parsed.protectedDir !== "string" || !parsed.protectedDir) {
+    const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    if (
+      !parsed ||
+      !Array.isArray(parsed.staged) ||
+      !Array.isArray(parsed.turnWritable) ||
+      typeof parsed.protectedDir !== "string" ||
+      !parsed.protectedDir
+    ) {
       return { state: null, error: "Lantern guard state is malformed." };
     }
     return { state: parsed, error: null };
   } catch (error) {
     return {
       state: null,
-      error: "Lantern guard state could not be read: " +
+      error:
+        "Lantern guard state could not be read: " +
         (error instanceof Error ? error.message : String(error)),
     };
   }
 }
 
-function requestPath(event: { input?: unknown }): string {
-  const input = event.input as { path?: unknown } | undefined;
+function requestPath(event) {
+  const input = event && typeof event.input === "object" ? event.input : undefined;
   const raw = typeof input?.path === "string" ? input.path.trim() : "";
   if (!raw) return "";
   return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
 }
 
-function toolAllowed(name: string, patterns: string[]): boolean {
-  return patterns.some(pattern => {
+function toolAllowed(name, patterns) {
+  return patterns.some((pattern) => {
     if (pattern === "*") return true;
     if (!pattern.includes("*")) return name === pattern;
-    const expression = "^" + pattern.split("*").map(part =>
-      part.replace(/[\\^$+.?()|{}\[\]]/g, "\\$&")).join(".*") + "$";
+    const expression =
+      "^" +
+      pattern
+        .split("*")
+        .map((part) => part.replace(/[\\^$+.?()|{}\[\]]/g, "\\$&"))
+        .join(".*") +
+      "$";
     return new RegExp(expression).test(name);
   });
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi) {
   pi.on("tool_call", async (event) => {
-
     const loaded = loadState();
     if (!loaded.state) {
       return {
@@ -86,16 +84,19 @@ export default function (pi: ExtensionAPI) {
       };
     }
     const state = loaded.state;
-    // The server derives origin from the socket peer, never from the
-    // user prompt or client JSON. Apply the allowlist to *all* tools,
-    // including registered extension tools and bash/powershell.
     if (state.activeScope) {
       const allowed = Array.isArray(state.allowedTools)
-        ? state.allowedTools.filter((v): v is string => typeof v === "string")
+        ? state.allowedTools.filter((v) => typeof v === "string")
         : [];
       if (!toolAllowed(event.toolName, allowed)) {
-        return { block: true, reason: "This LanternBot tool is not permitted for "
-          + state.activeScope + ": " + event.toolName };
+        return {
+          block: true,
+          reason:
+            "This LanternBot tool is not permitted for " +
+            state.activeScope +
+            ": " +
+            event.toolName,
+        };
       }
     }
     if (!["read", "edit", "write"].includes(event.toolName)) return;
@@ -105,24 +106,33 @@ export default function (pi: ExtensionAPI) {
     }
 
     const mappings = (state.staged || []).filter(
-      (item): item is Required<Mapping> =>
-        typeof item?.real === "string" && !!item.real &&
-        typeof item?.working === "string" && !!item.working,
+      (item) =>
+        typeof item?.real === "string" &&
+        !!item.real &&
+        typeof item?.working === "string" &&
+        !!item.working,
     );
-    const writable = (state.turnWritable || []).filter((item): item is string => typeof item === "string");
-    const realMatch = mappings.find((item) =>
-      sameExistingFile(candidate, item.real) || comparable(candidate) === comparable(item.real));
-    const workingMatch = mappings.find((item) =>
-      sameExistingFile(candidate, item.working) || comparable(candidate) === comparable(item.working));
-    const isTurnWritable = writable.some((item) =>
-      sameExistingFile(candidate, item) || comparable(candidate) === comparable(item));
+    const writable = (state.turnWritable || []).filter((item) => typeof item === "string");
+    const realMatch = mappings.find(
+      (item) =>
+        sameExistingFile(candidate, item.real) || comparable(candidate) === comparable(item.real),
+    );
+    const workingMatch = mappings.find(
+      (item) =>
+        sameExistingFile(candidate, item.working) ||
+        comparable(candidate) === comparable(item.working),
+    );
+    const isTurnWritable = writable.some(
+      (item) => sameExistingFile(candidate, item) || comparable(candidate) === comparable(item),
+    );
 
     if (realMatch) {
       return {
         block: true,
         reason:
           "Lantern keeps this logical file staged. Do not access the saved project path directly. " +
-          "Use workingPath from the newest <lantern_context>: " + realMatch.working,
+          "Use workingPath from the newest <lantern_context>: " +
+          realMatch.working,
       };
     }
 
@@ -138,7 +148,6 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // read
     if (inside(candidate, state.protectedDir || "")) {
       if (workingMatch) return;
       return {
