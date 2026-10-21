@@ -135,7 +135,9 @@ class PiChatWebSocketTests(unittest.TestCase):
             object(), None, chat=chat,
         )
         self.assertEqual(chat.prompts, [("fix", {"kind": "file", "path": "a.txt"}, None)])
-        self.assertEqual(peer.messages[-1], {"type": "chat_prompt_accepted", "reqId": "r1"})
+        self.assertEqual(peer.messages[-1], {
+            "type": "chat_prompt_accepted", "reqId": "r1", "slashHandled": False,
+        })
 
         dispatch(peer, {"type": "chat_set_model", "provider": "p", "modelId": "x"},
                  object(), None, chat=chat)
@@ -161,8 +163,9 @@ class PiChatWebSocketTests(unittest.TestCase):
             object(), None, chat=chat,
         )
         self.assertEqual(chat.prompts, [("edit", context, work_hash)])
-        self.assertEqual(peer.messages[-1],
-                         {"type": "chat_prompt_accepted", "reqId": "chat-1"})
+        self.assertEqual(peer.messages[-1], {
+            "type": "chat_prompt_accepted", "reqId": "chat-1", "slashHandled": False,
+        })
 
     def test_lan_direct_ws_model_override_is_rejected_by_real_manager(self):
         # The transport must derive scope from the peer IP. Supplying a
