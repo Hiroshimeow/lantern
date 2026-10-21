@@ -19,8 +19,10 @@ class CropRoutes:
             self.send_json(413, {"error": "image is too large for overwrite"}); return
         with self.app.crop.lock:
             data = target.read_bytes()
+            has_backup = self.app.crop.has_backup(target)
         self.send_json(200, {"version": self.app.crop._image_version(data), "bytes": len(data),
-                             "mime": self.app.crop.mimes[target.suffix.lower()]})
+                             "mime": self.app.crop.mimes[target.suffix.lower()],
+                             "hasBackup": has_backup})
 
     def api_image_overwrite(self, query: str) -> None:
         rel = urllib.parse.parse_qs(query).get("p", [""])[0]
@@ -70,6 +72,7 @@ class CropRoutes:
                     self.send_json(423, {"error": "image is locked by another application; close it and retry"})
                     return
                 temp_path = None
+                self.app.crop.save_backup(target, old)
                 # fsync of a directory is supported on POSIX, best effort on
                 # other platforms. A failure here must not misreport a commit.
                 if hasattr(os, "O_DIRECTORY"):
@@ -93,4 +96,51 @@ class CropRoutes:
                 if temp_path is not None:
                     temp_path.unlink(missing_ok=True)
         self.send_json(200, {"ok": True, "file": self.app.files.rel_url_for_path(target),
-                             "version": self.app.crop._image_version(body), "bytes": len(body)})
+                             "version": self.app.crop._image_version(body), "bytes": len(body),
+                             "hasBackup": True})
+
+    def api_image_undo(self, query: str) -> None:
+        rel = urllib.parse.parse_qs(query).get("p", [""])[0]
+        target = self.app.crop._image_crop_target(rel)
+        if not target.is_file() or target.is_symlink():
+            self.send_json(404, {"error": "image not found"}); return
+        temp_path = None
+        with self.app.crop.lock:
+            backup_bytes = self.app.crop.pop_backup(target)
+            if not backup_bytes:
+                self.send_json(404, {"error": "no previous image version to undo"}); return
+            current_bytes = target.read_bytes()
+            expected = self.app.crop._image_version(current_bytes)
+            stale_thumb = self.app.media.thumb_cache_path(target, "image")
+            fd, tmp = tempfile.mkstemp(prefix=".lantern-undoing-", dir=str(target.parent))
+            temp_path = Path(tmp)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(backup_bytes)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+                os.chmod(temp_path, target.stat().st_mode)
+                outcome = self.app.crop._replace_crop_with_retry(temp_path, target, expected)
+                if outcome != "ok":
+                    # Put backup back if replace failed
+                    self.app.crop.save_backup(target, backup_bytes)
+                    self.send_json(409, {"error": f"could not restore image ({outcome})"})
+                    return
+                temp_path = None
+                try:
+                    stale_thumb.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+        self.send_json(200, {
+            "ok": True,
+            "file": self.app.files.rel_url_for_path(target),
+            "version": self.app.crop._image_version(backup_bytes),
+            "bytes": len(backup_bytes),
+            "hasBackup": False,
+        })

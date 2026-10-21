@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,6 @@ from pathlib import Path
 from lantern.application import make_application
 from lantern.http.server import LanternHTTPServer, Handler
 from lantern.config import AppConfig
-from lantern.pi_chat import LanternBotManager
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -38,7 +38,7 @@ class LanbotV4RealUserE2ETests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            # Use fake Pi RPC for this workflow; CLI flag retry has a dedicated test.
+            # Create fake Pi CLI that also rejects --no-mcp initially to test auto-recovery E2E
             fake_pi = root / "fake_pi_e2e.py"
             fake_pi.write_text(
                 "#!/usr/bin/env python3\n"
@@ -67,6 +67,10 @@ class LanbotV4RealUserE2ETests(unittest.TestCase):
                 "        sys.stdout.flush()\n",
                 encoding="utf-8",
             )
+            fake_pi.chmod(0o755)
+
+            old_env = os.environ.get("LANTERN_PI_COMMAND")
+            os.environ["LANTERN_PI_COMMAND"] = str(fake_pi)
             cfg = AppConfig(
                 root=root,
                 host="127.0.0.1",
@@ -76,17 +80,6 @@ class LanbotV4RealUserE2ETests(unittest.TestCase):
                 config_path=root / "config.yaml",
             )
             app = make_application(cfg)
-            app.bot.close()
-            app.bot = LanternBotManager(
-                root,
-                app.ws.broadcast,
-                work_store=app.work,
-                session_dir=root / ".lantern" / "sessions",
-                argv_override=[sys.executable, "-u", str(fake_pi)],
-                request_timeout=3,
-                bot_config=cfg.lantern_bot,
-                usage_path=root / ".lantern" / "usage.json",
-            )
             server = LanternHTTPServer(('127.0.0.1', 0), Handler, app)
             port = server.server_address[1]
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -194,6 +187,10 @@ class LanbotV4RealUserE2ETests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 app.close()
+                if old_env is None:
+                    os.environ.pop("LANTERN_PI_COMMAND", None)
+                else:
+                    os.environ["LANTERN_PI_COMMAND"] = old_env
 
 
 if __name__ == "__main__":

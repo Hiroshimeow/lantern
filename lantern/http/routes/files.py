@@ -519,14 +519,19 @@ class FilesRoutes:
     <div class="title">📝 {self.app.files.html_escape(rel)}</div>
     <div class="grow"></div>
     <span id="saveStatus" class="sub"></span>
+    <button class="btn" type="button" onclick="toggleTerminal()">⌨️ Terminal</button>
     <button class="btn primary" onclick="saveEdit()">💾 Save</button>
   </div>
   <textarea id="editarea" class="editarea" spellcheck="false">{self.app.files.html_escape(content)}</textarea>
 </div>
+<div id="termDrawer" class="term-drawer" style="height:{int(self.app.config.terminal_start_height_px)}px" role="region" aria-label="Terminal and source control"></div>
 <div id="toast" class="toast"></div>
 <script>
 const markdownSource = {self.app.files.json_dumps(is_markdown)};
 let sourceVersion = {self.app.files.json_dumps(version)};
+document.body.dataset.lanternChatKind = markdownSource ? "markdown" : "file";
+document.body.dataset.lanternChatPath = {self.app.files.json_dumps(rel)};
+if (window.APP) window.APP.currentPath = {self.app.files.json_dumps("" if parent == "." else parent)};
 async function saveEdit(){{
   const st=document.getElementById('saveStatus'); st.textContent='Saving...';
   try{{

@@ -51,8 +51,10 @@ for raw in sys.stdin:
         text = str(req.get("message") or "")
         messages.append({"role": "user", "content": text})
         send({"id": rid, "type": "response", "command": typ, "success": True})
-        if "<user_request>\nFAKE_EDIT_WORK\n</user_request>" in text:
+        if "<user_request>\nFAKE_EDIT_WORK\n</user_request>" in text or "<user_request>\nFAKE_EDIT_ATTACHMENT\n</user_request>" in text:
             match = re.search(r"^workingPath: (.+)$", text, re.MULTILINE)
+            if not match:
+                match = re.search(r"attachments:\n- ([^\r\n]+)", text)
             if match:
                 working = Path(match.group(1).strip())
                 content = working.read_text(encoding="utf-8")

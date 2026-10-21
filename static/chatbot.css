@@ -290,15 +290,22 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
+}
+.lc-msg.streaming,
+.lc-thinking-card,
+.lc-tool-card {
+  overflow-anchor: none;
 }
 .lc-msg {
+  position: relative;
   border-radius: 12px;
-  padding: 9px 12px;
+  padding: 8px 34px 8px 11px;
   border: 1px solid var(--lc-border);
   background: var(--lc-panel);
   max-width: 100%;
   word-break: break-word;
+  flex-shrink: 0;
 }
 .lc-msg.user {
   background: var(--lc-user-bg);
@@ -322,14 +329,21 @@
   color: #fecaca;
 }
 .lc-msg-head {
-  display: flex;
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  z-index: 5;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 5px;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-bottom: 0;
   font-size: 11px;
   color: var(--lc-muted);
   font-weight: 700;
+}
+.lc-msg-head:empty {
+  display: none;
 }
 .lc-msg-body {
   white-space: pre-wrap;
@@ -379,7 +393,7 @@
   border: 1px solid rgba(148, 163, 184, 0.24);
   background: #111b2a;
   font-size: 12px;
-  overflow: hidden;
+  flex-shrink: 0;
 }
 .lc-thinking-card summary,
 .lc-tool-card summary {
@@ -564,16 +578,22 @@
 .lc-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 1px 6px;
+  gap: 4px;
+  padding: 2px 6px;
   border-radius: 5px;
   background: #152032;
   border: 1px solid rgba(255, 255, 255, 0.09);
   color: #cfe2f7;
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1.25;
   font-weight: 600;
-  max-width: 160px;
+  max-width: 210px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.lc-chip > span {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -598,16 +618,25 @@
   background: #06090f;
 }
 .lc-chip button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
   border: 0;
-  background: transparent;
-  color: var(--lc-muted);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fecaca;
   cursor: pointer;
-  padding: 0 1px;
-  font-size: 10.5px;
+  padding: 0;
+  margin-left: 2px;
+  font-size: 11px;
   line-height: 1;
   font-weight: 900;
 }
 .lc-chip button:hover {
+  background: rgba(239, 68, 68, 0.78);
   color: #fff;
 }
 
@@ -686,6 +715,55 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  text-align: right;
+}
+.lc-slash-scope {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font: 700 9.5px/1.3 var(--lc-font-mono);
+  background: rgba(104, 227, 122, 0.14);
+  border: 1px solid rgba(104, 227, 122, 0.32);
+  color: #86efac;
+  flex-shrink: 0;
+}
+.lc-slash-scope.is-builtin {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.25);
+  color: #cbd5e1;
+}
+/* --- v7.91 Compact Circular Scroll-to-Bottom Icon Button --- */
+.lc-scroll-bottom-btn {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 14px);
+  transform: translateX(-50%);
+  z-index: 28;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(126, 170, 255, 0.45);
+  background: rgba(13, 21, 33, 0.94);
+  backdrop-filter: blur(8px);
+  color: #edf5ff;
+  font: 800 15px/1 Inter, system-ui, -apple-system, sans-serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.58);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  user-select: none;
+}
+.lc-scroll-bottom-btn:hover {
+  background: #1a2b44;
+  border-color: #68e37a;
+  color: #ffffff;
+  transform: translateX(-50%) translateY(-1px);
+}
+.lc-scroll-bottom-btn[hidden] {
+  display: none !important;
 }
 .lc-input {
   width: 100%;
@@ -1126,4 +1204,103 @@
 }
 .lc-md-table tr:nth-child(even) td {
   background: rgba(255, 255, 255, 0.02);
+}
+
+/* v7.7: Per-message '...' dropdown menu (Raw, Copy, Fork, Re-run) & History Pagination */
+.lc-msg-more-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.lc-msg-more-btn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--lc-muted);
+  border-radius: 6px;
+  padding: 1px 8px;
+  font: 700 13px/1.2 var(--lc-font);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+  letter-spacing: 1px;
+}
+.lc-msg-more-btn:hover,
+.lc-msg-more-wrap.open .lc-msg-more-btn {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #ffffff;
+}
+.lc-msg-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 138px;
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lc-msg-dropdown[hidden] {
+  display: none !important;
+}
+.lc-msg-dropdown-item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #e2e8f0;
+  font: 600 11.5px/1.35 var(--lc-font);
+  padding: 6px 9px;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.lc-msg-dropdown-item:hover {
+  background: rgba(59, 130, 246, 0.22);
+  color: #ffffff;
+}
+.lc-load-older-btn {
+  appearance: none;
+  align-self: center;
+  margin: 4px auto 8px auto;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(147, 197, 253, 0.35);
+  background: rgba(30, 58, 138, 0.28);
+  color: #93c5fd;
+  font: 600 11.5px/1.3 var(--lc-font);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lc-load-older-btn:hover:not(:disabled) {
+  background: rgba(30, 58, 138, 0.5);
+  border-color: rgba(147, 197, 253, 0.65);
+  color: #ffffff;
+}
+.lc-load-older-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.lc-tool-load-full-btn {
+  appearance: none;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+  font: 600 11px/1.3 var(--lc-font);
+  cursor: pointer;
+}
+.lc-tool-load-full-btn:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.28);
+  color: #ffffff;
 }

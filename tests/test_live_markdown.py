@@ -270,5 +270,94 @@ class LiveMarkdownTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), before)
 
 
+    def test_unopened_markdown_attachment_creates_baseline_before_bot_turn_and_shows_diff(self):
+        """Verify v7.8 md_temp extension for Markdown attachments:
+        1. Attaching a never-opened .md file creates its baseline before Lanbot begins the turn;
+           after the bot edits the file on disk, opening the file in Lantern shows the diff
+           and supports Accept / Restore All.
+        2. If a baseline already exists for an attached .md file, it is preserved (never overwritten).
+        3. Attaching an uploaded copy in .lantern_uploads/ is rejected with a clear error rather than guessing.
+        """
+        import sys
+        import threading
+        from lantern.pi_chat import LanternBotManager
+        from lantern.bot_config import LanternBotConfig
+
+        # 1. Create a Markdown file that has NEVER been opened in Lantern (no md_temp exists yet)
+        unopened = self.files / "docs" / "unopened.md"
+        unopened.parent.mkdir(parents=True, exist_ok=True)
+        original_md = "# Unopened Doc\n\nunsaved working copy\n"
+        unopened.write_text(original_md, encoding="utf-8", newline="")
+        _logical, _real, _id, temp_path = self.store._resolve("docs/unopened.md")
+        self.assertFalse(temp_path.exists())
+
+        settled = threading.Event()
+        def emit(event):
+            if event.get("type") == "chat_bot_event" and event.get("event", {}).get("type") == "agent_settled":
+                settled.set()
+
+        fake = Path(__file__).with_name("fake_pi_rpc.py")
+        manager = LanternBotManager(
+            self.files,
+            emit,
+            work_store=self.store,
+            session_dir=Path(self.tmp.name) / "sessions_att",
+            argv_override=[sys.executable, "-u", str(fake)],
+            bot_config=LanternBotConfig.from_mapping({"access": {"localhost": {"tools": ["*"]}}}),
+            request_timeout=3,
+            usage_path=Path(self.tmp.name) / "usage_att.json",
+        )
+        try:
+            # Send prompt from folder view with docs/unopened.md as an attachment
+            manager.prompt(
+                "FAKE_EDIT_ATTACHMENT",
+                {"kind": "folder", "folder": "docs", "attachments": ["docs/unopened.md"]},
+                work_hash=None,
+                scope="local",
+            )
+            self.assertTrue(settled.wait(4))
+
+            # Verify md_temp baseline was created BEFORE the bot edited the file, so opening it now shows diff!
+            self.assertTrue(temp_path.is_file())
+            state = self.store.get("docs/unopened.md")
+            self.assertEqual(state["state"], "pending")
+            self.assertEqual(state["saved"]["content"], original_md)
+            self.assertIn("fake Pi working edit", state["work"]["content"])
+
+            # 2. Verify existing baseline is NOT overwritten if attached again in a subsequent turn
+            settled.clear()
+            manager.prompt(
+                "Read attached file again",
+                {"kind": "folder", "folder": "docs", "attachments": ["docs/unopened.md"]},
+                work_hash=None,
+                scope="local",
+            )
+            self.assertTrue(settled.wait(4))
+            state_after_second = self.store.get("docs/unopened.md")
+            self.assertEqual(state_after_second["state"], "pending")
+            self.assertEqual(state_after_second["saved"]["content"], original_md)
+
+            # Verify Accept (save) and Restore All (discard) flow works normally
+            saved_res = self.store.save(
+                "docs/unopened.md",
+                expect_hash=state_after_second["currentVersion"],
+                expect_saved_version=state_after_second["saved"]["version"],
+            )
+            self.assertEqual(saved_res["state"], "clean")
+
+            # 3. Verify uploaded copy in .lantern_uploads/ is rejected clearly without guessing
+            upload_copy = self.files / ".lantern_uploads" / "20261021" / "1_copy.md"
+            upload_copy.parent.mkdir(parents=True, exist_ok=True)
+            upload_copy.write_text("# Copy\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "upload/copy"):
+                manager.prompt(
+                    "Edit uploaded copy",
+                    {"kind": "folder", "folder": ".", "attachments": [".lantern_uploads/20261021/1_copy.md"]},
+                    scope="local",
+                )
+        finally:
+            manager.close()
+
+
 if __name__ == "__main__":
     unittest.main()

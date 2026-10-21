@@ -1,6 +1,7 @@
 
 import hashlib
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,62 @@ class CropService:
         self.max_bytes = 20 * 1024 * 1024
         self.mimes = {'.png': 'image/png', '.jpg': 'image/jpeg',
                       '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
+
+    def _backup_path(self, target: Path) -> Path:
+        root = self.files.cfg.root.resolve()
+        try:
+            rel = target.resolve().relative_to(root).as_posix()
+        except ValueError:
+            rel = target.name
+        key = hashlib.sha256(os.path.normcase(rel).encode("utf-8")).hexdigest()[:24]
+        cache_base = getattr(self.files.cfg, "cache_dir", None) or (root.parent / ".lantern_cache")
+        backup_dir = Path(cache_base).resolve() / "image_backups"
+        return backup_dir / f"{key}{target.suffix.lower()}"
+
+    def has_backup(self, target: Path) -> bool:
+        try:
+            return self._backup_path(target).is_file()
+        except Exception:
+            return False
+
+    def save_backup(self, target: Path, data: bytes) -> None:
+        try:
+            bpath = self._backup_path(target)
+            bpath.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=".lantern-img-bak-", suffix=".tmp", dir=str(bpath.parent))
+            tmp_path = Path(tmp)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                    f.flush()
+                for attempt in range(6):
+                    try:
+                        os.replace(tmp_path, bpath)
+                        tmp_path = None
+                        break
+                    except PermissionError:
+                        if attempt == 5:
+                            break
+                        time.sleep(0.03)
+            finally:
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def pop_backup(self, target: Path) -> bytes | None:
+        try:
+            bpath = self._backup_path(target)
+            if not bpath.is_file():
+                return None
+            data = bpath.read_bytes()
+            try:
+                bpath.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return data
+        except Exception:
+            return None
 
     def _image_crop_mime(self, path: Path, data: bytes) -> str:
         expected = self.mimes.get(path.suffix.lower())

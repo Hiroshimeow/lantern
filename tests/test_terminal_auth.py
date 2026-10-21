@@ -164,6 +164,56 @@ class TerminalPasswordTests(unittest.TestCase):
         self.assertEqual(peer.messages[0]["type"], "scm_data")
 
 
+    def test_lock_unlock_lan_password_requirement_and_passwordless_lock(self):
+        """Verify v7.8 Lock/Unlock LAN behavior:
+        1. Unlock LAN -> removes password requirement even when YAML has password.
+        2. Lock LAN -> revokes old sessions and requires password.
+        3. Valid login after Lock -> permitted to use Terminal/bot.
+        4. Locking again revokes the previous login cookie.
+        5. Lock when no password is configured -> does NOT allow anonymous access.
+        """
+        pw_hash = hash_password("correct-horse-battery-staple")
+        auth = TerminalAccess(pw_hash, local_bypass=True)
+        lan_ip = "192.168.1.50"
+
+        # Initially locked because password is configured
+        self.assertTrue(auth.required(lan_ip))
+        self.assertFalse(auth.permitted(lan_ip, ""))
+
+        # 1. Unlock LAN (hard_lock=False) -> LAN can access immediately without password
+        auth.revoke_all_lan(hard_lock=False)
+        self.assertFalse(auth.lan_locked)
+        self.assertFalse(auth.required(lan_ip))
+        self.assertTrue(auth.permitted(lan_ip, ""))
+
+        # 2. Lock LAN (hard_lock=True) -> requires password
+        auth.revoke_all_lan(hard_lock=True)
+        self.assertTrue(auth.lan_locked)
+        self.assertTrue(auth.required(lan_ip))
+        self.assertFalse(auth.permitted(lan_ip, ""))
+
+        # 3. Valid login after Lock succeeds and cookie is permitted
+        code, tok = auth.login(lan_ip, "correct-horse-battery-staple")
+        self.assertEqual(code, 200)
+        cookie = f"lantern_terminal={tok}"
+        self.assertTrue(auth.permitted(lan_ip, cookie))
+
+        # 4. Locking again revokes the previous cookie
+        revoked = auth.revoke_all_lan(hard_lock=True)
+        self.assertEqual(revoked, 1)
+        self.assertFalse(auth.permitted(lan_ip, cookie))
+
+        # 5. Lock when no password is configured -> must NOT allow anonymous access
+        no_pwd_auth = TerminalAccess("", local_bypass=True)
+        self.assertFalse(no_pwd_auth.required(lan_ip))
+        self.assertTrue(no_pwd_auth.permitted(lan_ip, ""))
+        no_pwd_auth.revoke_all_lan(hard_lock=True)
+        self.assertTrue(no_pwd_auth.lan_locked)
+        self.assertTrue(no_pwd_auth.required(lan_ip))
+        self.assertFalse(no_pwd_auth.permitted(lan_ip, ""))
+        self.assertEqual(no_pwd_auth.login(lan_ip, "anything")[0], 503)
+
+
 class ConfigProtectionTests(unittest.TestCase):
     def test_web_config_does_not_expose_password_hash_and_paths_are_hidden(self):
         with tempfile.TemporaryDirectory() as temp:

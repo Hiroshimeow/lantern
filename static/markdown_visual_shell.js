@@ -390,10 +390,74 @@
     return joined;
   }
 
+  function countGfmPipeCells(line) {
+    const trimmed = String(line ?? '').trim();
+    if (!trimmed.includes('|')) return 0;
+    const inner = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+    let count = 1;
+    let inCode = false;
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (ch === '\\' && i + 1 < inner.length) {
+        i++;
+        continue;
+      }
+      if (ch === '`') {
+        inCode = !inCode;
+        continue;
+      }
+      if (ch === '|' && !inCode) count++;
+    }
+    return count;
+  }
+
+  function isGfmSeparatorLine(line) {
+    const trimmed = String(line ?? '').trim();
+    if (!trimmed.includes('|') || !trimmed.includes('-')) return false;
+    const inner = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+    const parts = inner.split('|').map(c => c.trim());
+    return parts.length > 0 && parts.every(c => /^:?-+:?$/.test(c));
+  }
+
+  function prepareVisualTableMarkdown(mdText) {
+    const raw = String(mdText ?? '');
+    if (!raw.includes('|')) return raw;
+    const hasCrlf = raw.includes('\r\n');
+    const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+    let inFence = false;
+    let changed = false;
+    for (let i = 0; i + 1 < lines.length; i++) {
+      if (/^\s*(?:`{3,}|~{3,})/.test(lines[i])) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      if (lines[i].includes('|') && isGfmSeparatorLine(lines[i + 1])) {
+        const headCols = countGfmPipeCells(lines[i]);
+        const sepInner = lines[i + 1].trim().replace(/^\|/, '').replace(/\|$/, '');
+        const sepCells = sepInner.split('|').map(c => c.trim());
+        if (headCols > 0 && sepCells.length !== headCols) {
+          const fixedCells = sepCells.slice(0, headCols);
+          while (fixedCells.length < headCols) fixedCells.push('---');
+          lines[i + 1] = '| ' + fixedCells.join(' | ') + ' |';
+          changed = true;
+        }
+      }
+    }
+    if (!changed) return raw;
+    const out = lines.join('\n');
+    return hasCrlf ? out.replace(/\n/g, '\r\n') : out;
+  }
+
   reconcileVisualMarkdown.reconcileVisualMarkdown = reconcileVisualMarkdown;
   reconcileVisualMarkdown.stripRedundantMilkdownEscapes = stripRedundantMilkdownEscapes;
+  reconcileVisualMarkdown.prepareVisualTableMarkdown = prepareVisualTableMarkdown;
   globalThis.LanternReconcileMarkdown = reconcileVisualMarkdown;
-  if (typeof window !== "undefined") window.LanternReconcileMarkdown = reconcileVisualMarkdown;
+  globalThis.LanternPrepareVisualMarkdown = prepareVisualTableMarkdown;
+  if (typeof window !== "undefined") {
+    window.LanternReconcileMarkdown = reconcileVisualMarkdown;
+    window.LanternPrepareVisualMarkdown = prepareVisualTableMarkdown;
+  }
 
   const trigger = document.querySelector('[data-action="visual-edit"]');
   const sourceTrigger = document.querySelector('[data-action="mode-source"]');
@@ -412,6 +476,19 @@
   // documents to cap ProseMirror work and preserve byte-exact page boundaries.
   const FULL_VISUAL_LIMIT_BYTES = 64 * 1024;
   const root = document.querySelector('.content');
+  const mdBarEl = document.querySelector('.bar.md-bar');
+  const syncMdBarHeightVar = () => {
+    if (!mdBarEl) return;
+    const h = Math.ceil(mdBarEl.getBoundingClientRect().height || mdBarEl.offsetHeight || 82);
+    if (h > 20) {
+      document.documentElement.style.setProperty('--md-bar-height', `${h}px`);
+    }
+  };
+  syncMdBarHeightVar();
+  window.addEventListener('resize', syncMdBarHeightVar, { passive: true });
+  if (mdBarEl && typeof ResizeObserver !== 'undefined') {
+    try { new ResizeObserver(syncMdBarHeightVar).observe(mdBarEl); } catch {}
+  }
   const anchorBridge = globalThis.LanternAnchorBridge;
   const anchorKey = 'lantern-md-anchor:' + path;
   const capturePosition = () => anchorBridge?.capture(view.mode, preview) || null;
@@ -1527,6 +1604,27 @@
     globalThis.__lanternMdPaged?.cancelBotTurn?.();
   };
 
+  const onWorkLocked = (eventPath, locked) => {
+    const normEvent = String(eventPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const normPath = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (normEvent && normEvent !== normPath) return;
+    if (locked) {
+      if (!view.piTurn) {
+        view.piTurn = {
+          base: String(view.ackedText || view.baseline || ''),
+          expectedRevision: view.revision,
+        };
+      }
+      setBotEditorLock(true);
+      const banner = ensureBotShimmerBanner();
+      banner.hidden = false;
+      resetBotWatchdog();
+      status('🔒 File locked while Lanbot is editing the real .md.', 'info');
+    } else if (view.piTurn) {
+      cancelBotTurn();
+    }
+  };
+
   const applyWorkingText = async (text, hash, { backed = true } = {}) => {
     const next = String(text ?? '');
     const bookmark = capturePosition();
@@ -1544,7 +1642,7 @@
       try {
         await view.instance?.destroy?.();
         host.textContent = '';
-        view.instance = await engine.createVisualMarkdown(host, next, changed, path, status);
+        view.instance = await engine.createVisualMarkdown(host, prepareVisualTableMarkdown(next), changed, path, status);
       } finally {
         view.applyingPi = false;
       }
@@ -2046,6 +2144,7 @@
       if (view.active) renderDraftDiff();
       else await renderDraftPreview(current);
       if (manual) status('Saved diff baseline into md_temp. Real .md remains editable.', 'info');
+      void refreshImageAudit();
     } catch (error) {
       status('Could not accept diff: ' + error.message, 'error');
     } finally {
@@ -2108,7 +2207,7 @@
       view.mode = kind;
       const editorHost = renderToolbar(kind, contents);
       if (kind === 'visual') {
-        view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
+        view.instance = await engine.createVisualMarkdown(editorHost, prepareVisualTableMarkdown(contents), changed, path, status);
       } else if (kind === 'source') {
         view.instance = engine.createSourceMarkdown(
           view.sourceHost, contents, changed, actionHunk,
@@ -2182,6 +2281,9 @@
       const state = await fetchWorkState();
       if (view.active || view.loading) return;
       if (!state.saved) return;
+      if (state.turnActive || state.botLocked) {
+        onWorkLocked(path, true);
+      }
       view.version = state.saved.version;
       view.currentVersion = state.currentVersion;
       view.baseline = state.saved.content;
@@ -2325,7 +2427,7 @@
       // Source and Visual both edit the same project .md via versioned CAS.
       preview.hidden = true;
       if (kind === 'visual') {
-        view.instance = await engine.createVisualMarkdown(editorHost, contents, changed, path, status);
+        view.instance = await engine.createVisualMarkdown(editorHost, prepareVisualTableMarkdown(contents), changed, path, status);
       } else if (kind === 'source') {
         view.instance = engine.createSourceMarkdown(
           view.sourceHost, contents, changed, actionHunk,
@@ -3070,48 +3172,85 @@
     }
   }
 
+  let mdTerminalBundlePromise = null;
+  async function ensureMarkdownTerminalLoaded() {
+    if (typeof globalThis.toggleTerminal === 'function' && document.getElementById('termDrawer')) {
+      return;
+    }
+    if (mdTerminalBundlePromise) return mdTerminalBundlePromise;
+    mdTerminalBundlePromise = (async () => {
+      const folderDir = path.includes('/') ? path.split('/').slice(0, -1).join('/') : '';
+      if (typeof globalThis.currentPath !== 'function') {
+        globalThis.currentPath = () => folderDir;
+      }
+      if (!globalThis.APP) {
+        globalThis.APP = { currentPath: folderDir, defaults: { terminal_enabled: true, terminal_start_height_px: 420 } };
+      }
+      for (const href of ['/static/vendor/xterm.css', '/static/terminal_scm.css']) {
+        if (!document.querySelector(`link[href="${href}"]`)) {
+          const link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = href;
+          document.head.appendChild(link);
+        }
+      }
+      if (!document.getElementById('termDrawer')) {
+        const td = document.createElement('div');
+        td.id = 'termDrawer';
+        td.className = 'term-drawer';
+        td.style.height = '420px';
+        td.setAttribute('role', 'region');
+        td.setAttribute('aria-label', 'Terminal');
+        document.body.appendChild(td);
+      }
+      const loadScript = src => new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) return resolve();
+        const s = document.createElement('script');
+        s.src = src;
+        if (nonce) s.nonce = nonce;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`Failed to load ${src}`));
+        document.head.appendChild(s);
+      });
+      await loadScript('/static/vendor/xterm.js');
+      await loadScript('/static/vendor/addon-fit.js');
+      await loadScript('/static/terminal_scm.js');
+      const gitTabBtn = document.getElementById('lxViewGit');
+      if (gitTabBtn) gitTabBtn.style.display = 'none';
+    })().catch(err => {
+      mdTerminalBundlePromise = null;
+      throw err;
+    });
+    return mdTerminalBundlePromise;
+  }
+
   function mountMarkdownExtraToolbar() {
     const barBottom = document.querySelector('.md-bar .bar-bottom');
     const barTop = document.querySelector('.md-bar .bar-top');
-    if (barTop && !document.getElementById('mdSysTelemetryPill')) {
-      const pill = document.createElement('button');
-      pill.type = 'button';
-      pill.id = 'mdSysTelemetryPill';
-      pill.className = 'btn';
-      pill.style.fontSize = '11px';
-      pill.style.borderColor = 'rgba(104,227,122,.35)';
-      pill.title = 'Click to refresh system CPU / RAM / GPU usage (updates on focus only)';
-      pill.textContent = '🖥️ CPU · RAM';
-      const updateMdTelemetry = async () => {
-        if (document.hidden) return;
+    if (barTop && !document.getElementById('mdTerminalBtn')) {
+      const termBtn = document.createElement('button');
+      termBtn.type = 'button';
+      termBtn.id = 'mdTerminalBtn';
+      termBtn.className = 'btn md-terminal-btn';
+      termBtn.textContent = '⌨️ Terminal';
+      termBtn.title = 'Open or toggle Terminal in current folder (Ctrl+`)';
+      termBtn.addEventListener('click', async () => {
         try {
-          const r = await fetch('/api/sysstats', { cache: 'no-store' });
-          if (!r.ok) return;
-          const d = await r.json();
-          const cpuPct = Math.round(Number(d.cpu?.percent ?? 0));
-          const ramPct = Math.round(Number(d.memory?.percent ?? d.ram?.percent ?? 0));
-          const ramUsed = Number(d.memory?.usedGb ?? 0).toFixed(1);
-          const ramTotal = Number(d.memory?.totalGb ?? 0).toFixed(1);
-          const gpu = d.primaryGpu || d.gpu || null;
-          const vramTotalMb = Number(gpu?.memTotalMB ?? gpu?.vramTotalMb ?? 0);
-          if (gpu && vramTotalMb > 0) {
-            const u = (Number(gpu.memUsedMB ?? gpu.vramUsedMb ?? 0) / 1024).toFixed(1);
-            const t = (vramTotalMb / 1024).toFixed(1);
-            const gPct = Math.round(Number(gpu.loadPercent ?? gpu.utilPercent ?? 0));
-            pill.textContent = `🎮 GPU ${gPct}% · VRAM ${u}/${t}G · RAM ${ramPct}%`;
-          } else {
-            pill.textContent = Number(d.memory?.totalGb) > 0
-              ? `🖥️ CPU ${cpuPct}% · RAM ${ramPct}% (${ramUsed}/${ramTotal}G)`
-              : `🖥️ CPU ${cpuPct}% · RAM ${ramPct}%`;
-          }
-        } catch (_) {}
-      };
-      pill.addEventListener('click', updateMdTelemetry);
-      window.addEventListener('focus', updateMdTelemetry);
+          await ensureMarkdownTerminalLoaded();
+          globalThis.toggleTerminal?.();
+        } catch (err) {
+          status('Cannot open Terminal: ' + err.message, 'error');
+        }
+      });
       const grow = barTop.querySelector('.grow');
-      if (grow) grow.insertAdjacentElement('afterend', pill);
-      else barTop.appendChild(pill);
-      setTimeout(updateMdTelemetry, 200);
+      if (grow) grow.insertAdjacentElement('afterend', termBtn);
+      else barTop.appendChild(termBtn);
+      document.addEventListener('keydown', ev => {
+        if ((ev.ctrlKey || ev.metaKey) && ev.code === 'Backquote' && typeof globalThis.toggleTerminal !== 'function') {
+          ev.preventDefault();
+          termBtn.click();
+        }
+      });
     }
 
     if (!barBottom || barBottom.querySelector('.md-extra-controls')) return;
@@ -3171,10 +3310,236 @@
       syncWrapBtn();
     });
 
-    wrap.append(splitGroup, swapBtn, wrapBtn);
+    // --- v7.5: Version Diff Button (Date -> Hover Time Flyout) right next to Wrap: OFF ---
+    const versionWrap = document.createElement('div');
+    versionWrap.className = 'md-version-diff-wrap';
+    const versionBtn = document.createElement('button');
+    versionBtn.type = 'button';
+    versionBtn.id = 'mdVersionDiffBtn';
+    versionBtn.className = 'btn';
+    versionBtn.textContent = '🕒 Version ▾';
+    versionBtn.title = 'Browse saved versions by Date & Time and revert .md to compare diffs';
+    const versionMenu = document.createElement('div');
+    versionMenu.id = 'mdVersionDiffMenu';
+    versionMenu.className = 'md-version-diff-menu';
+    versionMenu.hidden = true;
+    versionWrap.append(versionBtn, versionMenu);
+
+    const applyRestoredVersion = async (vItem) => {
+      if (view.saving || view.loading || view.piTurn) return;
+      versionMenu.hidden = true;
+      try {
+        const res = await api('/api/md/versions/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, versionId: vItem.id, version: vItem.version }),
+        });
+        const baselineDoc = res.saved;
+        const workDoc = res.work;
+        const nextText = workDoc ? workDoc.content : (baselineDoc ? baselineDoc.content : '');
+        if (baselineDoc) {
+          view.version = baselineDoc.version;
+          view.baseline = baselineDoc.content;
+        }
+        view.currentVersion = res.currentVersion || vItem.version;
+        view.workHash = workDoc?.hash || null;
+        view.workState = res.state || (view.workHash ? 'pending' : 'clean');
+        view.ackedText = nextText;
+        view.lastSaved = nextText;
+        view.dirty = Boolean(workDoc);
+        if (view.active && view.instance) {
+          await applyWorkingText(nextText, view.workHash, { backed: true });
+        } else {
+          await renderDraftPreview(nextText);
+        }
+        syncParallelSecondaryPane(nextText);
+        status(`Switched .md to version ${vItem.dateLabel} ${vItem.timeLabel} (${view.dirty ? 'showing diff vs last Ctrl+S' : 'matches Ctrl+S baseline'}).`, 'info');
+        void refreshImageAudit();
+      } catch (err) {
+        status('Version switch failed: ' + err.message, 'error');
+      }
+    };
+
+    const loadAndRenderVersionMenu = async () => {
+      ensureShellStyle();
+      versionMenu.innerHTML = '<div style="padding:6px 10px;color:#9fb6ca;font-size:11.5px">Loading versions…</div>';
+      try {
+        const data = await api('/api/md/versions?p=' + encodeURIComponent(path));
+        const groups = Array.isArray(data.groups) ? data.groups : [];
+        versionMenu.textContent = '';
+        if (!groups.length) {
+          versionMenu.innerHTML = '<div style="padding:6px 10px;color:#9fb6ca;font-size:11.5px">No saved versions yet. Press Ctrl+S to record a version.</div>';
+          return;
+        }
+        groups.forEach((grp, gIdx) => {
+          const dateRow = document.createElement('div');
+          dateRow.className = 'md-version-date-item' + (gIdx === 0 ? ' is-open' : '');
+          const leftLabel = document.createElement('span');
+          leftLabel.textContent = grp.dateSub && grp.dateLabel !== 'Today'
+            ? `${grp.dateLabel} (${grp.dateSub})`
+            : (grp.dateLabel === 'Today' && grp.dateSub ? `Today, ${grp.dateSub}` : grp.dateLabel);
+          const rightMeta = document.createElement('span');
+          rightMeta.className = 'md-version-date-sub';
+          rightMeta.textContent = `${(grp.items || []).length} ▸`;
+          dateRow.append(leftLabel, rightMeta);
+
+          const subList = document.createElement('div');
+          subList.className = 'md-version-time-sublist';
+          (grp.items || []).forEach(vItem => {
+            const tBtn = document.createElement('button');
+            tBtn.type = 'button';
+            tBtn.className = 'md-version-time-btn'
+              + (vItem.isCurrent ? ' is-current' : '')
+              + (vItem.isBaseline ? ' is-baseline' : '');
+            const tSpan = document.createElement('span');
+            tSpan.textContent = vItem.timeLabel;
+            const tagSpan = document.createElement('span');
+            tagSpan.className = 'md-version-tag';
+            tagSpan.textContent = vItem.isCurrent && vItem.isBaseline
+              ? '● Current / Saved'
+              : vItem.isCurrent
+                ? '● Active'
+                : vItem.isBaseline
+                  ? '★ Last Ctrl+S'
+                  : `${Math.max(1, Math.round((vItem.bytes || 0) / 1024))} KB`;
+            tBtn.append(tSpan, tagSpan);
+            tBtn.title = `Revert .md to ${grp.dateLabel} ${vItem.timeFull} and show diff`;
+            tBtn.addEventListener('click', ev => {
+              ev.stopPropagation();
+              void applyRestoredVersion(vItem);
+            });
+            subList.appendChild(tBtn);
+          });
+
+          dateRow.addEventListener('mouseenter', () => {
+            versionMenu.querySelectorAll('.md-version-date-item').forEach(el => el.classList.remove('is-open'));
+            dateRow.classList.add('is-open');
+          });
+          dateRow.addEventListener('click', ev => {
+            ev.stopPropagation();
+            const openNow = dateRow.classList.contains('is-open');
+            versionMenu.querySelectorAll('.md-version-date-item').forEach(el => el.classList.remove('is-open'));
+            if (!openNow) dateRow.classList.add('is-open');
+          });
+
+          dateRow.appendChild(subList);
+          versionMenu.appendChild(dateRow);
+        });
+      } catch (err) {
+        versionMenu.innerHTML = `<div style="padding:6px 10px;color:#fca5a5;font-size:11.5px">${err.message}</div>`;
+      }
+    };
+
+    versionBtn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const willOpen = versionMenu.hidden;
+      versionMenu.hidden = !willOpen;
+      if (willOpen) void loadAndRenderVersionMenu();
+    });
+
+    // --- v7.5: Missing / Unreferenced Image Warning Pill on Toolbar Row ---
+    const auditWrap = document.createElement('div');
+    auditWrap.className = 'md-image-audit-wrap';
+    const auditBtn = document.createElement('button');
+    auditBtn.type = 'button';
+    auditBtn.id = 'mdImageAuditBadge';
+    auditBtn.className = 'btn md-image-audit-btn';
+    auditBtn.hidden = true;
+    const auditPopover = document.createElement('div');
+    auditPopover.id = 'mdImageAuditPopover';
+    auditPopover.className = 'md-image-audit-popover';
+    auditPopover.hidden = true;
+    auditWrap.append(auditBtn, auditPopover);
+
+    auditBtn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      auditPopover.hidden = !auditPopover.hidden;
+    });
+
+    document.addEventListener('click', ev => {
+      if (!versionWrap.contains(ev.target)) versionMenu.hidden = true;
+      if (!auditWrap.contains(ev.target)) auditPopover.hidden = true;
+    });
+
+    wrap.append(splitGroup, swapBtn, wrapBtn, versionWrap, auditWrap);
     const statusEl = barBottom.querySelector('[data-md-status]');
     if (statusEl) statusEl.insertAdjacentElement('beforebegin', wrap);
     else barBottom.appendChild(wrap);
+    void refreshImageAudit();
+  }
+
+  let imageAuditTimer = 0;
+  async function refreshImageAudit() {
+    clearTimeout(imageAuditTimer);
+    imageAuditTimer = setTimeout(async () => {
+      const badge = document.getElementById('mdImageAuditBadge');
+      const pop = document.getElementById('mdImageAuditPopover');
+      if (!badge || !pop) return;
+      try {
+        const res = await fetch('/api/md/image-audit?p=' + encodeURIComponent(path), { cache: 'no-store', credentials: 'same-origin' });
+        if (!res.ok) return;
+        const d = await res.json();
+        const missing = Array.isArray(d.missing) ? d.missing : [];
+        const unused = Array.isArray(d.unreferenced) ? d.unreferenced : [];
+        const refCount = Number(d.referencedCount || 0);
+        ensureShellStyle();
+        if (missing.length > 0 || unused.length > 0) {
+          badge.hidden = false;
+          badge.classList.add('is-warn');
+          badge.classList.remove('is-ok');
+          const parts = [];
+          if (missing.length > 0) parts.push(`${missing.length} missing`);
+          if (unused.length > 0) parts.push(`${unused.length} unused`);
+          badge.textContent = `⚠️ Images: ${parts.join(' · ')}`;
+          badge.title = 'Click to inspect missing or unreferenced images in this folder';
+          pop.textContent = '';
+          if (missing.length > 0) {
+            const sec = document.createElement('div');
+            sec.className = 'md-image-audit-sec';
+            const t = document.createElement('div');
+            t.className = 'md-image-audit-title';
+            t.textContent = `❌ Missing images referenced in .md (${missing.length}):`;
+            const ul = document.createElement('ul');
+            ul.className = 'md-image-audit-list';
+            missing.forEach(m => {
+              const li = document.createElement('li');
+              li.textContent = m;
+              ul.appendChild(li);
+            });
+            sec.append(t, ul);
+            pop.appendChild(sec);
+          }
+          if (unused.length > 0) {
+            const sec = document.createElement('div');
+            sec.className = 'md-image-audit-sec';
+            const t = document.createElement('div');
+            t.className = 'md-image-audit-title';
+            t.style.color = '#fcd34d';
+            t.textContent = `⚠️ Unreferenced images in folder/assets (${unused.length}):`;
+            const ul = document.createElement('ul');
+            ul.className = 'md-image-audit-list';
+            ul.style.color = '#fde68a';
+            unused.forEach(u => {
+              const li = document.createElement('li');
+              li.textContent = u;
+              ul.appendChild(li);
+            });
+            sec.append(t, ul);
+            pop.appendChild(sec);
+          }
+        } else if (refCount > 0) {
+          badge.hidden = false;
+          badge.classList.remove('is-warn');
+          badge.classList.add('is-ok');
+          badge.textContent = `🖼️ Images OK (${refCount})`;
+          badge.title = 'All referenced images exist and no unused images found';
+          pop.innerHTML = `<div style="color:#86efac;font-weight:700">✓ All ${refCount} image reference(s) exist on disk and 0 unused images in folder.</div>`;
+        } else {
+          badge.hidden = true;
+          pop.hidden = true;
+        }
+      } catch (_) {}
+    }, 120);
   }
 
   // Track active line in Preview/Visual/Source for Ghost Cursor & Focus Sync (#7)
@@ -3278,6 +3643,6 @@
   });
   window.__lanternMdVisual = { get state() { return view; }, open: start,
     show: start, save: () => save(true), preview: close, flushNow: saveDraft,
-    beginBotTurn, cancelBotTurn, touchBotTurn, onWorkChanged, undoLastBotTurn, jumpToDiffHunk,
-    reconcileVisualMarkdown, syncSplitScrollFrom };
+    beginBotTurn, cancelBotTurn, touchBotTurn, onWorkLocked, onWorkChanged, undoLastBotTurn, jumpToDiffHunk,
+    reconcileVisualMarkdown, syncSplitScrollFrom, refreshImageAudit };
 })();

@@ -153,7 +153,50 @@
       return new Promise((resolve,reject) => {
         const id=++this.workerId;
         const timeout=setTimeout(() => {this.pending.delete(id);reject(Error('Index worker timed out'));},30000);
-        this.pending.set(id,{resolve,reject,timeout});
+        this.pending.set(id,{
+          resolve: rawRes => {
+            try {
+              const pages = Array.isArray(rawRes?.pages) ? rawRes.pages : [];
+              if (pages.length > 1 && typeof source === 'string') {
+                const merged = [ { ...pages[0] } ];
+                for (let i = 1; i < pages.length; i++) {
+                  const prev = merged[merged.length - 1];
+                  const cur = pages[i];
+                  const prevSlice = source.slice(prev.start, prev.end).trimEnd();
+                  const curSlice = source.slice(cur.start, cur.end).trimStart();
+                  const prevLastLine = (prevSlice.split(/\r?\n/).pop() || '').trim();
+                  const curLines = curSlice.split(/\r?\n/);
+                  const curFirstLine = (curLines[0] || '').trim();
+                  const curSecondLine = (curLines[1] || '').trim();
+                  const curStartsOrphanPipeRows = curFirstLine.startsWith('|') && !/^\|?[ \t:|-]+\|?$/.test(curSecondLine);
+                  if (prevLastLine.startsWith('|') && curStartsOrphanPipeRows) {
+                    prev.end = cur.end;
+                    prev.oversized = (prev.end - prev.start) > 48 * 1024;
+                  } else {
+                    merged.push({ ...cur });
+                  }
+                }
+                if (merged.length !== pages.length) {
+                  rawRes.pages = merged;
+                  if (Array.isArray(rawRes.headings)) {
+                    for (const h of rawRes.headings) {
+                      let lo = 0, hi = merged.length - 1;
+                      while (lo < hi) {
+                        const mid = (lo + hi) >>> 1;
+                        if (merged[mid].end <= h.at) lo = mid + 1;
+                        else hi = mid;
+                      }
+                      h.page = lo;
+                    }
+                  }
+                }
+              }
+            } catch {}
+            resolve(rawRes);
+          },
+          reject,
+          timeout,
+        });
         this.worker.postMessage({id,source});
       });
     }
@@ -287,10 +330,18 @@
       toolbar.append(title,pageRow,save,draft,close,status);
       const host=document.createElement('div');host.className='md-visual-host';
       host.id='md-paged-edit-host';
-      shell.append(toolbar,host);
+      const bottomNav=document.createElement('div');
+      bottomNav.className='md-paged-bottom-nav';
+      const prevBottom=button('← Previous',()=>{void this.go(this.pageNumber-1);});
+      const countBottom=document.createElement('span');
+      countBottom.className='md-page-count';
+      const nextBottom=button('Next →',()=>{void this.go(this.pageNumber+1);});
+      bottomNav.append(prevBottom,countBottom,nextBottom);
+      shell.append(toolbar,host,bottomNav);
       this.preview.insertAdjacentElement('afterend',shell);
       this.shell=shell;this.host=host;this.statusEl=status;
       this.prev=prev;this.next=next;this.pageField=page;
+      this.prevBottom=prevBottom;this.nextBottom=nextBottom;this.countBottomEl=countBottom;
       this.countEl=pageCount;this.sections=sections;this.headingSearch=headingSearch;
       this.saveButton=save;this.searchInput=search;
       this.headingRefresh();
@@ -332,6 +383,9 @@
       this.countEl.textContent='/ '+total;
       this.prev.disabled=this.loadingPage||this.botTurnActive||this.pageNumber<=0;
       this.next.disabled=this.loadingPage||this.botTurnActive||this.pageNumber>=total-1;
+      if(this.prevBottom)this.prevBottom.disabled=this.prev.disabled;
+      if(this.nextBottom)this.nextBottom.disabled=this.next.disabled;
+      if(this.countBottomEl)this.countBottomEl.textContent='Page '+(this.pageNumber+1)+' / '+total;
       this.pageField.disabled=this.loadingPage||this.botTurnActive;
       this.sections.disabled=this.loadingPage||this.botTurnActive;
       this.headingSearch.disabled=this.loadingPage;
@@ -470,6 +524,19 @@
       if(this.host)this.host.inert=false;
       if(this.active)this.updateNav();
     }
+    onBotWorkLocked(eventPath, locked) {
+      const normEvent=String(eventPath||'').replace(/\\/g,'/').replace(/^\/+/, '');
+      const normPath=String(this.path||'').replace(/\\/g,'/').replace(/^\/+/, '');
+      if(normEvent&&normEvent!==normPath)return;
+      if(locked){
+        this.botTurnActive=true;
+        if(this.host){this.host.inert=true;this.host.querySelector('.ProseMirror')?.blur();}
+        this.status('🔒 Lanbot is editing the real .md; this section will refresh when it finishes.');
+        if(this.active)this.updateNav();
+      }else if(this.botTurnActive){
+        this.cancelBotTurn();
+      }
+    }
     async onBotWorkChanged(final) {
       if(!this.botTurnActive||!final)return;
       try {
@@ -542,10 +609,12 @@
         this.pageOriginal=this.pageSource();
         const content=restore?.content??this.pageOriginal;
         const generation=this.generation;
-        if(p.oversized) {
+        const fenceMatch=content.match(/^((?:\r?\n)*[ \t]{0,3}(?:`{3,}|~{3,})[^\r\n]*\r?\n)([\s\S]*?)(\r?\n[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*(?:\r?\n)*)$/);
+        const hasPipeTable=!fenceMatch && /^[ \t]*\|.+\|[ \t]*\r?\n[ \t]*\|[ \t:|-]+\|[ \t]*$/m.test(content);
+        if(p.oversized && (fenceMatch || !hasPipeTable)) {
+          const match=fenceMatch;
           const note=document.createElement('p');
           note.className='md-oversized-note';
-          const match=content.match(/^((?:\r?\n)*[ \t]{0,3}(?:`{3,}|~{3,})[^\r\n]*\r?\n)([\s\S]*?)(\r?\n[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*(?:\r?\n)*)$/);
           note.textContent=match ?
             'Large code block: edit the code directly. Markdown fence markers and other pages stay intact.' :
             'This single Markdown block is too large for WYSIWYG. The editor shows only this block with virtualized text; other sections remain visual.';
@@ -556,7 +625,10 @@
           this.largeEditor=lib.createBlockEditor(codeHost,match?match[2]:content,()=>this.changed(generation));
           this.status('Large block: CodeMirror viewport rendering enabled.','warn');
         } else {
-          this.rich=await this.engine.createVisualMarkdown(this.host,content,()=>this.changed(generation),this.path,(message,kind)=>this.status(message,kind));
+          const visualContent=typeof globalThis.LanternPrepareVisualMarkdown==='function'
+            ? globalThis.LanternPrepareVisualMarkdown(content)
+            : content;
+          this.rich=await this.engine.createVisualMarkdown(this.host,visualContent,()=>this.changed(generation),this.path,(message,kind)=>this.status(message,kind));
         }
         this.lastSaved=restore?this.pageOriginal:this.currentText();
         this.roundtripSafe=!restore&&normalize(this.currentText())===normalize(this.pageOriginal);

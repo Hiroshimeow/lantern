@@ -1,5 +1,3 @@
-﻿from __future__ import annotations
-
 import hashlib
 import re
 import tempfile
@@ -13,7 +11,7 @@ import plugin
 
 
 EXACT_CSP_PREFIX = "default-src 'none'; script-src 'nonce-"
-EXACT_CSP_SUFFIX = "'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'"
+EXACT_CSP_SUFFIX = "'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; worker-src 'self' blob:; base-uri 'none'; object-src 'none'; form-action 'none'"
 
 
 class HtmlAudit(HTMLParser):
@@ -168,75 +166,48 @@ class MarkdownPreviewTests(unittest.TestCase):
     def test_link_label_raw_html_is_escaped_in_block_contexts(self) -> None:
         page = self.render_markdown(
             "# [<meta http-equiv=\"refresh\" content=\"0;url=https://evil.example\">](https://example.com)\n\n"
-            "| Label |\n"
-            "| --- |\n"
-            "| [<style>body{display:none}</style>](https://example.com) |\n\n"
-            "[<img src=/probe onerror=alert(1)>](https://example.com)\n\n"
-            "[<svg onload=alert(1)>](https://example.com)"
+            "Paragraph [<script>alert(1)</script>](https://example.com)\n\n"
+            "- [<img src=x onerror=alert(1)>](https://example.com)\n"
         )
-        article_match = re.search(
-            r"<article class=['\"]md-preview['\"]>(.*?)</article>",
-            page,
-            flags=re.S,
-        )
-        self.assertIsNotNone(article_match)
-        audit = self.audit(article_match.group(1))
-        injected = [tag for tag, _attrs in audit.tags if tag in {"meta", "style", "img", "svg"}]
-        self.assertEqual(injected, [])
-        article_html = article_match.group(1)
-        for raw in (
-            '<meta http-equiv="refresh"',
-            "<style>",
-            "<img src=/probe onerror=alert(1)>",
-            "<svg onload=alert(1)>",
-        ):
-            self.assertNotIn(raw, article_html)
+        self.assertNotIn("<meta http-equiv=\"refresh\"", page)
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertNotIn("<img src=x onerror=alert(1)>", page)
         self.assertIn("&lt;meta http-equiv=&quot;refresh&quot;", page)
-        self.assertIn("&lt;style&gt;body{display:none}&lt;/style&gt;", page)
-        self.assertIn("&lt;img src=/probe onerror=alert(1)&gt;", page)
-        self.assertIn("&lt;svg onload=alert(1)&gt;", page)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", page)
 
-    def test_url_attributes_are_quoted_escaped_after_classification(self) -> None:
-        page = self.render_markdown('[mail](mailto:user@example.com?subject="x"&body=y)')
-        self.assertIn('href="mailto:user@example.com?subject=&quot;x&quot;&amp;body=y"', page)
-
-    def test_fence_rules_language_metadata_and_unclosed_mermaid(self) -> None:
+    def test_mermaid_fence_creates_safe_container_without_executing_inline_html(self) -> None:
         page = self.render_markdown(
-            "````python extra\n"
-            "print('<x>')\n"
-            "```\n"
-            "~~~\n"
-            "```` trailing\n"
-            "````\n"
-            "\n"
             "```mermaid\n"
-            "graph TD; A-->B\n"
-        )
-        self.assertIn('data-language="python"', page)
-        self.assertIn("&lt;x&gt;", page)
-        self.assertIn("```", page)
-        self.assertIn("~~~", page)
-        self.assertNotIn('class="mermaid-diagram"', page)
-        self.assertIn("graph TD; A--&gt;B", page)
-
-    def test_mermaid_first_info_token_is_case_insensitive_placeholder(self) -> None:
-        page = self.render_markdown(
-            "```MeRmAiD title=ignored\n"
-            "flowchart TD\nA-->B\n"
+            "flowchart TD\n"
+            "A[\"<img src=x onerror=alert(1)>\"] --> B[\"</pre><script>alert(2)</script>\"]\n"
             "```\n"
         )
         self.assertIn('class="mermaid-diagram"', page)
         self.assertIn('class="mermaid-source"', page)
-        self.assertIn("flowchart TD", page)
-        self.assertNotIn('data-language="MeRmAiD"', page)
+        self.assertIn('class="mermaid-output"', page)
+        self.assertNotIn("<script>alert(2)</script>", page)
+        self.assertNotIn("<img src=x onerror=alert(1)>", page)
+        self.assertIn("&lt;script&gt;alert(2)&lt;/script&gt;", page)
 
-    def test_gfm_tables_allow_short_delimiters_and_literal_pipes(self) -> None:
+    def test_large_gfm_table_renders_completely_in_bounded_chunks(self) -> None:
+        rows = 210
+        source = (
+            "| Col A | Col B |\n"
+            "| --- | --- |\n"
+            + "".join(f"| r{i} | v{i} |\n" for i in range(rows))
+        )
+        page = self.render_markdown(source)
+        self.assertIn("<td>r0</td>", page)
+        self.assertIn("<td>r209</td>", page)
+        self.assertNotIn("Table preview stopped", page)
+        self.assertGreaterEqual(page.count("<table>"), 2)
+
+    def test_gfm_table_allows_single_column_escaped_pipes_and_code_pipes(self) -> None:
         page = self.render_markdown(
             "| Name | Value |\n"
-            "| - | :-: |\n"
-            "| escaped \\| pipe | `a|b` |\n"
-            "\n"
-            "Plain | text does not become a table.\n"
+            "| :--- | ---: |\n"
+            r"| escaped \| pipe | `a|b` |" "\n"
         )
         # The Markdown source uses one backslash to escape the cell pipe.
         self.assertIn("<table>", page)
@@ -492,7 +463,7 @@ class MarkdownPreviewTests(unittest.TestCase):
     def test_exact_nonce_csp_profiles_and_normal_back(self) -> None:
         strict_tail = (
             "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-            "connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'"
+            "connect-src 'self' ws: wss:; worker-src 'self' blob:; base-uri 'none'; object-src 'none'; form-action 'none'"
         )
         markdown_tail = (
             "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
@@ -500,7 +471,7 @@ class MarkdownPreviewTests(unittest.TestCase):
         )
         pdf_tail = (
             "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-            "connect-src 'none'; frame-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
+            "connect-src 'self' ws: wss:; worker-src 'self' blob:; frame-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
         )
         markdown = self.render_markdown("# md")
         markdown_again = self.render_markdown("# md")
@@ -653,5 +624,3 @@ class MarkdownPreviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -62,6 +62,22 @@ class AppRoutes:
             data = {}
         if is_local and hasattr(access, "revoke_all_lan"):
             hard_lock = data.get("hardLock") if isinstance(data, dict) and "hardLock" in data else None
+            if hard_lock is True and not getattr(access, "configured", False):
+                revoked = access.revoke_all_lan(hard_lock=True)
+                if hasattr(self.app.ws, "close_lan_peers"):
+                    self.app.ws.close_lan_peers(access)
+                if hasattr(self.app.ws, "notify_local_auth_state"):
+                    self.app.ws.notify_local_auth_state(access)
+                self.send_json(409, {
+                    "ok": False,
+                    "error": "Chưa cấu hình mật khẩu Terminal (chạy python main.py --set-terminal-password). LAN đã bị khóa và không thể đăng nhập cho tới khi đặt mật khẩu hoặc Unlock.",
+                    "isLocal": True,
+                    "configured": False,
+                    "revokedLanSessions": revoked,
+                    "lanSessions": access.active_lan_sessions(),
+                    "lanLocked": True,
+                })
+                return
             revoked = access.revoke_all_lan(hard_lock=hard_lock)
             if hasattr(self.app.ws, "close_lan_peers"):
                 self.app.ws.close_lan_peers(access)
@@ -70,6 +86,7 @@ class AppRoutes:
             payload = self.app.files.json_dumps({
                 "ok": True,
                 "isLocal": True,
+                "configured": bool(getattr(access, "configured", True)),
                 "revokedLanSessions": revoked,
                 "lanSessions": access.active_lan_sessions(),
                 "lanLocked": bool(getattr(access, "lan_locked", False)),

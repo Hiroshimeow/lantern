@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -8,6 +9,12 @@ function comparable(raw) {
   } catch {}
   resolved = path.normalize(resolved);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function normcasePy(s) {
+  return process.platform === "win32"
+    ? String(s).replace(/\//g, "\\").toLowerCase()
+    : String(s);
 }
 
 function sameExistingFile(a, b) {
@@ -25,6 +32,37 @@ function inside(candidate, parent) {
   const child = comparable(candidate);
   const root = comparable(parent);
   return child === root || child.startsWith(root + path.sep);
+}
+
+function ensureMarkdownBaselineBeforeTool(candidate, state) {
+  if (!state || typeof state.rootDir !== "string" || !state.rootDir) return;
+  if (typeof state.tempDir !== "string" || !state.tempDir) return;
+  const suffixes = Array.isArray(state.markdownSuffixes)
+    ? state.markdownSuffixes.map((s) => String(s).toLowerCase())
+    : [".md", ".markdown"];
+  const ext = path.extname(candidate).toLowerCase();
+  if (!suffixes.includes(ext)) return;
+  try {
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) return;
+    const rootResolved = fs.existsSync(state.rootDir)
+      ? fs.realpathSync.native(state.rootDir)
+      : path.resolve(state.rootDir);
+    const candResolved = fs.realpathSync.native(candidate);
+    if (!inside(candResolved, rootResolved)) return;
+    if (state.protectedDir && inside(candResolved, state.protectedDir)) return;
+    const relPosix = path.relative(rootResolved, candResolved).split(path.sep).join("/");
+    if (!relPosix || relPosix.startsWith("..")) return;
+    const key = normcasePy(rootResolved) + "\0" + normcasePy(relPosix);
+    const identifier = crypto.createHash("sha256").update(key, "utf8").digest("hex").slice(0, 20);
+    const tempFile = path.join(state.tempDir, identifier, path.basename(candResolved));
+    if (!fs.existsSync(tempFile)) {
+      fs.mkdirSync(path.dirname(tempFile), { recursive: true });
+      const raw = fs.readFileSync(candResolved);
+      const tmpWrite = `${tempFile}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmpWrite, raw);
+      fs.renameSync(tmpWrite, tempFile);
+    }
+  } catch {}
 }
 
 function loadState() {
@@ -84,16 +122,23 @@ export default function (pi) {
       };
     }
     const state = loaded.state;
-    if (state.activeScope) {
-      const allowed = Array.isArray(state.allowedTools)
-        ? state.allowedTools.filter((v) => typeof v === "string")
+    const procScope = process.env.LANTERN_PI_PROCESS_SCOPE || state.activeScope;
+    let procAllowed = state.allowedTools;
+    if (process.env.LANTERN_PI_PROCESS_TOOLS) {
+      try {
+        procAllowed = JSON.parse(process.env.LANTERN_PI_PROCESS_TOOLS);
+      } catch {}
+    }
+    if (procScope) {
+      const allowed = Array.isArray(procAllowed)
+        ? procAllowed.filter((v) => typeof v === "string")
         : [];
       if (!toolAllowed(event.toolName, allowed)) {
         return {
           block: true,
           reason:
             "This LanternBot tool is not permitted for " +
-            state.activeScope +
+            procScope +
             ": " +
             event.toolName,
         };
@@ -145,6 +190,7 @@ export default function (pi) {
             "Lantern blocks writes inside its private state. Only the active workingPath is writable during this Pi turn.",
         };
       }
+      ensureMarkdownBaselineBeforeTool(candidate, state);
       return;
     }
 

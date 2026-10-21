@@ -108,8 +108,8 @@ class TerminalAccess:
         self.local_bypass = local_bypass
         self.sessions: dict[str, tuple[float, str]] = {}
         self.attempts: dict[str, deque[float]] = {}
-        self.lan_locked: bool = False
         self.lock = threading.RLock()
+        self.lan_locked: bool = not self.passwordless
 
     @property
     def configured(self) -> bool:
@@ -131,34 +131,29 @@ class TerminalAccess:
             return len(self.sessions)
 
     def revoke_all_lan(self, *, hard_lock: bool | None = None) -> int:
-        """Master lock action from localhost: revoke all active LAN sessions immediately."""
+        """Toggle LAN password requirement from localhost:
+        - hard_lock=True (Lock LAN): revoke all active LAN sessions and require password login
+          (if no password is configured in YAML, LAN remains locked until a password is set or unlocked).
+        - hard_lock=False (Unlock LAN): allow LAN clients immediate access without password.
+        """
         with self.lock:
             count = len(self.sessions)
             self.sessions.clear()
             if hard_lock is not None:
                 self.lan_locked = bool(hard_lock)
+            else:
+                self.lan_locked = True
             return count
 
     def required(self, client_ip: str) -> bool:
         if self.is_local(client_ip):
             return False
         with self.lock:
-            if self.lan_locked:
-                return True
-        # Explicit opt-in: no configured password means no Terminal login,
-        # including LAN/Tailscale; malformed hashes still fail closed.
-        if self.passwordless:
-            return False
-        if not self.local_bypass:
-            return True
-        return not is_loopback_ip(client_ip)
+            return bool(self.lan_locked)
 
     def permitted(self, client_ip: str, cookie_header: str) -> bool:
         if self.is_local(client_ip):
             return True
-        with self.lock:
-            if self.lan_locked:
-                return False
         if not self.required(client_ip):
             return True
         token = _token_from_cookie(cookie_header)
@@ -176,9 +171,6 @@ class TerminalAccess:
             return hmac.compare_digest(binding, client_ip)
 
     def login(self, client_ip: str, password: str) -> tuple[int, str]:
-        with self.lock:
-            if self.lan_locked and not self.is_local(client_ip):
-                return 403, ""
         if not self.configured:
             return 503, ""
         now = time.monotonic()

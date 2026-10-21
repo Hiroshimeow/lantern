@@ -8,6 +8,7 @@
  */
 (() => {
   'use strict';
+  if (window.self !== window.top && !window.APP?.standaloneChat) return;
   if (window.__lanternChatbotMounted) return;
   window.__lanternChatbotMounted = true;
 
@@ -18,24 +19,45 @@
   const LEGACY_OPEN_KEY = 'lanternChatOpen';
   const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
 
+  const TAB_RUNTIME_ID = 'rt-' + Math.random().toString(36).slice(2, 9) + '-' + Date.now().toString(36).slice(-4);
+  const WIN_NAME_CID_PREFIX = 'lantern_tab_cid:';
+
+  function generateFreshTabSessionId() {
+    return 'tab-' + Math.random().toString(36).slice(2, 9) + '-' + Date.now().toString(36).slice(-4);
+  }
+
+  function persistTabSessionId(cid) {
+    try {
+      sessionStorage.setItem(CLIENT_SESSION_KEY, cid);
+      if (!window.APP?.standaloneChat && !String(window.name || '').startsWith('lanbot_')) {
+        window.name = WIN_NAME_CID_PREFIX + cid;
+      }
+    } catch {}
+    return cid;
+  }
+
   function resolveClientSessionId() {
     try {
       const qs = new URLSearchParams(window.location.search || '');
       const fromUrl = (qs.get('client_session') || qs.get('chat_session') || qs.get('session') || '').trim();
       if (fromUrl) {
-        sessionStorage.setItem(CLIENT_SESSION_KEY, fromUrl);
-        return fromUrl;
+        return persistTabSessionId(fromUrl);
       }
       const fromBody = (document.body?.dataset?.lanternClientSession || window.APP?.clientSessionId || '').trim();
       if (fromBody) {
-        sessionStorage.setItem(CLIENT_SESSION_KEY, fromBody);
-        return fromBody;
+        return persistTabSessionId(fromBody);
       }
-      const saved = (sessionStorage.getItem(CLIENT_SESSION_KEY) || '').trim();
-      if (saved) return saved;
-      const generated = 'tab-' + Math.random().toString(36).slice(2, 9) + '-' + Date.now().toString(36).slice(-4);
-      sessionStorage.setItem(CLIENT_SESSION_KEY, generated);
-      return generated;
+      const winName = String(window.name || '').trim();
+      if (winName.startsWith(WIN_NAME_CID_PREFIX)) {
+        const fromWin = winName.slice(WIN_NAME_CID_PREFIX.length).trim();
+        if (fromWin) {
+          return persistTabSessionId(fromWin);
+        }
+      }
+      // If window.name does NOT carry WIN_NAME_CID_PREFIX, this is either a brand-new tab
+      // or a tab opened via Ctrl+Click / Middle-Click (where the browser cloned sessionStorage
+      // from the parent tab but reset window.name to ""). Always allocate a fresh tab ID!
+      return persistTabSessionId(generateFreshTabSessionId());
     } catch {
       return 'tab-default';
     }
@@ -58,6 +80,7 @@
     { command: '/session', category: 'session', description: 'Switch or manage saved conversations' },
     { command: '/thinking', category: 'config', description: 'Set Pi core thinking level (off|low|medium|high|xhigh)' },
     { command: '/skills', category: 'skill', description: 'List discovered workspace & global skills' },
+    { command: '/harness', category: 'harness', description: 'Inspect Pi Core Harness status or scaffold starter skills (/harness init)' },
     { command: '/mcp', category: 'tools', description: 'Inspect MCP status or run an MCP task' },
     { command: '/settings', category: 'config', description: 'Open Lanbot Settings (System Prompt, Skills, Export HTML)' },
     { command: '/export', category: 'session', description: 'Export full unabbreviated HTML session log' },
@@ -96,6 +119,8 @@
   let state = {
     unlocked: true,
     passwordRequired: false,
+    isLocal: ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname),
+    lanLocked: false,
     busy: false,
     streaming: false,
     greeting: '🏮 Hi, I am Lanbot — your Lantern workspace assistant. Type `/` for commands, paste (`Ctrl+V`) or drag-and-drop images/files directly into the chat!',
@@ -124,12 +149,19 @@
     activity: [],
     sessions: [],
     contextUsage: { messageCount: 0, estimatedTokens: 0 },
+    hasMoreOlder: false,
+    oldestLoadedIndex: 0,
+    totalHistoryMessages: 0,
+    loadingOlderHistory: false,
     extensionRequests: [],
     dismissedSelection: false,
     dismissedPaths: new Set(),
     skipDraftFlush: false,
     uploadingCount: 0,
   };
+  let reconnectAttempts = 0;
+  const MAX_RECONNECT_ATTEMPTS = 5;
+  let resetBotTimer = 0;
 
   let slashCommands = [...DEFAULT_SLASH_COMMANDS];
   let slashFiltered = [];
@@ -168,17 +200,105 @@
     } catch {}
   }
 
+  function updateScrollBottomButton() {
+    if (!els?.scrollBottomBtn) return;
+    els.scrollBottomBtn.hidden = !isUserScrolledUp;
+    els.scrollBottomBtn.classList.toggle('is-streaming', Boolean(state.streaming && isUserScrolledUp));
+  }
+
+  function escapeHtml(raw) {
+    return String(raw ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  let scrollRafId = 0;
   function scrollTranscriptToBottom(force = false) {
     if (!els?.transcript) return;
     if (force) {
       isUserScrolledUp = false;
+      updateScrollBottomButton();
     }
     if (!isUserScrolledUp) {
-      programmaticScroll = true;
-      els.transcript.scrollTop = els.transcript.scrollHeight;
-      requestAnimationFrame(() => { programmaticScroll = false; });
-      saveTabCache();
+      if (force) {
+        programmaticScroll = true;
+        els.transcript.scrollTop = els.transcript.scrollHeight;
+        requestAnimationFrame(() => {
+          programmaticScroll = false;
+          updateScrollBottomButton();
+        });
+        saveTabCache();
+        return;
+      }
+      if (scrollRafId) return;
+      scrollRafId = requestAnimationFrame(() => {
+        scrollRafId = 0;
+        if (!els?.transcript || isUserScrolledUp) {
+          updateScrollBottomButton();
+          return;
+        }
+        programmaticScroll = true;
+        els.transcript.scrollTop = els.transcript.scrollHeight;
+        requestAnimationFrame(() => {
+          programmaticScroll = false;
+          updateScrollBottomButton();
+        });
+        saveTabCache();
+      });
+    } else {
+      updateScrollBottomButton();
     }
+  }
+
+  function jumpToLatestMessage() {
+    if (!els?.transcript) return;
+    isUserScrolledUp = false;
+    updateScrollBottomButton();
+    programmaticScroll = true;
+    if (typeof els.transcript.scrollTo === 'function') {
+      els.transcript.scrollTo({ top: els.transcript.scrollHeight, behavior: 'smooth' });
+    } else {
+      els.transcript.scrollTop = els.transcript.scrollHeight;
+    }
+    requestAnimationFrame(() => {
+      programmaticScroll = false;
+      updateScrollBottomButton();
+    });
+    saveTabCache();
+  }
+
+  let lastCommandsFetchAt = 0;
+  async function refreshSlashCommands(force = false) {
+    const now = Date.now();
+    if (!force && now - lastCommandsFetchAt < 2500) return slashCommands;
+    lastCommandsFetchAt = now;
+    try {
+      const r = await fetch('/api/chatbot/commands', { credentials: 'same-origin', cache: 'no-store' });
+      if (!r.ok) return slashCommands;
+      const data = await r.json();
+      if (Array.isArray(data?.commands) && data.commands.length) {
+        slashCommands = data.commands;
+      }
+      if (Array.isArray(data?.skills)) {
+        state.discoveredSkills = data.skills;
+        if (els?.discoveredSkillsList) {
+          els.discoveredSkillsList.textContent = '';
+          state.discoveredSkills.forEach(sk => {
+            const b = document.createElement('span');
+            b.className = 'lc-ctx-pill';
+            b.title = sk.description || sk.path || '';
+            b.textContent = `🧩 ${sk.name} (${sk.scope || sk.source || 'skill'})`;
+            els.discoveredSkillsList.append(b);
+          });
+        }
+      }
+      if (els?.input && els.input.value.startsWith('/') && !els.slashPopover?.hidden) {
+        updateSlashPopover(true);
+      }
+    } catch {}
+    return slashCommands;
   }
   let messageEndSettleTimer = null;
   let streamTurn = {
@@ -213,36 +333,39 @@
 
   function estimateSessionTokens(messagesList, summarySessionTokens = null) {
     const msgs = Array.isArray(messagesList) ? messagesList : [];
-    if (!msgs.length) return 0;
-    if (typeof summarySessionTokens === 'number' && summarySessionTokens > 0) {
-      return summarySessionTokens;
-    }
-    let totalChars = 0;
-    let latestUsageTok = 0;
+    if (!msgs.length && (!summarySessionTokens || summarySessionTokens <= 0)) return 0;
+    let latestReported = 0;
+    let trailingChars = 0;
     msgs.forEach(m => {
       if (!m || typeof m !== 'object') return;
-      const u = m.usage;
-      const uTok = u && typeof u === 'object' ? Number(u.totalTokens || u.total_tokens || 0) : 0;
-      if (uTok > 0) {
-        latestUsageTok = uTok;
-        totalChars = 0;
-      } else {
-        const norm = normalizeRawMessage(m);
-        totalChars += String(norm.text || '').length + String(norm.thinking || '').length;
-        if (Array.isArray(norm.toolCalls)) {
-          norm.toolCalls.forEach(tc => {
-            totalChars += String(tc.result || '').length + safeText(tc.arguments || '').length;
-          });
+      const usage = m.usage;
+      if (usage && typeof usage === 'object') {
+        const rep = Number(usage.totalTokens || ((Number(usage.input || 0) + Number(usage.output || 0) + Number(usage.cacheRead || 0) + Number(usage.cacheWrite || 0)))) || 0;
+        if (rep > 0) {
+          latestReported = rep;
+          trailingChars = 0;
+          return;
         }
       }
+      const norm = normalizeRawMessage(m);
+      trailingChars += String(norm.text || '').length + String(norm.thinking || '').length;
+      if (Array.isArray(norm.toolCalls)) {
+        norm.toolCalls.forEach(tc => {
+          trailingChars += String(tc.result || '').length + safeText(tc.arguments || '').length;
+        });
+      }
     });
-    return latestUsageTok + (totalChars > 0 ? Math.max(1, Math.ceil(totalChars / 4)) : 0);
+    const computed = latestReported + (trailingChars > 0 ? Math.max(1, Math.floor(trailingChars / 4)) : 0);
+    if (typeof summarySessionTokens === 'number' && summarySessionTokens > computed) {
+      return summarySessionTokens;
+    }
+    return computed;
   }
 
   function updateTokenBadgeDisplay() {
     if (!els.tokenBadge) return;
     const msgs = Array.isArray(state.messages) ? state.messages : [];
-    const msgCount = msgs.length;
+    const msgCount = Math.max(msgs.length, Number(state.totalHistoryMessages || 0));
     const estTok = msgCount === 0 ? 0 : (state.contextUsage?.estimatedTokens || estimateSessionTokens(msgs));
     els.tokenBadge.textContent = `${msgCount} msgs · ${estTok > 0 ? '~' + estTok.toLocaleString() : '0'} tok`;
   }
@@ -498,6 +621,10 @@
               name: String(item.toolName || 'result'),
               result: safeText(item.content ?? item.text),
               isError: Boolean(item.isError),
+              truncated: Boolean(item.truncated || rawMsg.truncated),
+              fullLength: Number(item.fullLength || rawMsg.fullLength || 0),
+              msgIndex: item.msgIndex ?? rawMsg.msgIndex ?? rawMsg._msgIndex,
+              toolIndex: item.toolIndex ?? 0,
             });
           } else if (typeof item.text === 'string') {
             textParts.push(item.text);
@@ -544,6 +671,9 @@
       toolCalls: toolCalls.length ? toolCalls : (Array.isArray(rawMsg.tools) ? rawMsg.tools : []),
       subagents,
       context: parsedContext,
+      _msgIndex: rawMsg._msgIndex ?? rawMsg.msgIndex,
+      truncated: Boolean(rawMsg.truncated),
+      fullLength: Number(rawMsg.fullLength || 0),
     };
   }
 
@@ -599,10 +729,24 @@
     }
   }
 
+  function isSelectionInsideChatDrawer() {
+    try {
+      const activeEl = document.activeElement;
+      if (activeEl && (drawer.contains(activeEl) || fab.contains(activeEl))) return true;
+      const sel = window.getSelection?.();
+      if (!sel || sel.rangeCount === 0) return false;
+      const anchor = sel.anchorNode;
+      const focus = sel.focusNode;
+      if (anchor && (drawer.contains(anchor) || fab.contains(anchor))) return true;
+      if (focus && (drawer.contains(focus) || fab.contains(focus))) return true;
+    } catch {}
+    return false;
+  }
+
   // --- Capture Live Lantern Context ---
   function captureContext() {
     const rawKind = document.body?.dataset?.lanternChatKind || 'files';
-    const mdPath = document.body?.dataset?.lanternChatPath || '';
+    let activePath = String(document.body?.dataset?.lanternChatPath || '').replace(/^\/+/, '');
     const folder = typeof window.currentPath === 'function'
       ? String(window.currentPath() || '').replace(/^\/+/, '')
       : String(window.APP?.currentPath || '').replace(/^\/+/, '');
@@ -612,7 +756,7 @@
     let endLine = null;
     let selectedText = '';
 
-    if (rawKind === 'markdown' && mdPath) {
+    if (rawKind === 'markdown' && activePath) {
       const rawMode = window.__lanternMdVisual?.state?.mode || (window.__lanternMdPaged ? 'paged' : 'preview');
       markdownMode = rawMode === 'paged' ? 'visual' : rawMode;
       if (window.LanternAnchorBridge && typeof window.LanternAnchorBridge.capture === 'function') {
@@ -635,50 +779,93 @@
       }
       if (!selectedText) {
         try {
-          const activeEl = document.activeElement;
-          const insideDrawer = activeEl && drawer.contains(activeEl);
-          if (!insideDrawer) {
+          if (!isSelectionInsideChatDrawer()) {
             selectedText = String(window.getSelection?.()?.toString() || '').trim();
           }
         } catch {}
       }
-      if (selectedText && selectedText.trim().length < 2) {
-        selectedText = '';
+    } else if (rawKind === 'file' && activePath) {
+      const editArea = document.getElementById('editarea');
+      if (editArea && typeof editArea.value === 'string') {
+        const startPos = Number(editArea.selectionStart || 0);
+        const endPos = Number(editArea.selectionEnd || 0);
+        line = editArea.value.slice(0, startPos).split('\n').length;
+        if (endPos > startPos) {
+          selectedText = editArea.value.slice(startPos, endPos);
+          endLine = editArea.value.slice(0, endPos).split('\n').length;
+        }
       }
-      if (selectedText) {
-        state.cachedSelection = selectedText;
-        if (line) state.cachedSelectionLine = line;
-        if (endLine) state.cachedSelectionEndLine = endLine;
-      } else if (!state.dismissedSelection && state.cachedSelection && state.cachedSelection.trim().length >= 2) {
-        selectedText = state.cachedSelection;
-        if (!line && state.cachedSelectionLine) line = state.cachedSelectionLine;
-        if (!endLine && state.cachedSelectionEndLine) endLine = state.cachedSelectionEndLine;
+      if (!selectedText && !isSelectionInsideChatDrawer()) {
+        try {
+          selectedText = String(window.getSelection?.()?.toString() || '').trim();
+          const textPre = document.querySelector('pre.text-preview');
+          if (selectedText && textPre && textPre.textContent) {
+            const idx = textPre.textContent.indexOf(selectedText);
+            if (idx >= 0) {
+              line = textPre.textContent.slice(0, idx).split('\n').length;
+            }
+          }
+        } catch {}
       }
     } else {
       addAttachmentsFromSelection();
+      if (!isSelectionInsideChatDrawer()) {
+        try {
+          selectedText = String(window.getSelection?.()?.toString() || '').trim();
+        } catch {}
+      }
     }
 
-    const attachments = loadAttachments().filter(item => !state.dismissedPaths.has(item.path));
-    const paths = attachmentPaths();
-    const kind = (rawKind === 'markdown' && mdPath) ? 'markdown' : 'folder';
+    if (selectedText && selectedText.trim().length < 2) {
+      selectedText = '';
+    }
+    if (selectedText) {
+      state.cachedSelection = selectedText;
+      if (line) state.cachedSelectionLine = line;
+      if (endLine) state.cachedSelectionEndLine = endLine;
+    } else if (!state.dismissedSelection && state.cachedSelection && state.cachedSelection.trim().length >= 2) {
+      selectedText = state.cachedSelection;
+      if (!line && state.cachedSelectionLine) line = state.cachedSelectionLine;
+      if (!endLine && state.cachedSelectionEndLine) endLine = state.cachedSelectionEndLine;
+    }
+
+    const rawAttachments = loadAttachments().filter(item => !state.dismissedPaths.has(item.path));
+    // v7.7 fix: On folder view (rawKind === 'files'), selected files MUST stay in `attachments`
+    // so their attachment chips (📎/🖼️) always render on the chat context bar!
+    // Only deduplicate against `activePath` when viewing a standalone file or markdown document.
+    const isStandaloneDoc = (rawKind === 'markdown' || rawKind === 'file') && Boolean(activePath);
+    if (!isStandaloneDoc) {
+      activePath = '';
+    }
+    const normActive = isStandaloneDoc ? activePath.replace(/^\/+/, '') : '';
+    const attachments = normActive
+      ? rawAttachments.filter(item => String(item.path || '').replace(/^\/+/, '') !== normActive)
+      : rawAttachments;
+    const paths = rawAttachments.map(item => item.path);
+    const kind = (rawKind === 'markdown' && activePath)
+      ? 'markdown'
+      : ((rawKind === 'file' && activePath) ? 'file' : 'folder');
 
     if (IS_STANDALONE_CHAT && state.remoteContext && typeof state.remoteContext === 'object') {
       return {
         kind: state.remoteContext.kind || kind,
-        path: state.remoteContext.path || mdPath || null,
+        path: state.remoteContext.path || activePath || null,
         folder: state.remoteContext.folder || folderPath || '/',
         markdownMode: state.remoteContext.markdownMode || markdownMode,
         line: state.remoteContext.line ?? line,
         endLine: state.remoteContext.endLine ?? endLine,
         selectedText: state.remoteContext.selectedText || (state.dismissedSelection ? '' : selectedText.slice(0, 2400)),
         attachments,
-        attachmentPaths,
+        attachmentPaths: paths,
       };
     }
+    const resolvedFolder = (folder && folder !== activePath)
+      ? folder
+      : (activePath.includes('/') ? activePath.split('/').slice(0, -1).join('/') : '');
     const capturedObj = {
       kind,
-      path: mdPath || '',
-      folder: folder || (mdPath.includes('/') ? mdPath.split('/').slice(0, -1).join('/') : ''),
+      path: activePath || '',
+      folder: resolvedFolder,
       markdownMode,
       line,
       endLine,
@@ -794,6 +981,7 @@
     <div class="lc-context-bar" id="lcContextBar"></div>
     <div id="lanternChatAttachments" hidden></div>
     <div class="lc-composer">
+      <button type="button" class="lc-scroll-bottom-btn" id="lcScrollBottomBtn" title="Scroll to bottom" aria-label="Scroll to bottom" hidden>↓</button>
       <div class="lc-input-resizer" id="lcInputResizer" title="Drag up or down to resize prompt box"><span></span></div>
       <div class="lc-slash-popover" id="lcSlashPopover" hidden></div>
       <div class="lc-activity-ticker" id="lcActivityTicker" hidden>
@@ -877,10 +1065,11 @@
           <button type="button" class="lc-send-btn" id="lcSavePrefsBtn" style="align-self:flex-start;margin-top:4px">💾 Save Prompt & Skills</button>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:1px solid var(--lc-border)">
-          <span style="font-size:12px;font-weight:700">📄 Session Actions</span>
+          <span style="font-size:12px;font-weight:700">📄 Session &amp; Runtime Actions</span>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button type="button" class="lc-diff-btn accept" id="lcExportFullBtn">⤓ Export Full Unabbreviated HTML</button>
             <button type="button" class="lc-diff-btn" id="lcCompactNowBtn">🗜 Compact Context Now</button>
+            <button type="button" class="lc-diff-btn" id="lcResetBotBtn" style="border-color:#f59e0b;color:#fcd34d" title="Force-restart Lanbot process and clear stuck turn locks without restarting the server (/reset-bot)">🔄 Reset Lanbot</button>
           </div>
         </div>
         <div id="lcAuthBox" style="display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:1px solid var(--lc-border)">
@@ -905,6 +1094,37 @@
       </div>
       <pre id="lcTranscriptModalBody" style="flex:1;margin:0;padding:10px;border-radius:8px;background:#06090f;border:1px solid var(--lc-border);overflow:auto;font:11.5px/1.45 var(--lc-font-mono);white-space:pre-wrap"></pre>
     </div>
+
+    <!-- Fork Checkpoint Picker Modal (v7.5) -->
+    <div class="lc-overlay-modal" id="lcForkModal" hidden>
+      <div class="lc-modal-head">
+        <span id="lcForkModalTitle">⑂ Fork Conversation at Checkpoint</span>
+        <button type="button" class="lc-icon-btn" data-close-modal="lcForkModal">✕</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <input type="text" class="lc-input" id="lcForkNameInput" style="min-height:32px;max-height:32px;flex:1" placeholder="Optional name for forked session (e.g. Tab 2 - File B)…" />
+        <button type="button" class="lc-send-btn" id="lcForkFullBtn" style="height:32px;padding:0 10px;font-size:11.5px;white-space:nowrap">⑂ Fork Latest</button>
+      </div>
+      <div style="font-size:11px;color:var(--lc-muted);margin-bottom:4px">Or click any turn below to fork right after that step (e.g. right after loading a workflow):</div>
+      <div class="lc-model-list" id="lcForkTurnList"></div>
+    </div>
+
+    <!-- Workspace Folder Attach Picker Modal (v7.5: Defaults to Current Active Folder A) -->
+    <div class="lc-overlay-modal" id="lcAttachModal" hidden>
+      <div class="lc-modal-head">
+        <span id="lcAttachModalTitle">📎 Attach Files from Folder</span>
+        <div style="display:flex;gap:5px;align-items:center">
+          <button type="button" class="lc-icon-btn" id="lcAttachUpBtn" title="Go to parent folder">⬆️ Up</button>
+          <button type="button" class="lc-icon-btn" id="lcAttachOsBtn" title="Upload external file from your computer">💻 PC File…</button>
+          <button type="button" class="lc-icon-btn" data-close-modal="lcAttachModal">✕</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <span id="lcAttachFolderLabel" style="font:700 11px/1.3 var(--lc-font-mono);color:#68e37a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:48%">/</span>
+        <input type="search" class="lc-input" id="lcAttachSearch" style="min-height:30px;max-height:30px;flex:1" placeholder="Filter files in this folder…" />
+      </div>
+      <div class="lc-model-list" id="lcAttachFileList"></div>
+    </div>
   `;
 
   document.body.append(fab, drawer);
@@ -927,6 +1147,7 @@
     tokenBadge: drawer.querySelector('#lcTokenBadge'),
     transcript: drawer.querySelector('#lcTranscript'),
     contextBar: drawer.querySelector('#lcContextBar'),
+    scrollBottomBtn: drawer.querySelector('#lcScrollBottomBtn'),
     slashPopover: drawer.querySelector('#lcSlashPopover'),
     fileInput: drawer.querySelector('#lcFileInput'),
     input: drawer.querySelector('#lcInput'),
@@ -949,6 +1170,7 @@
     yamlPolicySummary: drawer.querySelector('#lcYamlPolicySummary'),
     exportFullBtn: drawer.querySelector('#lcExportFullBtn'),
     compactNowBtn: drawer.querySelector('#lcCompactNowBtn'),
+    resetBotBtn: drawer.querySelector('#lcResetBotBtn'),
     passwordInput: drawer.querySelector('#lcPasswordInput'),
     unlockBtn: drawer.querySelector('#lcUnlockBtn'),
     lockLanBtn: drawer.querySelector('#lcLockLanBtn'),
@@ -958,11 +1180,24 @@
     transcriptModalBody: drawer.querySelector('#lcTranscriptModalBody'),
     activityTicker: drawer.querySelector('#lcActivityTicker'),
     activityTickerText: drawer.querySelector('#lcActivityTickerText'),
+    activitySteerHint: drawer.querySelector('#lcActivitySteerHint'),
     customPromptInput: drawer.querySelector('#lcCustomPromptInput'),
     useGlobalSkillsCheck: drawer.querySelector('#lcUseGlobalSkillsCheck'),
     customSkillPathsInput: drawer.querySelector('#lcCustomSkillPathsInput'),
     discoveredSkillsList: drawer.querySelector('#lcDiscoveredSkillsList'),
     savePrefsBtn: drawer.querySelector('#lcSavePrefsBtn'),
+    forkModal: drawer.querySelector('#lcForkModal'),
+    forkModalTitle: drawer.querySelector('#lcForkModalTitle'),
+    forkNameInput: drawer.querySelector('#lcForkNameInput'),
+    forkFullBtn: drawer.querySelector('#lcForkFullBtn'),
+    forkTurnList: drawer.querySelector('#lcForkTurnList'),
+    attachModal: drawer.querySelector('#lcAttachModal'),
+    attachModalTitle: drawer.querySelector('#lcAttachModalTitle'),
+    attachUpBtn: drawer.querySelector('#lcAttachUpBtn'),
+    attachOsBtn: drawer.querySelector('#lcAttachOsBtn'),
+    attachFolderLabel: drawer.querySelector('#lcAttachFolderLabel'),
+    attachSearch: drawer.querySelector('#lcAttachSearch'),
+    attachFileList: drawer.querySelector('#lcAttachFileList'),
   };
 
   // --- Apply Layout & Split Push ---
@@ -1003,15 +1238,20 @@
     fab.dataset.busy = state.busy ? 'true' : 'false';
   }
 
-  function setActivityTicker(text = '') {
+  function setActivityTicker(text = '', showSteerHint = null) {
     if (!els.activityTicker || !els.activityTickerText) return;
     if (!text) {
       els.activityTicker.hidden = true;
       els.activityTickerText.textContent = '';
+      if (els.activitySteerHint) els.activitySteerHint.hidden = true;
       return;
     }
     els.activityTicker.hidden = false;
     els.activityTickerText.textContent = text;
+    if (els.activitySteerHint) {
+      const canSteer = showSteerHint !== null ? Boolean(showSteerHint) : Boolean(state.busy);
+      els.activitySteerHint.hidden = !canSteer;
+    }
   }
 
   function syncSendButtonState() {
@@ -1049,8 +1289,35 @@
     fab.dataset.busy = state.busy ? 'true' : 'false';
     syncSendButtonState();
     if (!state.streaming) {
+      drawer.querySelectorAll('.lc-msg.streaming').forEach(el => el.classList.remove('streaming'));
       streamingNode = null;
       streamingThinkingNode = null;
+    }
+    updateScrollBottomButton();
+  }
+
+  function syncAuthUi() {
+    const locked = Boolean(state.passwordRequired && !state.unlocked);
+    const localRow = drawer.querySelector('#lcLocalMasterLockRow');
+    if (localRow) {
+      localRow.style.display = state.isLocal ? 'flex' : 'none';
+    }
+    if (els.input) {
+      els.input.disabled = locked;
+      els.input.placeholder = locked
+        ? '🔒 Lanbot is locked by host — open Settings (⚙) to enter password…'
+        : 'Ask Lanbot, paste images (Ctrl+V), drop files, or type / for commands…';
+    }
+    if (els.sendBtn) els.sendBtn.disabled = locked || state.sendingImmediate;
+    if (els.modelBtn) els.modelBtn.disabled = locked;
+    if (els.sessionBtn) els.sessionBtn.disabled = locked;
+    if (els.newBtn) els.newBtn.disabled = locked;
+    if (els.attachBtn) els.attachBtn.disabled = locked;
+    if (locked) {
+      if (els.modelModal) els.modelModal.hidden = true;
+      if (els.sessionModal) els.sessionModal.hidden = true;
+      if (els.forkModal) els.forkModal.hidden = true;
+      if (els.attachModal) els.attachModal.hidden = true;
     }
   }
 
@@ -1089,7 +1356,7 @@
       applyLayout();
       if (prefs.open) {
         if (!wsConnected) connectWs();
-        else sendWs({ type: 'chat_sync' });
+        else sendSync();
         renderContextBar();
         setTimeout(() => els.input.focus(), 50);
       }
@@ -1135,36 +1402,129 @@
     window.addEventListener('pointerup', onUp);
   });
 
-  // Isolate Drawer Wheel Scroll from Outer Page (Item 5: never scroll host window)
+  // Isolate non-scrollable header/footer wheel events while letting .lc-transcript use native GPU smooth scrolling
   drawer.addEventListener('wheel', event => {
-    let el = event.target instanceof Element ? event.target : null;
-    let scrollable = null;
-    while (el && el !== drawer) {
-      const style = window.getComputedStyle(el);
-      const oy = style.overflowY;
-      if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
-        scrollable = el;
-        break;
-      }
-      el = el.parentElement;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    if (els.transcript && els.transcript.contains(target)) {
+      return; // .lc-transcript has overscroll-behavior: contain; never block native smooth wheel scroll
     }
-    if (!scrollable) {
-      event.preventDefault();
+    if (target.closest('.lc-model-list, .lc-slash-popover, .lc-input, .lc-context-bar, pre')) {
       return;
     }
-    const dy = event.deltaY;
-    const atTop = scrollable.scrollTop <= 0 && dy < 0;
-    const atBottom = (scrollable.scrollTop + scrollable.clientHeight >= scrollable.scrollHeight - 1) && dy > 0;
-    if (atTop || atBottom) {
-      event.preventDefault();
-    }
+    event.preventDefault();
   }, { passive: false });
 
-  // --- v4: Paste (Ctrl+V) & Drag-and-Drop Images/Files (OS + Lantern .card[data-rel]) ---
+  // --- v7.5: Workspace Folder File Picker defaulted to current folder A + OS Upload Fallback ---
+  let attachPickerFolder = '';
+  let attachPickerItems = [];
+
+  function renderAttachPickerList() {
+    if (!els.attachFileList) return;
+    els.attachFileList.textContent = '';
+    const q = String(els.attachSearch?.value || '').trim().toLowerCase();
+    const attachedSet = new Set(attachmentPaths());
+    const filtered = attachPickerItems.filter(it => !it.special && (!q || String(it.name || it.rel || '').toLowerCase().includes(q)));
+    if (!filtered.length) {
+      const empty = document.createElement('div');
+      empty.style.color = 'var(--lc-muted)';
+      empty.style.fontSize = '12px';
+      empty.style.padding = '8px';
+      empty.textContent = 'No matching files in this folder.';
+      els.attachFileList.appendChild(empty);
+      return;
+    }
+    filtered.forEach(item => {
+      const rel = String(item.rel || '').replace(/^\/+/, '');
+      const isDir = item.kind === 'dir' || Boolean(item.isDir);
+      const isAttached = attachedSet.has(rel);
+      const row = document.createElement('div');
+      row.className = 'lc-model-row' + (isAttached ? ' active' : '');
+      const left = document.createElement('div');
+      left.style.display = 'flex';
+      left.style.alignItems = 'center';
+      left.style.gap = '7px';
+      left.style.minWidth = '0';
+      left.style.flex = '1';
+      const icon = document.createElement('span');
+      icon.textContent = isDir ? '📁' : (inferIsImage(rel) ? '🖼️' : '📄');
+      const name = document.createElement('span');
+      name.style.fontWeight = '700';
+      name.style.overflow = 'hidden';
+      name.style.textOverflow = 'ellipsis';
+      name.style.whiteSpace = 'nowrap';
+      name.textContent = item.name || rel.split('/').pop() || rel;
+      left.append(icon, name);
+
+      const actionBtn = document.createElement('button');
+      actionBtn.type = 'button';
+      actionBtn.className = 'lc-diff-btn' + (isAttached ? ' accept' : '');
+      actionBtn.textContent = isDir ? 'Open ▸' : (isAttached ? '✓ Attached (×)' : '＋ Attach');
+      row.append(left, actionBtn);
+
+      row.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if (isDir) {
+          void openWorkspaceAttachModal(rel);
+          return;
+        }
+        if (attachedSet.has(rel)) {
+          state.dismissedPaths.add(rel);
+          saveAttachments(loadAttachments().filter(a => a.path !== rel));
+        } else {
+          state.dismissedPaths.delete(rel);
+          upsertAttachments([{
+            path: rel,
+            name: item.name || rel.split('/').pop() || rel,
+            isDir: false,
+            isImage: inferIsImage(rel),
+            source: 'folder-picker',
+          }]);
+        }
+        renderContextBar();
+        renderAttachPickerList();
+      });
+      els.attachFileList.appendChild(row);
+    });
+  }
+
+  async function openWorkspaceAttachModal(targetFolder = null) {
+    if (!els.attachModal) return;
+    const ctx = captureContext();
+    const initialFolder = targetFolder !== null
+      ? String(targetFolder || '').replace(/^\/+|\/+$/g, '')
+      : String(ctx.folder || (ctx.path && ctx.path.includes('/') ? ctx.path.split('/').slice(0, -1).join('/') : '')).replace(/^\/+|\/+$/g, '');
+    attachPickerFolder = initialFolder;
+    if (els.attachFolderLabel) {
+      els.attachFolderLabel.textContent = '📁 /' + (attachPickerFolder || '');
+      els.attachFolderLabel.title = '/' + (attachPickerFolder || '');
+    }
+    els.attachModal.hidden = false;
+    els.attachFileList.innerHTML = '<div style="padding:8px;color:var(--lc-muted);font-size:12px">Loading folder files…</div>';
+    try {
+      const resp = await fetch(`/api/list?path=${encodeURIComponent(attachPickerFolder)}&limit=300`, { cache: 'no-store', credentials: 'same-origin' });
+      const data = await resp.json();
+      attachPickerItems = Array.isArray(data?.items) ? data.items : [];
+      renderAttachPickerList();
+    } catch (err) {
+      els.attachFileList.innerHTML = `<div style="padding:8px;color:#fca5a5;font-size:12px">Could not list folder: ${err.message}</div>`;
+    }
+  }
+
   els.attachBtn.addEventListener('click', () => {
+    void openWorkspaceAttachModal(null);
+  });
+  els.attachUpBtn?.addEventListener('click', () => {
+    if (!attachPickerFolder) return;
+    const parent = attachPickerFolder.includes('/') ? attachPickerFolder.split('/').slice(0, -1).join('/') : '';
+    void openWorkspaceAttachModal(parent);
+  });
+  els.attachOsBtn?.addEventListener('click', () => {
+    els.attachModal.hidden = true;
     els.fileInput.value = '';
     els.fileInput.click();
   });
+  els.attachSearch?.addEventListener('input', renderAttachPickerList);
   els.fileInput.addEventListener('change', () => {
     if (els.fileInput.files && els.fileInput.files.length) {
       void uploadClientFiles(els.fileInput.files, 'picker');
@@ -1391,11 +1751,17 @@
           'Click to re-enable live draft sync before sending'
         );
       }
+    } else if (ctx.kind === 'file' && ctx.path) {
+      addChip(`📄 ${ctx.path.split('/').pop()}`, null, ctx.path);
+      if (ctx.folder) addChip(`📁 ${ctx.folder}`);
     } else if (ctx.folder) {
       addChip(`📁 ${ctx.folder}`);
     } else {
       addChip('📁 / (root)');
     }
+    addChip('＋ Attach file', null, `Pick sibling files in /${ctx.folder || ''} to attach`, {
+      onClick: () => { void openWorkspaceAttachModal(null); },
+    });
 
     if (ctx.selectedText) {
       addChip(
@@ -1448,8 +1814,7 @@
   }
 
   document.addEventListener('selectionchange', () => {
-    const activeEl = document.activeElement;
-    if (activeEl && drawer.contains(activeEl)) return;
+    if (isSelectionInsideChatDrawer()) return;
     try {
       const sel = String(window.getSelection?.()?.toString() || '').trim();
       if (sel && sel.length >= 2) {
@@ -1778,29 +2143,142 @@
     return out.join('');
   }
 
-  function populateMessageBodyAndActions(card, head, bodyEl, rawMarkdownText) {
-    const textVal = String(rawMarkdownText ?? '');
-    bodyEl.dataset.rawMd = textVal;
-    const isRaw = card.dataset.viewMode === 'raw';
-    if (isRaw) {
-      bodyEl.classList.add('is-raw');
-      bodyEl.textContent = textVal;
-    } else {
-      bodyEl.classList.remove('is-raw');
-      bodyEl.innerHTML = renderChatMarkdownHtml(textVal);
+  // Close any open per-message '...' dropdown when clicking outside
+  document.addEventListener('click', ev => {
+    drawer.querySelectorAll('.lc-msg-more-wrap.open').forEach(wrap => {
+      if (!wrap.contains(ev.target)) {
+        wrap.classList.remove('open');
+        const dd = wrap.querySelector('.lc-msg-dropdown');
+        if (dd) dd.hidden = true;
+      }
+    });
+  });
+
+  async function rerunAssistantTurn(turnIdx) {
+    if (state.busy) {
+      setStatus('Lanbot is currently busy. Stop the current turn before re-running.', 'warn');
+      return;
     }
+    const rawMsgs = Array.isArray(state.messages) ? state.messages : [];
+    let userIdx = -1;
+    let promptText = '';
+    for (let i = Math.min(turnIdx, rawMsgs.length - 1); i >= 0; i--) {
+      const norm = normalizeRawMessage(rawMsgs[i]);
+      if (norm.role === 'user' && norm.text) {
+        userIdx = typeof rawMsgs[i]._msgIndex === 'number' ? rawMsgs[i]._msgIndex : i;
+        promptText = norm.text;
+        break;
+      }
+    }
+    if (!promptText) {
+      setStatus('Could not find the user prompt for this response to re-run.', 'warn');
+      return;
+    }
+    state.sendingImmediate = true;
+    syncSendButtonState();
+    resetStreamTurn();
+
+    let ctxPayload = {};
+    let workHash = null;
+    if (prefs.autoContext) {
+      const captured = captureContext();
+      const prep = await prepareMarkdownTurn(captured);
+      if (prep.workHash) workHash = prep.workHash;
+      ctxPayload = {
+        kind: captured.kind,
+        path: captured.path,
+        folder: captured.folder,
+        markdownMode: captured.markdownMode,
+        line: captured.line,
+        selectedText: captured.selectedText,
+        attachments: captured.attachmentPaths,
+      };
+    }
+
+    // Trim local messages up to and including the user prompt being re-run
+    const localCutIdx = rawMsgs.findIndex((m, idx) => (typeof m._msgIndex === 'number' ? m._msgIndex === userIdx : idx === userIdx));
+    if (localCutIdx >= 0) {
+      state.messages = rawMsgs.slice(0, localCutIdx + 1);
+    }
+    isUserScrolledUp = false;
+    renderTranscript({ force: true, scrollToBottom: true });
+    setStreaming(true);
+    setActivityTicker('↻ Re-running prompt in Lanbot…', true);
+    setStatus('Re-running prompt…', 'info');
+    sendWs({
+      type: 'chat_rerun',
+      reqId: 'rerun-' + Date.now().toString(36),
+      turnIndex: userIdx,
+      message: promptText,
+      context: ctxPayload,
+      workHash,
+    });
+  }
+
+  function populateMessageBodyAndActions(card, head, bodyEl, rawMarkdownText, msgMeta = {}) {
+    const textVal = String(rawMarkdownText ?? '');
+    if (bodyEl) {
+      bodyEl.dataset.rawMd = textVal;
+      const isRaw = card.dataset.viewMode === 'raw';
+      if (isRaw) {
+        bodyEl.classList.add('is-raw');
+        bodyEl.textContent = textVal;
+      } else {
+        bodyEl.classList.remove('is-raw');
+        bodyEl.innerHTML = renderChatMarkdownHtml(textVal);
+      }
+    }
+
+    const role = msgMeta.role || (card.classList.contains('user') ? 'user' : 'assistant');
+    const turnIdx = typeof msgMeta.turnIndex === 'number' ? msgMeta.turnIndex : -1;
 
     let actions = head.querySelector('.lc-msg-actions');
     if (!actions) {
       actions = document.createElement('div');
       actions.className = 'lc-msg-actions';
 
+      const moreWrap = document.createElement('div');
+      moreWrap.className = 'lc-msg-more-wrap';
+
+      const moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.className = 'lc-msg-more-btn';
+      moreBtn.textContent = '⋯';
+      moreBtn.title = 'Message actions (Raw, Copy, Fork, Re-run)';
+
+      const dropdown = document.createElement('div');
+      dropdown.className = 'lc-msg-dropdown';
+      dropdown.hidden = true;
+
+      const closeDropdown = () => {
+        moreWrap.classList.remove('open');
+        dropdown.hidden = true;
+      };
+
+      moreBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        const isOpen = !dropdown.hidden;
+        drawer.querySelectorAll('.lc-msg-more-wrap.open').forEach(w => {
+          w.classList.remove('open');
+          const d = w.querySelector('.lc-msg-dropdown');
+          if (d) d.hidden = true;
+        });
+        if (!isOpen) {
+          moreWrap.classList.add('open');
+          dropdown.hidden = false;
+        }
+      });
+
+      const isRawInit = card.dataset.viewMode === 'raw';
       const toggleBtn = document.createElement('button');
       toggleBtn.type = 'button';
-      toggleBtn.className = 'lc-msg-action-btn lc-msg-toggle-btn';
-      toggleBtn.textContent = isRaw ? '👁 Preview' : '📝 Raw';
+      toggleBtn.className = 'lc-msg-dropdown-item lc-msg-toggle-btn';
+      toggleBtn.textContent = isRawInit ? '👁 Preview' : '📝 Raw';
       toggleBtn.title = 'Toggle between rendered Markdown Preview and Raw .md source';
-      toggleBtn.addEventListener('click', () => {
+      toggleBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        closeDropdown();
+        if (!bodyEl) return;
         const nextRaw = card.dataset.viewMode !== 'raw';
         card.dataset.viewMode = nextRaw ? 'raw' : 'preview';
         toggleBtn.textContent = nextRaw ? '👁 Preview' : '📝 Raw';
@@ -1816,17 +2294,55 @@
 
       const copyBtn = document.createElement('button');
       copyBtn.type = 'button';
-      copyBtn.className = 'lc-msg-action-btn lc-msg-copy-btn';
+      copyBtn.className = 'lc-msg-dropdown-item lc-msg-copy-btn';
       copyBtn.textContent = '📋 Copy';
-      copyBtn.title = 'Copy response Markdown to clipboard';
-      copyBtn.addEventListener('click', async () => {
-        const latestText = bodyEl.dataset.rawMd || '';
+      copyBtn.title = 'Copy message Markdown to clipboard';
+      copyBtn.addEventListener('click', async ev => {
+        ev.stopPropagation();
+        const latestText = bodyEl ? (bodyEl.dataset.rawMd || '') : textVal;
         const ok = await copyTextToClipboard(latestText);
         copyBtn.textContent = ok ? '✓ Copied!' : '⚠️ Failed';
-        setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 1500);
+        setTimeout(() => {
+          copyBtn.textContent = '📋 Copy';
+          closeDropdown();
+        }, 700);
       });
 
-      actions.append(toggleBtn, copyBtn);
+      const forkItemBtn = document.createElement('button');
+      forkItemBtn.type = 'button';
+      forkItemBtn.className = 'lc-msg-dropdown-item lc-msg-fork-btn';
+      forkItemBtn.textContent = '⑂ Fork';
+      forkItemBtn.title = 'Fork conversation directly from this message into a new branch';
+      forkItemBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        closeDropdown();
+        const upto = turnIdx >= 0 ? turnIdx : undefined;
+        setStatus(`Forking conversation from message #${(turnIdx >= 0 ? turnIdx : 0) + 1}…`, 'info');
+        sendWs({
+          type: 'chat_fork',
+          uptoIndex: upto,
+        });
+      });
+
+      dropdown.append(toggleBtn, copyBtn, forkItemBtn);
+
+      // v7.7: Re-run button ONLY on ASSISTANT messages (USER messages do not need Re-run)
+      if (role === 'assistant') {
+        const rerunBtn = document.createElement('button');
+        rerunBtn.type = 'button';
+        rerunBtn.className = 'lc-msg-dropdown-item lc-msg-rerun-btn';
+        rerunBtn.textContent = '↻ Re-run';
+        rerunBtn.title = 'Re-run the prompt that generated this assistant response';
+        rerunBtn.addEventListener('click', ev => {
+          ev.stopPropagation();
+          closeDropdown();
+          void rerunAssistantTurn(turnIdx >= 0 ? turnIdx : (state.messages.length - 1));
+        });
+        dropdown.append(rerunBtn);
+      }
+
+      moreWrap.append(moreBtn, dropdown);
+      actions.append(moreWrap);
       head.append(actions);
     }
   }
@@ -1839,8 +2355,8 @@
       m.role,
       m.text,
       m.thinking,
-      (m.toolCalls || []).map(t => [t.name, t.result !== undefined ? 1 : 0, t.isError ? 1 : 0]),
-    ])) + '|' + mdPathCheck + '|' + state.greeting;
+      (m.toolCalls || []).map(t => [t.name, t.result !== undefined ? 1 : 0, t.isError ? 1 : 0, t.truncated ? 1 : 0]),
+    ])) + '|' + mdPathCheck + '|' + state.greeting + '|' + Boolean(state.hasMoreOlder) + '|' + Number(state.oldestLoadedIndex || 0);
     if (!options.force && els.transcript.childElementCount > 0 && fp === lastTranscriptFingerprint && !state.streaming) {
       return;
     }
@@ -1854,7 +2370,11 @@
     activeToolRows.clear();
 
     const rawNormalized = (Array.isArray(state.messages) ? state.messages : [])
-      .map(normalizeRawMessage);
+      .map((m, idx) => {
+        const norm = normalizeRawMessage(m);
+        norm._rawIdx = typeof m?._msgIndex === 'number' ? m._msgIndex : idx;
+        return norm;
+      });
     const normalizedList = [];
     rawNormalized.forEach(m => {
       if (m.role === 'system' && !m.text) return;
@@ -1864,8 +2384,17 @@
           if (m.toolCalls && m.toolCalls.length) {
             prev.toolCalls = [...(prev.toolCalls || []), ...m.toolCalls];
           } else if (m.text) {
-            prev.toolCalls = [...(prev.toolCalls || []), { id: '', name: 'result', result: m.text }];
+            prev.toolCalls = [...(prev.toolCalls || []), {
+              id: '',
+              name: 'result',
+              result: m.text,
+              truncated: Boolean(m.truncated),
+              fullLength: Number(m.fullLength || 0),
+              msgIndex: m._rawIdx,
+              toolIndex: 0,
+            }];
           }
+          prev._turnIdx = m._rawIdx;
         }
         return;
       }
@@ -1882,11 +2411,12 @@
           if (m.text && m.text !== prev.text) {
             prev.text = prev.text ? `${prev.text}\n\n${m.text}` : m.text;
           }
+          prev._turnIdx = m._rawIdx;
           return;
         }
         m.role = 'assistant';
       }
-      normalizedList.push({ ...m });
+      normalizedList.push({ ...m, _turnIdx: m._rawIdx });
     });
 
     if (!normalizedList.length) {
@@ -1897,12 +2427,29 @@
       return;
     }
 
-    normalizedList.forEach(msg => {
+    // v7.7 + v7.91: Lazy-load older messages on scroll-up or button click
+    if (state.hasMoreOlder && state.oldestLoadedIndex > 0) {
+      const loadOlderBtn = document.createElement('button');
+      loadOlderBtn.type = 'button';
+      loadOlderBtn.className = 'lc-load-older-btn';
+      const remainingCount = state.oldestLoadedIndex;
+      loadOlderBtn.disabled = Boolean(state.loadingOlderHistory);
+      loadOlderBtn.textContent = state.loadingOlderHistory
+        ? '⏳ Đang tải tin nhắn cũ hơn…'
+        : `⬆️ Tải thêm (${remainingCount} tin nhắn cũ hơn)`;
+      loadOlderBtn.addEventListener('click', () => {
+        triggerLazyLoadOlderHistory();
+      });
+      els.transcript.append(loadOlderBtn);
+    }
+
+    normalizedList.forEach((msg, listIdx) => {
+      const turnIdx = typeof msg._turnIdx === 'number' ? msg._turnIdx : listIdx;
       const card = document.createElement('article');
       card.className = `lc-msg ${msg.role === 'user' ? 'user' : 'assistant'}`;
+      card.dataset.turnIndex = String(turnIdx);
       const head = document.createElement('div');
       head.className = 'lc-msg-head';
-      head.innerHTML = `<span>${msg.role === 'user' ? '👤 You' : '🏮 Lanbot'}</span>`;
       card.append(head);
 
       if (msg.thinking) {
@@ -1923,10 +2470,54 @@
         sum.textContent = `⚡ ${msg.toolCalls.length} tool call(s): ${msg.toolCalls.map(t => t.name).join(', ')}`;
         const pre = document.createElement('pre');
         pre.textContent = msg.toolCalls.map(t => {
-          if (t.result !== undefined) return `[${t.name}] -> ${safeText(t.result).slice(0, 600)}`;
+          if (t.result !== undefined) {
+            const limit = t.truncated ? 1400 : 1200;
+            return `[${t.name}] -> ${safeText(t.result).slice(0, limit)}`;
+          }
           return `${t.name}(${safeText(t.arguments)})`;
         }).join('\n\n');
         toolDetails.append(sum, pre);
+
+        // v7.7: On-demand full tool output button for large truncated tool results
+        msg.toolCalls.forEach((t, tIdx) => {
+          if (t && t.truncated) {
+            const fullBtn = document.createElement('button');
+            fullBtn.type = 'button';
+            fullBtn.className = 'lc-tool-load-full-btn';
+            const kb = t.fullLength ? `${(t.fullLength / 1024).toFixed(1)} KB` : 'full';
+            fullBtn.textContent = `📥 Xem đầy đủ kết quả tool (${t.name || 'tool'} · ${kb})`;
+            fullBtn.addEventListener('click', async ev => {
+              ev.stopPropagation();
+              fullBtn.disabled = true;
+              fullBtn.textContent = '⏳ Đang tải kết quả đầy đủ…';
+              const targetMsgIdx = typeof t.msgIndex === 'number' ? t.msgIndex : turnIdx;
+              const targetToolIdx = typeof t.toolIndex === 'number' ? t.toolIndex : tIdx;
+              try {
+                const resp = await fetch(
+                  `/api/chatbot/tool-output?msgIndex=${encodeURIComponent(targetMsgIdx)}&toolIndex=${encodeURIComponent(targetToolIdx)}&clientSessionId=${encodeURIComponent(state.clientSessionId || '')}`,
+                  { credentials: 'same-origin' }
+                );
+                const data = await resp.json();
+                if (data && data.ok && typeof data.content === 'string') {
+                  t.result = data.content;
+                  t.truncated = false;
+                  pre.textContent = msg.toolCalls.map(tc => {
+                    if (tc.result !== undefined) return `[${tc.name}] -> ${safeText(tc.result)}`;
+                    return `${tc.name}(${safeText(tc.arguments)})`;
+                  }).join('\n\n');
+                  fullBtn.remove();
+                } else {
+                  throw new Error(data?.error || 'Failed to load tool output');
+                }
+              } catch (err) {
+                fullBtn.disabled = false;
+                fullBtn.textContent = `⚠️ Lỗi tải (${err.message || 'thử lại'})`;
+              }
+            });
+            toolDetails.append(fullBtn);
+          }
+        });
+
         card.append(toolDetails);
       }
 
@@ -1937,8 +2528,10 @@
       if (cleanedText) {
         const body = document.createElement('div');
         body.className = 'lc-msg-body';
-        populateMessageBodyAndActions(card, head, body, cleanedText);
+        populateMessageBodyAndActions(card, head, body, cleanedText, { role: msg.role, turnIndex: turnIdx });
         card.append(body);
+      } else {
+        populateMessageBodyAndActions(card, head, null, '', { role: msg.role, turnIndex: turnIdx });
       }
 
       if (allSubagents.length) {
@@ -2023,21 +2616,30 @@
     }
     if (snap.isNew) {
       state.messages = [];
+      state.hasMoreOlder = false;
+      state.oldestLoadedIndex = 0;
+      state.totalHistoryMessages = 0;
+    }
+    if (typeof snap.summary?.messageCount === 'number' && snap.summary.messageCount >= 0) {
+      state.totalHistoryMessages = snap.summary.messageCount;
     }
     state.contextUsage = {
-      messageCount: Array.isArray(state.messages) ? state.messages.length : 0,
+      messageCount: Math.max(Array.isArray(state.messages) ? state.messages.length : 0, Number(state.totalHistoryMessages || 0)),
       estimatedTokens: snap.isNew ? 0 : estimateSessionTokens(state.messages, snap.summary?.sessionTokens),
     };
     if (Array.isArray(snap.sessions)) state.sessions = snap.sessions;
+    if (typeof snap.summary?.sessionName === 'string') state.sessionName = snap.summary.sessionName;
     if (snap.sessionName) state.sessionName = snap.sessionName;
 
     els.sessionTitle.textContent = state.sessionName || (state.sessionId ? `Session #${String(state.sessionId).slice(0, 6)}` : 'New chat');
     const curModel = state.model;
     if (curModel && (curModel.id || curModel.name)) {
       els.providerSpan.textContent = curModel.provider || 'auto';
+      els.providerSpan.hidden = !curModel.provider;
       els.modelSpan.textContent = curModel.name || curModel.id || 'model';
     } else {
       els.providerSpan.textContent = 'auto';
+      els.providerSpan.hidden = true;
       els.modelSpan.textContent = 'Default model';
     }
 
@@ -2171,6 +2773,88 @@
     });
   }
 
+  // --- Fork Checkpoint Picker Modal & Session Rename Support (v7.5) ---
+  let forkTargetSessionPath = null;
+
+  function openForkCheckpointModal(sourceSession = null) {
+    if (!els.forkModal || !els.forkTurnList) {
+      sendWs({ type: 'chat_fork' });
+      return;
+    }
+    forkTargetSessionPath = sourceSession?.path || null;
+    const baseTitle = sourceSession?.label || sourceSession?.name || state.sessionName || state.sessionId || 'Current Session';
+    if (els.forkModalTitle) {
+      els.forkModalTitle.textContent = `⑂ Fork Checkpoint · ${String(baseTitle).slice(0, 32)}`;
+    }
+    if (els.forkNameInput) {
+      els.forkNameInput.value = '';
+    }
+    els.forkTurnList.textContent = '';
+    const msgs = (Array.isArray(state.messages) ? state.messages : []).map(normalizeRawMessage);
+    if (!msgs.length) {
+      const note = document.createElement('div');
+      note.style.padding = '8px';
+      note.style.fontSize = '12px';
+      note.style.color = 'var(--lc-muted)';
+      note.textContent = 'Click "⑂ Fork Latest" above to branch this session.';
+      els.forkTurnList.appendChild(note);
+    } else {
+      msgs.forEach((m, idx) => {
+        const row = document.createElement('div');
+        row.className = 'lc-model-row';
+        const left = document.createElement('div');
+        left.style.minWidth = '0';
+        left.style.flex = '1';
+        const head = document.createElement('div');
+        head.style.fontWeight = '750';
+        head.style.fontSize = '11.5px';
+        head.style.color = m.role === 'user' ? '#68e37a' : '#93c5fd';
+        head.textContent = `#${idx + 1} · ${m.role === 'user' ? '👤 You' : '🏮 Lanbot'}`;
+        const snip = document.createElement('div');
+        snip.style.fontSize = '11px';
+        snip.style.color = 'var(--lc-fg)';
+        snip.style.overflow = 'hidden';
+        snip.style.textOverflow = 'ellipsis';
+        snip.style.whiteSpace = 'nowrap';
+        const cleanTxt = String(m.text || '').replace(/\s+/g, ' ').trim();
+        snip.textContent = cleanTxt.slice(0, 90) || (m.toolCalls?.length ? `[${m.toolCalls.length} tool call(s)]` : '(turn)');
+        left.append(head, snip);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'lc-diff-btn accept';
+        btn.textContent = `⑂ Fork after #${idx + 1}`;
+        row.append(left, btn);
+        row.addEventListener('click', () => {
+          const customName = (els.forkNameInput?.value || '').trim();
+          els.forkModal.hidden = true;
+          els.sessionModal.hidden = true;
+          setStatus(`Forking conversation after turn #${idx + 1}…`, 'info');
+          sendWs({
+            type: 'chat_fork',
+            uptoIndex: idx,
+            sourceSessionPath: forkTargetSessionPath,
+            customName,
+          });
+        });
+        els.forkTurnList.appendChild(row);
+      });
+    }
+    els.forkModal.hidden = false;
+  }
+
+  els.forkFullBtn?.addEventListener('click', () => {
+    const customName = (els.forkNameInput?.value || '').trim();
+    els.forkModal.hidden = true;
+    els.sessionModal.hidden = true;
+    setStatus('Forking full session into a new branch…', 'info');
+    sendWs({
+      type: 'chat_fork',
+      sourceSessionPath: forkTargetSessionPath,
+      customName,
+    });
+  });
+
   // --- Render Sessions Modal ---
   function renderSessionList() {
     els.sessionList.textContent = '';
@@ -2200,6 +2884,13 @@
       nameSpan.style.whiteSpace = 'nowrap';
       nameSpan.textContent = s.label || s.name || s.id;
       title.append(nameSpan);
+      if (s.shared) {
+        const sharedBadge = document.createElement('span');
+        sharedBadge.className = 'lc-ctx-pill';
+        sharedBadge.style.color = '#38bdf8';
+        sharedBadge.textContent = '🌐 Shared';
+        title.append(sharedBadge);
+      }
       if (s.busy) {
         const busyBadge = document.createElement('span');
         busyBadge.className = 'lc-ctx-pill';
@@ -2217,27 +2908,140 @@
       sub.style.fontSize = '11px';
       sub.style.color = 'var(--lc-muted)';
       const countText = typeof s.messageCount === 'number' ? `${s.messageCount} msgs · ` : '';
-      sub.textContent = `${countText}${s.preview || s.updatedAt || s.id}`;
+      sub.textContent = `${countText}${s.updatedAt || s.id}`;
       left.append(title, sub);
-      row.append(left);
+
+      const rightBtns = document.createElement('div');
+      rightBtns.style.display = 'inline-flex';
+      rightBtns.style.gap = '4px';
+      rightBtns.style.flexShrink = '0';
+
+      // v7.8: 🌐 Share button ONLY on localhost and ONLY for localhost sessions (not [Lan]-... sessions)
+      if (state.isLocal && s.sessionScope !== 'lan') {
+        const rowShareBtn = document.createElement('button');
+        rowShareBtn.type = 'button';
+        rowShareBtn.className = 'lc-icon-btn' + (s.shared ? ' active' : '');
+        rowShareBtn.style.color = s.shared ? '#38bdf8' : '';
+        rowShareBtn.textContent = '🌐';
+        rowShareBtn.title = s.shared
+          ? 'Shared with LAN (click to stop sharing)'
+          : 'Share this localhost session with LAN';
+        rowShareBtn.addEventListener('click', ev => {
+          ev.stopPropagation();
+          sendWs({
+            type: 'chat_share_session',
+            sessionId: s.id,
+            sessionPath: s.path,
+            shared: !s.shared,
+          });
+        });
+        rightBtns.append(rowShareBtn);
+      }
+
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'lc-icon-btn';
+      renameBtn.textContent = '✏️';
+      renameBtn.title = 'Rename this session';
+      renameBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        const nextName = window.prompt('Rename session:', s.name || s.label || s.id);
+        if (nextName === null) return;
+        sendWs({
+          type: 'chat_rename_session',
+          sessionId: s.id,
+          sessionPath: s.path,
+          sessionScope: s.sessionScope || '',
+          name: nextName.trim(),
+        });
+      });
+
+      const rowForkBtn = document.createElement('button');
+      rowForkBtn.type = 'button';
+      rowForkBtn.className = 'lc-icon-btn';
+      rowForkBtn.textContent = '⑂';
+      rowForkBtn.title = 'Fork this session (or pick checkpoint)';
+      rowForkBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if (s.current) {
+          openForkCheckpointModal(s);
+        } else {
+          lastTranscriptFingerprint = '';
+          sendWs({
+            type: 'chat_switch_session',
+            sessionPath: s.path,
+            sessionId: s.id,
+            sessionScope: s.sessionScope || '',
+          });
+          setTimeout(() => openForkCheckpointModal(s), 220);
+        }
+      });
+
+      const rowDeleteBtn = document.createElement('button');
+      rowDeleteBtn.type = 'button';
+      rowDeleteBtn.className = 'lc-icon-btn';
+      rowDeleteBtn.style.color = '#f87171';
+      rowDeleteBtn.textContent = '🗑️';
+      rowDeleteBtn.title = 'Delete this session';
+      rowDeleteBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        const label = s.label || s.name || s.id;
+        if (!window.confirm(`Delete session "${label}"?`)) return;
+        sendWs({
+          type: 'chat_delete_session',
+          sessionId: s.id,
+          sessionPath: s.path,
+          sessionScope: s.sessionScope || '',
+        });
+      });
+
+      rightBtns.append(renameBtn, rowForkBtn, rowDeleteBtn);
+      row.append(left, rightBtns);
       row.addEventListener('click', () => {
+        if (s.id && s.id === state.sessionId && !s.busy) {
+          els.sessionModal.hidden = true;
+          return;
+        }
+        resetStreamTurn();
+        releaseMarkdownTurn();
+        activeToolRows.clear();
+        state.sendingImmediate = false;
+        setStreaming(Boolean(s.busy));
         lastTranscriptFingerprint = '';
         isUserScrolledUp = false;
-        sendWs({ type: 'chat_switch_session', sessionPath: s.path, sessionId: s.id });
+        state.sessionId = s.id || state.sessionId;
+        state.sessionName = s.label || s.name || s.id || '';
+        els.sessionTitle.textContent = state.sessionName || 'Chat';
         els.sessionModal.hidden = true;
-        setActivityTicker(`Switching to session ${s.label || s.id}…`);
+        state.messages = [];
+        els.transcript.textContent = '';
+        const loader = document.createElement('div');
+        loader.className = 'lc-msg system';
+        loader.textContent = `⏳ Loading ${s.label || s.id}…`;
+        els.transcript.append(loader);
+        sendWs({
+          type: 'chat_switch_session',
+          sessionPath: s.path,
+          sessionId: s.id,
+          sessionScope: s.sessionScope || '',
+          limit: 8,
+        });
+        setStatus(`Switched to ${s.label || s.id}.`, 'info');
       });
       els.sessionList.append(row);
     });
   }
 
   // --- Slash Command Autocomplete with ArrowUp/Down & Tab ---
-  function updateSlashPopover() {
+  function updateSlashPopover(skipRemoteRefresh = false) {
     const val = els.input.value;
     if (!val.startsWith('/') || val.includes('\n')) {
       els.slashPopover.hidden = true;
       slashFiltered = [];
       return;
+    }
+    if (!skipRemoteRefresh) {
+      void refreshSlashCommands(false);
     }
     const token = val.trim().split(/\s+/)[0].toLowerCase();
     slashFiltered = slashCommands.filter(c => c.command.toLowerCase().startsWith(token));
@@ -2250,9 +3054,13 @@
     slashFiltered.forEach((item, idx) => {
       const row = document.createElement('div');
       row.className = 'lc-slash-item' + (idx === slashIndex ? ' active' : '');
+      const isSkill = item.category === 'skill';
+      const badgeLabel = isSkill ? `skill · ${item.scope || 'workspace'}` : (item.category || 'core');
+      const badgeCls = isSkill ? 'lc-slash-scope' : 'lc-slash-scope is-builtin';
       row.innerHTML = `
-        <span class="lc-slash-cmd">${item.command}</span>
-        <span class="lc-slash-desc">${item.description || item.category || ''}</span>
+        <span class="lc-slash-cmd">${escapeHtml(item.command)}</span>
+        <span class="${badgeCls}">${escapeHtml(badgeLabel)}</span>
+        <span class="lc-slash-desc">${escapeHtml(item.description || item.category || '')}</span>
       `;
       row.addEventListener('mousedown', ev => {
         ev.preventDefault();
@@ -2304,6 +3112,12 @@
       setTimeout(() => els.modelSearch.focus(), 40);
       return true;
     }
+    if (lower === '/reset-bot') {
+      els.input.value = '';
+      els.slashPopover.hidden = true;
+      triggerResetBotRuntime();
+      return true;
+    }
     if (lower === '/new' || lower === '/reset') {
       els.input.value = '';
       els.slashPopover.hidden = true;
@@ -2321,8 +3135,11 @@
     if (lower === '/fork') {
       els.input.value = '';
       els.slashPopover.hidden = true;
-      setStatus('Forking conversation into a new branch…', 'info');
-      sendWs({ type: 'chat_fork' });
+      if (arg && /^\d+$/.test(arg)) {
+        sendWs({ type: 'chat_fork', uptoIndex: Math.max(0, Number(arg) - 1) });
+      } else {
+        openForkCheckpointModal(null);
+      }
       return true;
     }
     if (lower === '/session' || lower === '/sessions' || lower === '/resume') {
@@ -2388,17 +3205,37 @@
     sendWs({ type: 'chat_new', skipIfEmpty: false });
   }
 
-  // --- Send Prompt & Mid-Turn Steer Handler (Prev #1, #3) ---
+  function isPureAdminSlashCommand(rawText) {
+    const trimmed = String(rawText || '').trim();
+    if (!trimmed.startsWith('/')) return false;
+    const [cmd, ...rest] = trimmed.split(/\s+/);
+    const arg = rest.join(' ').trim().toLowerCase();
+    const lower = cmd.toLowerCase();
+    if ([
+      '/help', '/?', '/reset-bot', '/new', '/reset', '/compact', '/fork',
+      '/thinking', '/think', '/tools', '/tool', '/mode', '/model', '/models',
+      '/session', '/sessions', '/resume', '/settings', '/config', '/export', '/clear', '/harness',
+    ].includes(lower)) {
+      return true;
+    }
+    if ((lower === '/skills' || lower === '/skill') && !arg) return true;
+    if (lower === '/mcp' && (!arg || arg.startsWith('list') || arg.startsWith('status') || arg.startsWith('info'))) return true;
+    return false;
+  }
+
+  // --- Send Prompt & Mid-Turn Steer Handler (Prev #1, #3 + v7.9 Skill Context Support) ---
   async function handleSend() {
     const text = els.input.value.trim();
     if (!text) return;
     if (await executeLocalSlashIfMatched(text)) return;
 
+    const isAdminSlash = isPureAdminSlashCommand(text);
+    const includeCtx = !isAdminSlash && (prefs.autoContext || (Array.isArray(state.attachments) && state.attachments.length > 0));
+
     if (state.busy) {
       // Mid-turn steering: queue steer message while Lanbot is responding!
-      const isSlash = text.startsWith('/');
-      const captured = (!isSlash && prefs.autoContext) ? captureContext() : {};
-      const ctxPayload = (!isSlash && prefs.autoContext) ? {
+      const captured = includeCtx ? captureContext() : {};
+      const ctxPayload = includeCtx ? {
         kind: captured.kind,
         path: captured.path,
         folder: captured.folder,
@@ -2411,7 +3248,7 @@
       state.messages.push({
         role: 'user',
         text: `↳ [Steer] ${text}`,
-        context: (!isSlash && prefs.autoContext) ? { path: captured.path || captured.folder, line: captured.line } : null,
+        context: includeCtx ? { path: captured.path || captured.folder, line: captured.line } : null,
       });
       renderTranscript();
       els.input.value = '';
@@ -2433,12 +3270,11 @@
     syncSendButtonState();
     resetStreamTurn();
 
-    const isSlash = text.startsWith('/');
     let ctxPayload = {};
     let workHash = null;
     let uiCtx = null;
 
-    if (!isSlash && prefs.autoContext) {
+    if (includeCtx) {
       const captured = captureContext();
       const prep = await prepareMarkdownTurn(captured);
       if (prep.workHash) workHash = prep.workHash;
@@ -2466,19 +3302,27 @@
       context: uiCtx,
     });
     isUserScrolledUp = false;
+    updateScrollBottomButton();
     renderTranscript({ force: true, scrollToBottom: true });
 
     els.input.value = '';
     els.slashPopover.hidden = true;
-    setStreaming(true);
-    setActivityTicker('🚀 Sending prompt to Lanbot…');
-    setStatus('Sending to Lanbot…', 'info');
+    if (isAdminSlash) {
+      state.sendingImmediate = false;
+      syncSendButtonState();
+      setActivityTicker('');
+      setStatus('Executing command…', 'info');
+    } else {
+      setStreaming(true);
+      setActivityTicker('🚀 Sending prompt to Lanbot…');
+      setStatus('Sending to Lanbot…', 'info');
+    }
 
     sendWs({
       type: 'chat_prompt',
       reqId: 'chat-' + Date.now().toString(36),
       message: text,
-      context: isSlash ? {} : ctxPayload,
+      context: isAdminSlash ? {} : ctxPayload,
       workHash,
     });
   }
@@ -2565,13 +3409,75 @@
     sendWs({ type: 'chat_compact' });
     els.sessionModal.hidden = true;
   });
+  async function triggerResetBotRuntime() {
+    resetStreamTurn();
+    releaseMarkdownTurn();
+    activeToolRows.clear();
+    state.sendingImmediate = false;
+    setStreaming(false);
+    setActivityTicker('🔄 Resetting Lanbot runtime…', false);
+    setStatus('Resetting Lanbot runtime…', 'info');
+    els.settingsModal.hidden = true;
+
+    clearTimeout(resetBotTimer);
+    let settled = false;
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    resetBotTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { ctrl?.abort(); } catch {}
+      setActivityTicker('');
+      setStatus('⚠️ Reset Lanbot quá thời gian phản hồi (timeout 10s). Kiểm tra kết nối hoặc tiến trình Pi.', 'error');
+    }, 10000);
+
+    // Send via WebSocket if open, and also invoke independent HTTP POST /api/chatbot/reset
+    // so reset succeeds even if the WebSocket was dropped or blocked.
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendWs({ type: 'chat_reset_bot' });
+    }
+    try {
+      const resp = await fetch('/api/chatbot/reset', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientSessionId: state.clientSessionId }),
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (settled) return;
+      settled = true;
+      clearTimeout(resetBotTimer);
+      setActivityTicker('');
+      if (!resp.ok || data.ok === false) {
+        setStatus('⚠️ Reset Lanbot thất bại: ' + (data.error || `HTTP ${resp.status}`), 'error');
+        return;
+      }
+      applySnapshot({ ...data, isSwitch: true });
+      setStatus('✓ Lanbot runtime reset and ready.', 'info');
+      if (!wsConnected) {
+        reconnectAttempts = 0;
+        connectWs(true);
+      } else {
+        sendWs({ type: 'chat_load_history', limit: 24 });
+      }
+    } catch (err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(resetBotTimer);
+      setActivityTicker('');
+      setStatus('⚠️ Không thể reset Lanbot (mất kết nối hoặc timeout): ' + (err?.message || err), 'error');
+    }
+  }
+
   els.compactNowBtn.addEventListener('click', () => {
     sendWs({ type: 'chat_compact' });
     els.settingsModal.hidden = true;
   });
+  els.resetBotBtn?.addEventListener('click', () => {
+    triggerResetBotRuntime();
+  });
   els.forkBtn.addEventListener('click', () => {
-    sendWs({ type: 'chat_fork' });
-    els.sessionModal.hidden = true;
+    openForkCheckpointModal(null);
   });
   els.sessionBtn.addEventListener('click', () => {
     sendWs({ type: 'chat_list_sessions' });
@@ -2586,6 +3492,9 @@
   els.modelSearch.addEventListener('input', renderModelList);
   els.settingsBtn.addEventListener('click', () => {
     els.settingsModal.hidden = !els.settingsModal.hidden;
+    if (!els.settingsModal.hidden) {
+      void refreshSlashCommands(true);
+    }
   });
   els.dockBtn.addEventListener('click', () => {
     prefs.dock = prefs.dock === 'right' ? 'left' : 'right';
@@ -2628,6 +3537,7 @@
         body: JSON.stringify({ customSystemPrompt, useGlobalSkills, customSkillPaths }),
       });
     } catch {}
+    void refreshSlashCommands(true);
     setStatus('Saved Custom System Prompt & Skills settings.', 'info');
     els.settingsModal.hidden = true;
   });
@@ -2640,11 +3550,14 @@
         body: JSON.stringify({ hardLock: true }),
       });
       const d = await resp.json().catch(() => ({}));
-      if (resp.ok) {
-        setStatus(d.isLocal
-          ? `🔒 Locked all LAN sessions (${d.revokedLanSessions || 0} revoked) & blocked LAN login.`
-          : '🔒 Session locked.', 'info');
+      if ('lanLocked' in d) state.lanLocked = Boolean(d.lanLocked);
+      if (!resp.ok) {
+        setStatus(d.error || `Lock failed (HTTP ${resp.status})`, 'error');
+        return;
       }
+      setStatus(d.isLocal
+        ? `🔒 Locked LAN (${d.revokedLanSessions || 0} session(s) revoked) — LAN now requires password.`
+        : '🔒 Session locked.', 'info');
     } catch (err) {
       setStatus(err.message || 'Lock failed', 'error');
     }
@@ -2657,9 +3570,13 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hardLock: false }),
       });
-      if (resp.ok) {
-        setStatus('🔓 LAN password login is now allowed by localhost.', 'info');
+      const d = await resp.json().catch(() => ({}));
+      if ('lanLocked' in d) state.lanLocked = Boolean(d.lanLocked);
+      if (!resp.ok) {
+        setStatus(d.error || `Unlock failed (HTTP ${resp.status})`, 'error');
+        return;
       }
+      setStatus('🔓 Unlocked LAN — LAN clients can now access without password.', 'info');
     } catch (err) {
       setStatus(err.message || 'Operation failed', 'error');
     }
@@ -2714,7 +3631,28 @@
         ? { ...payload, clientSessionId: state.clientSessionId }
         : payload;
       ws.send(JSON.stringify(enriched));
+      return true;
     }
+    return false;
+  }
+
+  function sendSync() {
+    sendWs({ type: 'chat_sync', separateHistory: true, historyLimit: 8 });
+  }
+
+  function triggerLazyLoadOlderHistory() {
+    if (!state.hasMoreOlder || state.loadingOlderHistory || !(state.oldestLoadedIndex > 0)) return;
+    state.loadingOlderHistory = true;
+    const btn = els.transcript?.querySelector('.lc-load-older-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '⏳ Đang tải tin nhắn cũ hơn…';
+    }
+    sendWs({
+      type: 'chat_load_history',
+      beforeIndex: state.oldestLoadedIndex,
+      limit: 12,
+    });
   }
 
   function extractAssistantTextDelta(ev) {
@@ -2739,20 +3677,51 @@
     return '';
   }
 
+  function ensureStreamingTurnCard() {
+    if (streamingNode && streamingNode.isConnected) {
+      const existingCard = streamingNode.closest('.lc-msg.assistant');
+      if (existingCard) return existingCard;
+    }
+    if (streamingThinkingNode && streamingThinkingNode.isConnected) {
+      const existingCard = streamingThinkingNode.closest('.lc-msg.assistant');
+      if (existingCard) return existingCard;
+    }
+    if (streamingToolDetails && streamingToolDetails.isConnected) {
+      const existingCard = streamingToolDetails.closest('.lc-msg.assistant');
+      if (existingCard) return existingCard;
+    }
+    const card = document.createElement('article');
+    card.className = 'lc-msg assistant streaming';
+    const head = document.createElement('div');
+    head.className = 'lc-msg-head';
+    card.append(head);
+    els.transcript.append(card);
+    return card;
+  }
+
   function ensureStreamingThinkingNode() {
     if (streamingThinkingNode && streamingThinkingNode.isConnected) return streamingThinkingNode;
+    const card = ensureStreamingTurnCard();
     const details = document.createElement('details');
     details.className = 'lc-thinking-card';
     details.open = true;
     details.innerHTML = `<summary>💭 Thinking…</summary>`;
     streamingThinkingNode = document.createElement('pre');
     details.append(streamingThinkingNode);
-    els.transcript.append(details);
+    const beforeAnchor = streamingToolDetails?.isConnected
+      ? streamingToolDetails
+      : (streamingNode?.isConnected ? streamingNode : null);
+    if (beforeAnchor && card.contains(beforeAnchor)) {
+      card.insertBefore(details, beforeAnchor);
+    } else {
+      card.append(details);
+    }
     return streamingThinkingNode;
   }
 
   function ensureStreamingToolCard() {
     if (streamingToolDetails && streamingToolDetails.isConnected) return streamingToolDetails;
+    const card = ensureStreamingTurnCard();
     const details = document.createElement('details');
     details.className = 'lc-tool-card';
     details.open = true;
@@ -2760,7 +3729,11 @@
     sum.textContent = '⚡ Running tools…';
     const pre = document.createElement('pre');
     details.append(sum, pre);
-    els.transcript.append(details);
+    if (streamingNode && streamingNode.isConnected && card.contains(streamingNode)) {
+      card.insertBefore(details, streamingNode);
+    } else {
+      card.append(details);
+    }
     streamingToolDetails = details;
     return details;
   }
@@ -2795,15 +3768,10 @@
 
   function ensureStreamingAssistantNode() {
     if (streamingNode && streamingNode.isConnected) return streamingNode;
-    const card = document.createElement('article');
-    card.className = 'lc-msg assistant';
-    const head = document.createElement('div');
-    head.className = 'lc-msg-head';
-    head.innerHTML = `<span>🏮 Lanbot</span>`;
+    const card = ensureStreamingTurnCard();
     streamingNode = document.createElement('div');
     streamingNode.className = 'lc-msg-body';
-    card.append(head, streamingNode);
-    els.transcript.append(card);
+    card.append(streamingNode);
     return streamingNode;
   }
 
@@ -2825,8 +3793,6 @@
       streamTurn.lastStopReason = '';
       streamTurn.subturnText = '';
       streamTurn.subturnThinking = '';
-      streamingNode = null;
-      streamingThinkingNode = null;
       setStreaming(true);
       setActivityTicker('⚡ Lanbot is working…');
       setStatus('Lanbot is working…', 'info');
@@ -2892,8 +3858,6 @@
       activeToolRows.set(id, { details, sum, pre, toolName });
       updateStreamingToolCardSummary();
       scrollTranscriptToBottom(false);
-      streamingNode = null;
-      streamingThinkingNode = null;
       return;
     }
 
@@ -2957,8 +3921,6 @@
 
       streamTurn.subturnText = '';
       streamTurn.subturnThinking = '';
-      streamingNode = null;
-      streamingThinkingNode = null;
 
       const finalTools = (parsed.toolCalls && parsed.toolCalls.length) ? parsed.toolCalls : [...streamTurn.toolCalls];
       const finalSubagents = (parsed.subagents && parsed.subagents.length) ? parsed.subagents : [...streamTurn.subagents];
@@ -3034,13 +3996,30 @@
       releaseMarkdownTurn();
       setStatus(ev.aborted ? 'Stopped' : 'Ready', 'info');
       renderTranscript({ force: true });
+      if (document.body?.dataset?.lanternChatKind === 'file' && document.body?.dataset?.lanternChatPath) {
+        const relFile = document.body.dataset.lanternChatPath.replace(/^\/+/, '');
+        const rawUrl = '/' + relFile.split('/').map(encodeURIComponent).join('/');
+        fetch(rawUrl, { cache: 'no-store', credentials: 'same-origin' })
+          .then(r => r.ok ? r.text() : null)
+          .then(freshText => {
+            if (typeof freshText !== 'string') return;
+            const editArea = document.getElementById('editarea');
+            if (editArea && editArea.value !== freshText) editArea.value = freshText;
+            const textPre = document.querySelector('pre.text-preview');
+            if (textPre && textPre.textContent !== freshText) textPre.textContent = freshText;
+          })
+          .catch(() => {});
+      }
     }
   }
 
   function connectWs(forceReconnect = false) {
-    if (forceReconnect && ws) {
-      try { ws.close(); } catch {}
-      ws = null;
+    if (forceReconnect) {
+      reconnectAttempts = 0;
+      if (ws) {
+        try { ws.close(); } catch {}
+        ws = null;
+      }
     }
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     clearTimeout(reconnectTimer);
@@ -3050,8 +4029,9 @@
     socket.addEventListener('open', () => {
       if (ws !== socket) return;
       wsConnected = true;
+      reconnectAttempts = 0;
       sendWs({ type: 'terminal_client_v2' });
-      sendWs({ type: 'chat_sync' });
+      sendSync();
     });
     socket.addEventListener('message', event => {
       let msg;
@@ -3062,28 +4042,37 @@
         msg.clientSessionId &&
         state.clientSessionId &&
         msg.clientSessionId !== state.clientSessionId &&
-        !['chat_work_changed', 'chat_work_error', 'chat_real_file_touched'].includes(msg.type)
+        !['chat_work_changed', 'chat_work_locked', 'chat_work_error', 'chat_real_file_touched', 'chat_sessions_changed', 'chat_commands_changed', 'chat_shared_refresh'].includes(msg.type)
       ) {
         return;
       }
 
       if (msg.type === 'terminal_auth') {
+        if (msg.isLocal !== undefined) state.isLocal = Boolean(msg.isLocal);
+        if (msg.lanLocked !== undefined) state.lanLocked = Boolean(msg.lanLocked);
         state.unlocked = Boolean(msg.authenticated);
         state.passwordRequired = Boolean(msg.required);
+        syncAuthUi();
         if (state.unlocked) {
-          sendWs({ type: 'chat_sync' });
+          sendSync();
         } else {
-          setStatus('Terminal is locked. Open Settings (⚙) to unlock.', 'warn');
+          const noPwd = msg.configured === false;
+          setStatus(
+            noPwd
+              ? '🔒 LAN is locked and no password is configured on host (--set-terminal-password).'
+              : '🔒 Terminal & Lanbot are locked. Open Settings (⚙) to enter password.',
+            'warn'
+          );
         }
       } else if (msg.type === 'hello') {
         state.unlocked = Boolean(msg.terminalUnlocked);
         state.passwordRequired = Boolean(msg.terminalPasswordRequired);
-        if (state.unlocked) sendWs({ type: 'chat_sync' });
+        if (state.unlocked) sendSync();
       } else if (msg.type === 'terminal_auth_ok') {
         state.unlocked = Boolean(msg.unlocked);
         if (state.unlocked) {
           els.settingsModal.hidden = true;
-          sendWs({ type: 'chat_sync' });
+          sendSync();
         } else if (msg.error) {
           setStatus(msg.error, 'error');
         }
@@ -3091,19 +4080,58 @@
         const isBusy = Boolean(msg.summary?.streaming ?? msg.busy);
         if (!isBusy) releaseMarkdownTurn();
         applySnapshot(msg);
+      } else if (msg.type === 'chat_history_page') {
+        state.loadingOlderHistory = false;
+        const pageMsgs = Array.isArray(msg.messages) ? msg.messages : [];
+        state.hasMoreOlder = Boolean(msg.hasMoreOlder);
+        state.oldestLoadedIndex = typeof msg.oldestIndex === 'number' ? msg.oldestIndex : 0;
+        if (typeof msg.totalMessages === 'number') {
+          state.totalHistoryMessages = msg.totalMessages;
+        }
+        if (msg.prepend && state.messages && state.messages.length) {
+          const prevScrollHeight = els.transcript.scrollHeight;
+          const prevScrollTop = els.transcript.scrollTop;
+          state.messages = [...pageMsgs, ...state.messages];
+          renderTranscript({ force: true, preserveScroll: true, scrollTop: prevScrollTop });
+          requestAnimationFrame(() => {
+            const newScrollHeight = els.transcript.scrollHeight;
+            els.transcript.scrollTop = prevScrollTop + Math.max(0, newScrollHeight - prevScrollHeight);
+          });
+        } else {
+          state.messages = pageMsgs;
+          renderTranscript({ force: true, scrollToBottom: true });
+        }
+        state.contextUsage = {
+          messageCount: Math.max(state.messages.length, Number(state.totalHistoryMessages || 0)),
+          estimatedTokens: estimateSessionTokens(state.messages, state.contextUsage?.estimatedTokens),
+        };
+        updateTokenBadgeDisplay();
+      } else if (msg.type === 'chat_history_error') {
+        state.loadingOlderHistory = false;
+        setStatus(`⚠️ Không tải được lịch sử (${msg.error || 'quá lớn'}), nhưng Lanbot và Model vẫn sẵn sàng chat.`, 'warn');
+        renderTranscript({ force: true });
       } else if (msg.type === 'chat_bot_event' || msg.type === 'chat_event') {
+        if (msg.sessionId && state.sessionId && msg.sessionId !== state.sessionId) {
+          return;
+        }
         handleStreamEvent(msg.event);
       } else if (msg.type === 'chat_prompt_accepted') {
         state.sendingImmediate = false;
-        setStreaming(true);
-        setActivityTicker('💭 Lanbot is thinking…');
-        setStatus('Lanbot is working…', 'info');
+        if (msg.slashHandled) {
+          setStreaming(false);
+          setActivityTicker('');
+          setStatus('Ready', 'info');
+        } else {
+          setStreaming(true);
+          setActivityTicker('💭 Lanbot is thinking…', true);
+          setStatus('Lanbot is working…', 'info');
+        }
       } else if (msg.type === 'chat_steer_queued') {
         state.steerCount = Number(msg.queuedCount || msg.queueSize || 1);
-        setActivityTicker(`↳ Steer instruction queued (${state.steerCount})…`);
+        setActivityTicker(`↳ Steer instruction queued (${state.steerCount})…`, true);
       } else if (msg.type === 'chat_session_changed') {
         if (msg.state) state.sessionId = msg.state.sessionId || state.sessionId;
-        sendWs({ type: 'chat_sync' });
+        sendSync();
       } else if (msg.type === 'chat_prefs_changed') {
         if (msg.summary) applySnapshot({ summary: msg.summary });
       } else if (msg.type === 'chat_model_changed') {
@@ -3115,13 +4143,38 @@
         if (Array.isArray(msg.favorites)) state.favoriteModels = msg.favorites;
         if (Array.isArray(msg.models)) state.models = msg.models;
         renderModelList();
+      } else if (msg.type === 'chat_sessions_changed') {
+        sendWs({ type: 'chat_list_sessions' });
+        if (msg.shared === false && msg.sessionId && msg.sessionId === state.sessionId && !state.isLocal) {
+          sendSync();
+        }
+      } else if (msg.type === 'chat_shared_refresh') {
+        if (!msg.sessionId || !state.sessionId || msg.sessionId === state.sessionId) {
+          if (!msg.senderClientSessionId || msg.senderClientSessionId !== state.clientSessionId) {
+            sendWs({ type: 'chat_load_history', limit: 24 });
+          }
+        }
       } else if (msg.type === 'chat_sessions_list') {
         if (Array.isArray(msg.sessions)) state.sessions = msg.sessions;
+        if (msg.renamedSessionId && msg.renamedSessionId === state.sessionId) {
+          state.sessionName = msg.sessionName || '';
+          els.sessionTitle.textContent = state.sessionName || `Session #${String(state.sessionId).slice(0, 6)}`;
+        }
         renderSessionList();
         if (msg.openModal) {
           setStreaming(false);
           els.sessionModal.hidden = false;
         }
+      } else if (msg.type === 'chat_bot_reset') {
+        clearTimeout(resetBotTimer);
+        resetStreamTurn();
+        releaseMarkdownTurn();
+        activeToolRows.clear();
+        state.sendingImmediate = false;
+        setStreaming(false);
+        setActivityTicker('');
+        applySnapshot({ ...msg, isSwitch: true });
+        setStatus('✓ Lanbot runtime reset and ready.', 'info');
       } else if (msg.type === 'chat_compacted') {
         setStreaming(false);
         setActivityTicker('');
@@ -3142,6 +4195,17 @@
           renderTranscript();
         }
         setStatus('Ready', 'info');
+      } else if (msg.type === 'chat_commands_changed') {
+        void refreshSlashCommands(true);
+      } else if (msg.type === 'chat_work_locked') {
+        const isLocked = Boolean(msg.locked);
+        if (!isLocked) releaseMarkdownTurn();
+        if (window.__lanternMdVisual?.onWorkLocked) {
+          window.__lanternMdVisual.onWorkLocked(msg.path, isLocked);
+        }
+        if (window.__lanternMdPaged?.onBotWorkLocked) {
+          window.__lanternMdPaged.onBotWorkLocked(msg.path, isLocked);
+        }
       } else if (msg.type === 'chat_work_changed') {
         const isFinal = Boolean(msg.final);
         const hashVal = msg.hash || msg.workHash || null;
@@ -3166,29 +4230,43 @@
         const detail = msg.stderr ? ` (${msg.stderr})` : '';
         setStatus(`Lanbot runtime exited${detail}. Send a message to auto-restart.`, 'error');
       } else if (msg.type === 'chat_error') {
+        clearTimeout(resetBotTimer);
+        state.loadingOlderHistory = false;
         releaseMarkdownTurn();
         setStreaming(false);
+        setActivityTicker('');
         setStatus(msg.error || 'Chatbot error', 'error');
       }
     });
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', ev => {
       if (ws !== socket) return;
       wsConnected = false;
       ws = null;
       releaseMarkdownTurn();
-      reconnectTimer = setTimeout(connectWs, 1800);
+      if (state.busy) {
+        setStreaming(false);
+      }
+      setActivityTicker('');
+      reconnectAttempts += 1;
+      const reason = ev?.reason ? ` (${ev.reason})` : '';
+      if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+        const delayMs = Math.min(8000, 1500 * reconnectAttempts);
+        setStatus(
+          `⚠️ Mất kết nối tới server${reason} — đang thử kết nối lại (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})…`,
+          'warn'
+        );
+        reconnectTimer = setTimeout(() => connectWs(false), delayMs);
+      } else {
+        setStatus(
+          `❌ Đã mất kết nối tới server sau ${MAX_RECONNECT_ATTEMPTS} lần thử${reason}. Bấm Reset Lanbot hoặc tải lại trang.`,
+          'error'
+        );
+      }
     });
   }
 
   // Fetch dynamic slash commands (skills + templates)
-  fetch('/api/chatbot/commands', { credentials: 'same-origin' })
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (Array.isArray(data?.commands) && data.commands.length) {
-        slashCommands = data.commands;
-      }
-    })
-    .catch(() => {});
+  void refreshSlashCommands(true);
 
   globalThis.LanternChat = {
     open: () => { prefs.open = true; applyLayout(); renderContextBar(); },
@@ -3196,16 +4274,84 @@
     captureContext,
     prepareMarkdownTurn,
     refreshContext: renderContextBar,
+    refreshCommands: () => refreshSlashCommands(true),
     uploadFiles: uploadClientFiles,
   };
+
+  // Immediate user upward scroll intent (wheel / touch) eliminates tug-of-war jitter completely
+  els.transcript.addEventListener('wheel', ev => {
+    if (ev.deltaY < 0) {
+      const dist = els.transcript.scrollHeight - els.transcript.scrollTop - els.transcript.clientHeight;
+      if (dist > 8 || state.streaming) {
+        isUserScrolledUp = true;
+        updateScrollBottomButton();
+        saveTabCache();
+      }
+    }
+  }, { passive: true });
+
+  let touchStartY = null;
+  els.transcript.addEventListener('touchstart', ev => {
+    if (ev.touches && ev.touches.length === 1) {
+      touchStartY = ev.touches[0].clientY;
+    }
+  }, { passive: true });
+
+  els.transcript.addEventListener('touchmove', ev => {
+    if (touchStartY !== null && ev.touches && ev.touches.length === 1) {
+      const dy = ev.touches[0].clientY - touchStartY;
+      // Finger dragging down => scrolling up toward older messages
+      if (dy > 8) {
+        isUserScrolledUp = true;
+        updateScrollBottomButton();
+      }
+    }
+  }, { passive: true });
 
   els.transcript.addEventListener('scroll', () => {
     if (!programmaticScroll) {
       const dist = els.transcript.scrollHeight - els.transcript.scrollTop - els.transcript.clientHeight;
-      isUserScrolledUp = dist > 48;
+      if (!isUserScrolledUp) {
+        isUserScrolledUp = dist > 48;
+      } else if (dist <= 12) {
+        isUserScrolledUp = false;
+      }
+      updateScrollBottomButton();
+      if (isUserScrolledUp && els.transcript.scrollTop <= 80 && state.hasMoreOlder && !state.loadingOlderHistory) {
+        triggerLazyLoadOlderHistory();
+      }
     }
     saveTabCache();
   }, { passive: true });
+
+  els.scrollBottomBtn?.addEventListener('click', () => {
+    jumpToLatestMessage();
+  });
+
+  try {
+    if (typeof BroadcastChannel !== 'undefined' && !IS_STANDALONE_CHAT) {
+      const tabGuardChan = new BroadcastChannel('lantern_tab_cid_guard_v791');
+      tabGuardChan.addEventListener('message', ev => {
+        const d = ev?.data;
+        if (!d || typeof d !== 'object') return;
+        if (d.type === 'tab_cid_check' && d.cid === state.clientSessionId && d.runtimeId !== TAB_RUNTIME_ID) {
+          tabGuardChan.postMessage({
+            type: 'tab_cid_in_use',
+            cid: state.clientSessionId,
+            targetRuntimeId: d.runtimeId,
+          });
+        } else if (d.type === 'tab_cid_in_use' && d.cid === state.clientSessionId && d.targetRuntimeId === TAB_RUNTIME_ID) {
+          state.clientSessionId = persistTabSessionId(generateFreshTabSessionId());
+          if (wsConnected) sendSync();
+        }
+      });
+      tabGuardChan.postMessage({
+        type: 'tab_cid_check',
+        cid: state.clientSessionId,
+        runtimeId: TAB_RUNTIME_ID,
+      });
+    }
+  } catch {}
 
   if (contextChannel) {
     contextChannel.addEventListener('message', ev => {
@@ -3231,6 +4377,7 @@
     els.sessionTitle.textContent = state.sessionName || (state.sessionId ? `Session #${String(state.sessionId).slice(0, 6)}` : 'New chat');
     if (state.model && (state.model.id || state.model.name)) {
       els.providerSpan.textContent = state.model.provider || 'auto';
+      els.providerSpan.hidden = !state.model.provider;
       els.modelSpan.textContent = state.model.name || state.model.id || 'model';
     }
     updateTokenBadgeDisplay();

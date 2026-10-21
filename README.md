@@ -12,16 +12,26 @@ A local-first file manager for the browser: **files, Markdown visual editing, ac
 >
 > Naturally, it now has a Git panel, a Markdown editor, a PDF viewer and a terminal. Scope creep has excellent taste.
 
-## Integrated workspace
+## 🌟 Nâng cấp Toàn diện Lantern v2 (Tích hợp trực tiếp tại cổng `9999` — Modular Architecture)
 
-The v7.4 workspace brings LanternBot, Markdown split views and system telemetry into the same Lantern server—no separate chat proxy is required.
+Phiên bản **Lantern v2 All-in-One** tích hợp trực tiếp **Lantern Chatbot**, **Live Markdown Diff Engine**, **Parallel Split View (`P ∥ E ∥ S`)**, và **GPU/VRAM Telemetry** ngay trên cổng `9999` của Lantern (không cần chạy proxy cổng `10000` rời), đồng thời tách biệt rõ ràng từng module để dễ bảo trì:
 
-- **LanternBot:** Pi-backed chat with model selection and favorites, slash-command completion, attachments, session management and HTML transcript export. See [LanternBot configuration](docs/LANTERNBOT_CONFIG.md).
-- **Markdown split views:** Preview, Visual and Source panes, left/right swapping, scroll synchronization, inline diff actions and Source wrapping controls.
-- **File context:** attach selected files or paste/drop supported images into chat.
-- **System telemetry:** CPU and memory information, plus GPU/VRAM information when available on the host.
-
-LanternBot currently communicates with Pi through its RPC interface. The browser shell terminal is a separate PTY/ConPTY feature; the native interactive Pi harness described in the draft specifications is not the current chat transport.
+- `lantern/system_telemetry.py` & `GET /api/sysstats`: Hiển thị trực tiếp thông số **GPU / VRAM / RAM** thời gian thực ngay trên thanh công cụ chính và trình xem Markdown.
+- `lantern/http/routes/chatbot.py` & `lantern/pi_chat.py`:
+  - Khắc phục triệt để lỗi `Error: RPC timeout for extension_ui_response` (gửi phản hồi UI dạng bất đồng bộ không khóa tiến trình) và tự động thu hồi khóa phiên khi kết thúc lượt (`A LanternBot Markdown turn is already active` / `Unable to flush the current Markdown working copy`).
+  - Khắc phục lỗi hiển thị `[object Object],[object Object]` khi nhận mảng block phức tạp.
+  - Hỗ trợ hiển thị thẻ **Subagent (`<task-notification>`)** trực quan kèm nút xem **Full Transcript**.
+  - Gõ `/` hiển thị menu lệnh điều hướng bằng `↑`/`↓` và nhấn **`Tab`** để tự động điền (`/m` -> `/model`, `/mcp`), tự động tách biệt lệnh `/` khỏi ngữ cảnh tài liệu khi `👁 Context: ON`.
+  - Hiển thị rõ **`provider / model`**, hỗ trợ gắn sao **★ Favorite Models** và tự động nhớ model chọn gần nhất làm mặc định.
+  - Chặn tạo phiên trùng lặp khi bấm `+ New` lúc đang ở sẵn hội thoại rỗng (`New chat`).
+  - **Export Full Unabbreviated HTML (`GET /api/chatbot/export`)**: Xuất 100% toàn bộ nội dung hội thoại, suy luận (thinking), tham số/kết quả công cụ và ngữ cảnh mà không viết tắt.
+- `static/markdown_visual_shell.js`, `static/markdown_visual_shell.css`, `static/markdown_paged_editor.js`:
+  - **Chế độ Song Song (Parallel Split View)**: Hỗ trợ `1 Pane`, `E ∥ P` (Edit visually + Preview), `S ∥ P` (Source + Preview), `S ∥ E` (Source + Edit visually) kèm nút `⇄ Swap L/R` đảo trái/phải và đồng bộ thời gian thực không độ trễ.
+  - **Nút `✓ Accept` / `↺ Undo` đặt ngay góc trên bên trái** mỗi khối diff trong Source/Preview/Visual kèm thanh **Sticky Diff Bar** trên cùng và chế độ **`↵ Wrap: ON / OFF`** trong Source.
+  - Hỗ trợ hiển thị **Live Diff** ngay cả trong chế độ **Editing by section** cho tài liệu lớn.
+- `static/chatbot.js` & `static/chatbot.css`:
+  - Khi mở Chatbot, giao diện tự động đẩy lề nội dung Lantern (**Workspace Split-Push Layout**) thay vì đè che khuất văn bản hay con trỏ soạn thảo.
+  - Hỗ trợ chọn nhiều file (2, 3+ file) trong File Manager để đính kèm vào Context Chips, và chỉ gửi con trỏ metadata gọn nhẹ thay vì nhồi toàn bộ nội dung file vào mỗi lượt.
 
 ## 🚀 Three actions. One Lantern.
 

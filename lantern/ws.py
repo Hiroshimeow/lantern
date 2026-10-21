@@ -57,6 +57,16 @@ class WebSocketPeer:
 
     def send(self, payload: Dict[str, Any]) -> None:
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(raw) > 4 * 1024 * 1024 and isinstance(payload, dict) and str(payload.get("type") or "").startswith("chat_"):
+            safe_payload = dict(payload)
+            if "messages" in safe_payload and isinstance(safe_payload["messages"], list):
+                safe_payload["messages"] = safe_payload["messages"][-5:]
+                safe_payload["historyTruncatedByFrameGuard"] = True
+            raw = json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(raw) > 4 * 1024 * 1024:
+                safe_payload.pop("messages", None)
+                safe_payload["historyTruncatedByFrameGuard"] = True
+                raw = json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self._enqueue(_frame(0x1, raw))
 
     def _enqueue(self, frame: bytes) -> None:
@@ -172,6 +182,7 @@ class WebSocketHub:
         self.pi_peer_session: dict[Any, str] = {}
         self.pi_peer_attach_token: dict[Any, object] = {}
         self.pi_peer_delivery: dict[Any, dict[str, Any]] = {}
+        self.chat: Any = None
 
     def add(self, peer):
         with self.lock:
@@ -202,21 +213,27 @@ class WebSocketHub:
                 peer for peer in self.peers
                 if not (hasattr(access, "is_local") and access.is_local(getattr(peer, "client_ip", "")))
             ]
+        lan_locked = bool(getattr(access, "lan_locked", True))
+        configured = bool(getattr(access, "configured", True))
         for peer in lan_peers:
+            ip = str(getattr(peer, "client_ip", "") or "")
+            req = access.required(ip) if hasattr(access, "required") else lan_locked
+            authed = bool(getattr(peer, "can_terminal", lambda: not req)())
             try:
                 peer.send({
                     "type": "terminal_auth",
-                    "required": True,
-                    "authenticated": False,
-                    "configured": bool(getattr(access, "configured", True)),
+                    "required": req,
+                    "authenticated": authed,
+                    "configured": configured,
                     "isLocal": False,
                     "lanSessions": 0,
-                    "lanLocked": bool(getattr(access, "lan_locked", False)),
+                    "lanLocked": lan_locked,
                 })
             except Exception:
                 pass
-            self.remove(peer)
-            peer.close()
+            if not authed:
+                self.remove(peer)
+                threading.Timer(0.06, peer.close).start()
         return len(lan_peers)
 
     def notify_local_auth_state(self, access) -> None:
@@ -608,12 +625,45 @@ class WebSocketHub:
                 and message.get("terminalId") not in peer.subscriptions
             ):
                 continue
+            if msg_type in {"chat_sessions_changed", "chat_commands_changed", "chat_work_locked", "chat_work_changed", "chat_work_error", "chat_real_file_touched"}:
+                out_changed = dict(client_message)
+                out_changed.pop("clientSessionId", None)
+                try:
+                    peer.send(out_changed)
+                except Exception:
+                    self.remove(peer)
+                    peer.close()
+                continue
             if (
                 msg_type.startswith("chat_")
-                and msg_type not in {"chat_work_changed", "chat_work_error", "chat_real_file_touched", "chat_prefs_changed", "chat_favorites_changed"}
+                and msg_type not in {"chat_work_changed", "chat_work_locked", "chat_work_error", "chat_real_file_touched", "chat_prefs_changed", "chat_favorites_changed", "chat_sessions_changed", "chat_commands_changed"}
             ):
+                msg_runtime_id = str(message.get("runtimeId") or "").strip()
+                msg_shared_sid = str(message.get("sharedSessionId") or "").strip()
                 msg_cid = str(message.get("clientSessionId") or "").strip()
                 peer_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
+                peer_scope = _chat_scope(peer)
+                root_chat = getattr(self, "chat", None)
+                if root_chat is not None and hasattr(root_chat, "peek_session_bot") and (msg_runtime_id or msg_shared_sid):
+                    peer_bot = root_chat.peek_session_bot(peer_cid, scope=peer_scope)
+                    if peer_bot is not None:
+                        if msg_runtime_id and getattr(peer_bot, "runtime_id", "") != msg_runtime_id:
+                            continue
+                        if not msg_runtime_id and msg_shared_sid and peer_bot.current_session_id() != msg_shared_sid:
+                            continue
+                        out_msg = dict(client_message)
+                        if peer_cid:
+                            out_msg["clientSessionId"] = peer_cid
+                        else:
+                            out_msg.pop("clientSessionId", None)
+                        try:
+                            peer.send(out_msg)
+                        except Exception:
+                            self.remove(peer)
+                            peer.close()
+                        continue
+                    elif msg_shared_sid:
+                        continue
                 if msg_cid:
                     if peer_cid != msg_cid:
                         continue
@@ -865,32 +915,97 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         )
     if typ.startswith("chat_") and chat is None:
         raise RuntimeError("LanternBot is not initialized")
+    root_chat = chat
+    active_cid = ""
+    peer_scope = _chat_scope(peer)
+    scope = peer_scope
     if typ.startswith("chat_"):
+        if hub is not None and hasattr(root_chat, "peek_session_bot"):
+            hub.chat = root_chat
         raw_cid = str(msg.get("clientSessionId") or "").strip()
         if raw_cid:
             setattr(peer, "chat_session_id", raw_cid)
         active_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
-        if active_cid and hasattr(chat, "get_session_bot"):
-            chat = chat.get_session_bot(active_cid)
+        if hasattr(root_chat, "get_session_bot"):
+            try:
+                chat = root_chat.get_session_bot(active_cid, scope=peer_scope)
+            except TypeError:
+                chat = root_chat.get_session_bot(active_cid)
+        scope = getattr(chat, "access_scope", None) or peer_scope
+
+    def _viewer_sessions() -> list[dict[str, Any]]:
+        if not hasattr(root_chat, "list_sessions"):
+            return []
+        try:
+            return root_chat.list_sessions(peer_scope, current_bot=chat)
+        except TypeError:
+            try:
+                return root_chat.list_sessions(peer_scope)
+            except TypeError:
+                return root_chat.list_sessions()
+        except Exception:
+            return []
+
     if typ == "chat_sync":
-        scope = _chat_scope(peer)
         state = chat.bootstrap_state(scope)
-        payload = {
+        separate_history = bool(msg.get("separateHistory"))
+        payload: Dict[str, Any] = {
             "type": "chat_state",
             "state": state,
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),
-            "messages": chat.get_messages(),
+            "sessions": _viewer_sessions(),
         }
-        if hasattr(chat, "list_sessions"):
-            try:
-                payload["sessions"] = chat.list_sessions()
-            except Exception:
-                pass
         peer_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
         if peer_cid:
             payload["clientSessionId"] = peer_cid
+        if separate_history:
+            payload["historySeparate"] = True
+            peer.send(payload)
+            try:
+                if hasattr(chat, "get_messages_page"):
+                    page = chat.get_messages_page(limit_messages=int(msg.get("historyLimit") or 24), max_bytes=512_000, tool_preview_chars=1200)
+                else:
+                    msgs = chat.get_messages()
+                    page = {"messages": msgs, "totalMessages": len(msgs), "startIndex": 0, "endIndex": len(msgs), "hasMoreOlder": False, "olderCount": 0}
+                hist_pkt: Dict[str, Any] = {"type": "chat_history_page", "isInitial": True, **page}
+                if peer_cid:
+                    hist_pkt["clientSessionId"] = peer_cid
+                peer.send(hist_pkt)
+            except Exception as exc:
+                err_pkt: Dict[str, Any] = {"type": "chat_history_error", "error": f"Không tải được lịch sử hội thoại: {exc}"}
+                if peer_cid:
+                    err_pkt["clientSessionId"] = peer_cid
+                peer.send(err_pkt)
+            return
+        try:
+            if hasattr(chat, "get_messages_page"):
+                page = chat.get_messages_page(limit_messages=24, max_bytes=512_000, tool_preview_chars=1200)
+                payload.update(page)
+            else:
+                payload["messages"] = chat.get_messages()
+        except Exception as exc:
+            payload["messages"] = []
+            payload["historyError"] = str(exc)
         peer.send(payload)
+        return
+    if typ == "chat_share_session":
+        if peer_scope != "local":
+            raise PermissionError("Only localhost can share or unshare sessions")
+        sid = str(msg.get("sessionId") or "").strip()
+        spath = str(msg.get("sessionPath") or "").strip()
+        shared_flag = bool(msg.get("shared", True))
+        res = (
+            root_chat.set_session_shared(sid, shared_flag, session_path=spath, scope=peer_scope)
+            if hasattr(root_chat, "set_session_shared")
+            else {"ok": False}
+        )
+        peer.send({
+            "type": "chat_sessions_list",
+            "sessions": _viewer_sessions(),
+            "sharedSessionId": res.get("sessionId") or sid,
+            "shared": bool(res.get("shared", shared_flag)),
+        })
         return
     if typ == "chat_prompt":
         context = dict(msg.get("context")) if isinstance(msg.get("context"), dict) else {}
@@ -899,22 +1014,39 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             work_hash = context.pop("workHash", None)
         else:
             context.pop("workHash", None)
+        is_shared_rt = bool(chat in getattr(root_chat, "_shared_bots", {}).values())
+        if is_shared_rt and (getattr(chat, "streaming", False) or getattr(chat, "_turn_in_progress", False)):
+            raise RuntimeError("Shared session is currently busy completing a turn")
         if msg.get("steer") and hasattr(chat, "steer"):
             res = chat.steer(
                 str(msg.get("message") or ""),
                 context,
                 work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
-                scope=_chat_scope(peer),
+                scope=scope,
             )
             peer.send({"type": "chat_steer_accepted", "reqId": msg.get("reqId"), **res})
             return
-        chat.prompt(
+        prompt_res = chat.prompt(
             str(msg.get("message") or ""),
             context,
             work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
-            scope=_chat_scope(peer),
+            scope=scope,
         )
-        peer.send({"type": "chat_prompt_accepted", "reqId": msg.get("reqId")})
+        is_sync_slash = bool(isinstance(prompt_res, dict) and prompt_res.get("slashHandled"))
+        peer.send({
+            "type": "chat_prompt_accepted",
+            "reqId": msg.get("reqId"),
+            "slashHandled": is_sync_slash,
+        })
+        if is_shared_rt and hasattr(chat, "emit"):
+            try:
+                chat.emit({
+                    "type": "chat_shared_refresh",
+                    "sessionId": chat.current_session_id() if hasattr(chat, "current_session_id") else "",
+                    "senderClientSessionId": active_cid,
+                })
+            except Exception:
+                pass
         return
     if typ == "chat_steer":
         context = dict(msg.get("context")) if isinstance(msg.get("context"), dict) else {}
@@ -923,19 +1055,22 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             work_hash = context.pop("workHash", None)
         else:
             context.pop("workHash", None)
+        is_shared_rt = bool(chat in getattr(root_chat, "_shared_bots", {}).values())
+        if is_shared_rt and (getattr(chat, "streaming", False) or getattr(chat, "_turn_in_progress", False)):
+            raise RuntimeError("Shared session is currently busy completing a turn")
         if hasattr(chat, "steer"):
             res = chat.steer(
                 str(msg.get("message") or ""),
                 context,
                 work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
-                scope=_chat_scope(peer),
+                scope=scope,
             )
         else:
             chat.prompt(
                 str(msg.get("message") or ""),
                 context,
                 work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
-                scope=_chat_scope(peer),
+                scope=scope,
             )
             res = {"ok": True, "steered": False}
         peer.send({"type": "chat_steer_accepted", "reqId": msg.get("reqId"), **res})
@@ -945,7 +1080,14 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         peer.send({"type": "chat_aborted"})
         return
     if typ == "chat_new":
-        scope = _chat_scope(peer)
+        if hasattr(root_chat, "select_shared_session"):
+            root_chat.select_shared_session(active_cid, peer_scope, session_id="")
+            if hasattr(root_chat, "detach_busy_bot_for_switch"):
+                chat = root_chat.detach_busy_bot_for_switch(active_cid, scope=peer_scope, target_session_id="__new__")
+                scope = getattr(chat, "access_scope", None) or peer_scope
+            elif hasattr(root_chat, "get_session_bot"):
+                chat = root_chat.get_session_bot(active_cid, scope=peer_scope)
+                scope = getattr(chat, "access_scope", None) or peer_scope
         skip_empty = bool(msg.get("skipIfEmpty"))
         try:
             state = chat.new_session(scope, skip_if_empty=skip_empty) if skip_empty else chat.new_session(scope)
@@ -958,10 +1100,10 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),
             "messages": [],
+            "sessions": _viewer_sessions(),
         })
         return
     if typ == "chat_set_model":
-        scope = _chat_scope(peer)
         chat.set_model(
             str(msg.get("provider") or ""),
             str(msg.get("modelId") or ""),
@@ -974,7 +1116,6 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         })
         return
     if typ in ("chat_toggle_favorite", "chat_toggle_favorite_model"):
-        scope = _chat_scope(peer)
         provider = str(msg.get("provider") or "").strip()
         model_id = str(msg.get("modelId") or "").strip()
         model_key = str(msg.get("modelKey") or "").strip()
@@ -992,17 +1133,14 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         })
         return
     if typ == "chat_set_thinking":
-        scope = _chat_scope(peer)
         res = chat.set_thinking_level(str(msg.get("level") or "medium")) if hasattr(chat, "set_thinking_level") else {"ok": True}
         peer.send({"type": "chat_prefs_changed", **res, "summary": chat.summary(scope)})
         return
     if typ == "chat_set_tool_mode":
-        scope = _chat_scope(peer)
         res = chat.set_tool_preset(str(msg.get("mode") or "full")) if hasattr(chat, "set_tool_preset") else {"ok": True}
         peer.send({"type": "chat_prefs_changed", **res, "summary": chat.summary(scope)})
         return
     if typ == "chat_set_prefs":
-        scope = _chat_scope(peer)
         res = chat.update_custom_settings(
             custom_system_prompt=msg.get("customSystemPrompt"),
             use_global_skills=msg.get("useGlobalSkills"),
@@ -1011,39 +1149,211 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         peer.send({"type": "chat_prefs_changed", **res, "summary": chat.summary(scope)})
         return
     if typ == "chat_fork":
-        scope = _chat_scope(peer)
-        state = chat.fork_session(scope) if hasattr(chat, "fork_session") else chat.bootstrap_state(scope)
+        upto_idx = msg.get("uptoIndex")
+        src_path = str(msg.get("sourceSessionPath") or "").strip() or None
+        custom_name = str(msg.get("customName") or "").strip() or None
+        if hasattr(chat, "fork_session"):
+            try:
+                state = chat.fork_session(
+                    scope,
+                    upto_index=int(upto_idx) if upto_idx is not None and str(upto_idx) != "" else None,
+                    source_session_path=src_path,
+                    custom_name=custom_name,
+                )
+            except TypeError:
+                state = chat.fork_session(scope)
+        else:
+            state = chat.bootstrap_state(scope)
+        page_data = (
+            chat.get_messages_page(limit_messages=24, max_bytes=512_000, tool_preview_chars=1200)
+            if hasattr(chat, "get_messages_page")
+            else {"messages": chat.get_messages()}
+        )
         peer.send({
             "type": "chat_state",
             "state": state,
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),
-            "messages": chat.get_messages(),
-            "sessions": chat.list_sessions() if hasattr(chat, "list_sessions") else [],
+            "sessions": _viewer_sessions(),
+            "isSwitch": True,
+            **page_data,
+        })
+        return
+    if typ == "chat_rename_session":
+        sid = str(msg.get("sessionId") or "").strip()
+        new_title = str(msg.get("name") or msg.get("title") or "").strip()
+        spath = str(msg.get("sessionPath") or "").strip()
+        target_sc = str(msg.get("sessionScope") or "").strip().lower() or None
+        if hasattr(root_chat, "rename_session"):
+            try:
+                res = root_chat.rename_session(
+                    sid,
+                    new_title,
+                    session_path=spath,
+                    scope=target_sc or scope,
+                    viewer_scope=peer_scope,
+                )
+            except TypeError:
+                res = chat.rename_session(sid, new_title, session_path=spath, scope=scope)
+        else:
+            res = {"ok": False}
+        peer.send({
+            "type": "chat_sessions_list",
+            "sessions": _viewer_sessions(),
+            "renamedSessionId": sid,
+            "sessionName": new_title,
+        })
+        return
+    if typ == "chat_delete_session":
+        sid = str(msg.get("sessionId") or "").strip()
+        spath = str(msg.get("sessionPath") or "").strip()
+        target_sc = str(msg.get("sessionScope") or "").strip().lower() or None
+        if hasattr(chat, "delete_session"):
+            try:
+                res = chat.delete_session(
+                    sid,
+                    session_path=spath,
+                    scope=target_sc or scope,
+                    viewer_scope=peer_scope,
+                )
+            except TypeError:
+                res = chat.delete_session(sid, session_path=spath, scope=scope)
+        else:
+            res = {"ok": False}
+        if res.get("wasCurrent"):
+            peer.send({
+                "type": "chat_state",
+                "isNew": True,
+                "state": res.get("state") or chat.bootstrap_state(scope),
+                "summary": chat.summary(scope),
+                "models": chat.available_models(scope),
+                "messages": [],
+                "sessions": _viewer_sessions(),
+            })
+        peer.send({
+            "type": "chat_sessions_list",
+            "sessions": _viewer_sessions(),
+            "deletedSessionId": sid,
         })
         return
     if typ == "chat_switch_session":
-        scope = _chat_scope(peer)
-        session_path = str(msg.get("sessionPath") or msg.get("sessionId") or "")
-        state = chat.switch_session(session_path, scope) if hasattr(chat, "switch_session") else chat.bootstrap_state(scope)
+        session_path = str(msg.get("sessionPath") or "").strip()
+        session_id = str(msg.get("sessionId") or "").strip()
+        target_session_scope = str(msg.get("sessionScope") or "").strip().lower()
+        shared_mgr = None
+        if hasattr(root_chat, "select_shared_session"):
+            shared_mgr = root_chat.select_shared_session(
+                active_cid,
+                peer_scope,
+                session_id=session_id,
+                session_path=session_path,
+                session_scope=target_session_scope,
+            )
+        if shared_mgr is not None:
+            chat = shared_mgr
+            scope = getattr(chat, "access_scope", None) or peer_scope
+            state = chat.bootstrap_state(scope)
+        else:
+            if hasattr(root_chat, "detach_busy_bot_for_switch"):
+                chat = root_chat.detach_busy_bot_for_switch(
+                    active_cid,
+                    scope=peer_scope,
+                    target_session_id=session_id,
+                    target_session_path=session_path,
+                )
+            elif hasattr(root_chat, "get_session_bot"):
+                try:
+                    chat = root_chat.get_session_bot(active_cid, scope=peer_scope)
+                except TypeError:
+                    chat = root_chat.get_session_bot(active_cid)
+            scope = getattr(chat, "access_scope", None) or peer_scope
+            target_arg = session_path or session_id
+            if getattr(chat, "streaming", False) or getattr(chat, "_turn_in_progress", False):
+                state = dict(getattr(chat, "last_state", {}) or {})
+                if getattr(chat, "_switched_session_override", None):
+                    state.update(chat._switched_session_override)
+            else:
+                state = chat.switch_session(target_arg, scope) if hasattr(chat, "switch_session") else chat.bootstrap_state(scope)
+        switch_limit = max(1, min(50, int(msg.get("limit") or 8)))
+        page_data = (
+            chat.get_messages_page(limit_messages=switch_limit, max_bytes=128_000, tool_preview_chars=1200)
+            if hasattr(chat, "get_messages_page")
+            else {"messages": chat.get_messages()}
+        )
         peer.send({
             "type": "chat_state",
             "state": state,
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),
-            "messages": chat.get_messages(),
-            "sessions": chat.list_sessions() if hasattr(chat, "list_sessions") else [],
+            "sessions": _viewer_sessions(),
             "isSwitch": True,
+            **page_data,
         })
         return
     if typ == "chat_list_sessions":
         peer.send({
             "type": "chat_sessions_list",
-            "sessions": chat.list_sessions() if hasattr(chat, "list_sessions") else [],
+            "sessions": _viewer_sessions(),
         })
         return
+    if typ == "chat_load_history":
+        before_idx = msg.get("beforeIndex")
+        limit_n = int(msg.get("limit") or 24)
+        if hasattr(chat, "get_messages_page"):
+            page = chat.get_messages_page(
+                before_index=int(before_idx) if before_idx is not None else None,
+                limit_messages=limit_n,
+                max_bytes=512_000,
+                tool_preview_chars=1200,
+            )
+        else:
+            msgs = chat.get_messages()
+            page = {"messages": msgs, "totalMessages": len(msgs), "startIndex": 0, "endIndex": len(msgs), "hasMoreOlder": False, "olderCount": 0}
+        peer.send({
+            "type": "chat_history_page",
+            "isOlderPage": before_idx is not None,
+            "prepend": before_idx is not None,
+            **page,
+        })
+        return
+    if typ == "chat_get_tool_output":
+        msg_idx = int(msg.get("msgIndex") or 0)
+        tool_idx = int(msg.get("toolIndex") or 0)
+        res = chat.get_tool_output_full(msg_idx, tool_idx) if hasattr(chat, "get_tool_output_full") else {"ok": False}
+        peer.send({"type": "chat_tool_output_full", **res})
+        return
+    if typ == "chat_rerun":
+        turn_idx = int(msg.get("turnIndex") or 0)
+        context = dict(msg.get("context")) if isinstance(msg.get("context"), dict) else {}
+        work_hash = msg.get("workHash")
+        chat.rerun_from_turn(
+            turn_idx,
+            message=str(msg.get("message") or "") or None,
+            context=context,
+            work_hash=str(work_hash) if isinstance(work_hash, str) and work_hash else None,
+            scope=scope,
+        )
+        peer.send({"type": "chat_prompt_accepted", "reqId": msg.get("reqId"), "isRerun": True, "rerun": True})
+        return
+    if typ == "chat_reset_bot":
+        state = chat.reset_runtime(scope) if hasattr(chat, "reset_runtime") else chat.bootstrap_state(scope)
+        # Send reset result and provider/model independently WITHOUT attaching history
+        peer.send({
+            "type": "chat_bot_reset",
+            "ok": True,
+            "state": state,
+            "summary": chat.summary(scope),
+            "models": chat.available_models(scope),
+            "sessions": _viewer_sessions(),
+        })
+        try:
+            if hasattr(chat, "get_messages_page"):
+                page = chat.get_messages_page(limit_messages=24, max_bytes=512_000, tool_preview_chars=1200)
+                peer.send({"type": "chat_history_page", "isInitial": True, **page})
+        except Exception as exc:
+            peer.send({"type": "chat_history_error", "error": str(exc)})
+        return
     if typ == "chat_compact":
-        scope = _chat_scope(peer)
         res = chat.compact_session(str(msg.get("instructions") or "")) if hasattr(chat, "compact_session") else {"ok": True}
         payload = {"type": "chat_compacted", "result": res}
         try:

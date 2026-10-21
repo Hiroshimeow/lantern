@@ -67,14 +67,14 @@ function updateAuthUI(){
     if(isLoc){
       lockBtn.classList.remove('hidden');
       if(S.auth.lanLocked){
-        lockBtn.textContent='🔓 Unlock LAN (Host Locked)';
-        lockBtn.title='LAN access is hard-locked by localhost. Click to allow LAN password login again.';
+        lockBtn.textContent=S.auth.lanSessions>0?`🔓 Unlock LAN (${S.auth.lanSessions} active)`:'🔓 Unlock LAN';
+        lockBtn.title='LAN currently requires password. Click to unlock LAN (allow LAN access without password).';
       }else if(S.auth.lanSessions>0){
-        lockBtn.textContent=`🔒 Lock All LAN (${S.auth.lanSessions} active)`;
-        lockBtn.title='Immediately revoke all active LAN sessions and lock remote terminals.';
+        lockBtn.textContent=`🔒 Lock LAN (${S.auth.lanSessions} active)`;
+        lockBtn.title='Revoke active LAN sessions and require password for LAN clients.';
       }else{
-        lockBtn.textContent='🔒 Lock All LAN';
-        lockBtn.title='Revoke all LAN sessions and hard-lock LAN access from localhost.';
+        lockBtn.textContent='🔒 Lock LAN';
+        lockBtn.title='Require password for LAN clients and revoke previous LAN logins.';
       }
     }else{
       lockBtn.classList.toggle('hidden',!S.auth.required||locked);
@@ -86,11 +86,9 @@ function updateAuthUI(){
   if(locked){
     const hint=q('#lxTermAuthHint');
     if(hint){
-      hint.textContent=S.auth.lanLocked
-        ?'LAN access is currently hard-locked by the localhost host.'
-        :(S.auth.configured
-          ?'Password is created on the Lantern host. This unlocks Terminal only.'
-          :'Terminal password not configured. On the host run: python main.py --set-terminal-password, then restart Lantern.');
+      hint.textContent=S.auth.configured
+        ?'Password is required by the Lantern host. Enter password to unlock Terminal & Lanbot.'
+        :'Terminal password not configured on the host. Run: python main.py --set-terminal-password, then restart Lantern.';
       if(location.protocol==='http:'&&!['localhost','127.0.0.1','[::1]'].includes(location.hostname))
         hint.textContent+=' Use an encrypted Tailscale link or HTTPS; ordinary LAN HTTP exposes passwords in transit.';
     }
@@ -120,7 +118,7 @@ async function unlockTerminal(event){
 }
 async function lockTerminal(){
   if(isLocalHostClient()){
-    const nextHardLock = S.auth.lanSessions > 0 ? true : !S.auth.lanLocked;
+    const nextHardLock = !S.auth.lanLocked;
     try{
       const r=await fetch('/api/terminal/logout',{
         method:'POST',credentials:'same-origin',
@@ -128,19 +126,32 @@ async function lockTerminal(){
         body:JSON.stringify({hardLock:nextHardLock})
       });
       const d=await r.json().catch(()=>({}));
-      S.auth.lanSessions=Number(d.lanSessions||0);
-      S.auth.lanLocked=Boolean(d.lanLocked);
+      if('lanSessions' in d)S.auth.lanSessions=Number(d.lanSessions||0);
+      if('lanLocked' in d)S.auth.lanLocked=Boolean(d.lanLocked);
+      if('configured' in d)S.auth.configured=Boolean(d.configured);
       updateAuthUI();
+      if(!r.ok){
+        throw new Error(d.error||('HTTP '+r.status));
+      }
       if(typeof toast==='function'){
         toast(S.auth.lanLocked
-          ? `🔒 Locked all LAN sessions (${d.revokedLanSessions||0} revoked) & blocked LAN login.`
-          : '🔓 LAN password login is now allowed.');
+          ? `🔒 Locked LAN (${d.revokedLanSessions||0} session(s) revoked) — LAN now requires password.`
+          : '🔓 Unlocked LAN — LAN can now access without password.');
       }
-    }catch(_){}
+    }catch(err){
+      if(typeof toast==='function')toast(err.message||'Failed to update LAN lock state');
+    }
     return;
   }
-  try{await fetch('/api/terminal/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'})}
-  catch(_){}
+  try{
+    const r=await fetch('/api/terminal/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'});
+    if(!r.ok){
+      const d=await r.json().catch(()=>({}));
+      throw new Error(d.error||('HTTP '+r.status));
+    }
+  }catch(err){
+    if(typeof toast==='function')toast(err.message||'Logout failed');
+  }
   S.auth.authenticated=false;updateAuthUI();
   if(S.ws&&S.ws.readyState!==WebSocket.CLOSED){S.reconnectAfterLogin=true;S.ws.close()}
 }

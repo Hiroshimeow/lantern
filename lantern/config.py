@@ -341,6 +341,14 @@ def build_config(args: argparse.Namespace) -> AppConfig:
     config_path = Path(args.config).expanduser().resolve()
     data = dict(DEFAULT_CONFIG_DATA)
     loaded = load_simple_yaml(config_path)
+    if isinstance(loaded.get("lantern_bot"), dict):
+        lb_acc = loaded["lantern_bot"].get("access")
+        if isinstance(lb_acc, dict) and isinstance(lb_acc.get("localhost"), dict):
+            loc_cfg = lb_acc["localhost"]
+            if loc_cfg.get("tools") == ["read", "grep", "find", "ls"] and "tool_mode" not in loc_cfg:
+                loc_cfg["tools"] = ["*"]
+                loc_cfg["extensions"] = True
+                loc_cfg["mcp"] = True
     data.update({k: v for k, v in loaded.items() if v is not None})
 
     if args.root is not None: data["root"] = args.root

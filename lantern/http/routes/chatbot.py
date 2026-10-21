@@ -74,7 +74,12 @@ class ChatbotRoutes:
                 skills = []
         else:
             root = self.app.config.root.resolve()
-            for skill_root in (root / ".pi" / "skills", Path.home() / ".pi" / "agent" / "skills"):
+            for skill_root in (
+                root / ".pi" / "skills",
+                root / ".lantern" / "skills",
+                Path.home() / ".pi" / "agent" / "skills",
+                Path.home() / ".pi" / "skills",
+            ):
                 if skill_root.is_dir():
                     try:
                         for item in sorted(skill_root.iterdir()):
@@ -383,3 +388,53 @@ class ChatbotRoutes:
             return
 
         self.send_json(200, {"ok": True, "attachments": saved_attachments})
+
+    def api_chatbot_reset(self) -> None:
+        if not self._chatbot_permitted():
+            self.send_json(403, {"error": "Access denied."})
+            return
+        body = self.read_json() if int(self.headers.get("Content-Length", "0") or 0) > 0 else {}
+        cid = str((body or {}).get("clientSessionId") or "").strip()
+        from lantern.ws import _chat_scope
+        from types import SimpleNamespace
+        scope = _chat_scope(SimpleNamespace(client_ip=self._client_ip()))
+        target_bot = (
+            self.app.bot.get_session_bot(cid, scope=scope)
+            if (cid and hasattr(self.app.bot, "get_session_bot"))
+            else self.app.bot
+        )
+        rt_scope = getattr(target_bot, "access_scope", None) or scope
+        state = target_bot.reset_runtime(rt_scope) if hasattr(target_bot, "reset_runtime") else target_bot.bootstrap_state(rt_scope)
+        sessions_list = (
+            self.app.bot.list_sessions(scope, current_bot=target_bot)
+            if hasattr(self.app.bot, "list_sessions")
+            else []
+        )
+        # Return reset result and provider/model cleanly WITHOUT attaching history
+        self.send_json(200, {
+            "ok": True,
+            "type": "chat_bot_reset",
+            "state": state,
+            "summary": target_bot.summary(rt_scope),
+            "models": target_bot.available_models(rt_scope),
+            "sessions": sessions_list,
+        })
+
+    def api_chatbot_tool_output(self, query: str = "") -> None:
+        if not self._chatbot_permitted():
+            self.send_json(403, {"error": "Access denied."})
+            return
+        qs = urllib.parse.parse_qs(query or "")
+        cid = (qs.get("clientSessionId") or [""])[0].strip()
+        msg_idx = int((qs.get("msgIndex") or ["0"])[0] or 0)
+        tool_idx = int((qs.get("toolIndex") or ["0"])[0] or 0)
+        from lantern.ws import _chat_scope
+        from types import SimpleNamespace
+        scope = _chat_scope(SimpleNamespace(client_ip=self._client_ip()))
+        target_bot = (
+            self.app.bot.get_session_bot(cid, scope=scope)
+            if (cid and hasattr(self.app.bot, "get_session_bot"))
+            else self.app.bot
+        )
+        res = target_bot.get_tool_output_full(msg_idx, tool_idx)
+        self.send_json(200, res)

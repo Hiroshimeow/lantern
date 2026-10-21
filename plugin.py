@@ -1270,7 +1270,7 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
         f"script-src 'nonce-{nonce}'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
-        + ("connect-src 'self' ws: wss:; worker-src 'self' blob:; " if visual_markdown else "connect-src 'none'; ")
+        + "connect-src 'self' ws: wss:; worker-src 'self' blob:; "
         + ("frame-src 'self'; " if is_pdf and not pdf_text else "")
         + "base-uri 'none'; "
         + "object-src 'none'; "
@@ -1291,7 +1291,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
     if visual_markdown:
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_table_interactions.js" defer></script>'
         helper_script += f'<script nonce="{h(nonce)}" src="/static/markdown_draft_diff.js" defer></script>'
-        helper_script += f'<script nonce="{h(nonce)}" src="/static/chatbot.js" defer></script>'
+    helper_script += f'<script nonce="{h(nonce)}" src="/static/chatbot.js" defer></script>'
     visual_script = (
         f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'
         if visual_markdown else ""
@@ -1319,7 +1319,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
     )
     table_style = ('<link rel="stylesheet" href="/static/markdown_table_interactions.css">'
                    if visual_markdown else '')
-    chat_style = ('<link rel="stylesheet" href="/static/chatbot.css">' if visual_markdown else '')
+    chat_style = '<link rel="stylesheet" href="/static/chatbot.css">'
     edit_actions = (
         '<div class="md-edit-actions" data-md-edit-actions hidden>'
         '<button class="btn primary" type="button" data-action="md-save">Save</button>'
@@ -1341,7 +1341,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
         '<span class="md-global-status" data-md-status role="status" aria-live="polite" hidden></span>'
         '</div>' if visual_markdown else top_controls + mode_controls
     )
-    body_attrs = f' data-lantern-chat-kind="markdown" data-lantern-chat-path="{h(rel)}"' if visual_markdown else ""
+    body_attrs = f' data-lantern-chat-kind="{"markdown" if visual_markdown else "file"}" data-lantern-chat-path="{h(rel)}"'
     page = f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
 {mermaid_script}{table_style}{chat_style}{helper_script}{visual_script}</head>
