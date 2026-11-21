@@ -101,7 +101,7 @@ class V792StressAndUpgradesTests(unittest.TestCase):
             store = LiveMarkdownStore(root, root / ".work", {".md"})
             md = root / "shared.md"
             base_text = "# Title\n\nParagraph 1 original\n\nParagraph 2 original\n\nParagraph 3 original\n"
-            md.write_text(base_text, encoding="utf-8")
+            md.write_text(base_text, encoding="utf-8", newline="\r\n")
 
             st = store.get("shared.md")
             turn = store.begin_turn("shared.md", st["currentVersion"])
@@ -122,13 +122,18 @@ class V792StressAndUpgradesTests(unittest.TestCase):
 
             # Bot edits Paragraph 3 on disk
             bot_text = "# Title\n\nParagraph 1 original\n\nParagraph 2 original\n\nParagraph 3 EDITED BY BOT\n"
-            md.write_text(bot_text, encoding="utf-8")
+            md.write_text(bot_text, encoding="utf-8", newline="\r\n")
 
             # Bot finishes turn: release_turn performs automatic 3-way merge of User + Bot changes!
-            store.end_turn("shared.md")
-            merged_disk = md.read_text(encoding="utf-8")
-            self.assertIn("Paragraph 1 EDITED BY USER", merged_disk)
-            self.assertIn("Paragraph 3 EDITED BY BOT", merged_disk)
+            expected = user_text.replace("Paragraph 3 original", "Paragraph 3 EDITED BY BOT")
+            expected_crlf = expected.replace("\n", "\r\n")
+            self.assertEqual(
+                _merge3_text(base_text.replace("\n", "\r\n"), user_text, bot_text.replace("\n", "\r\n")),
+                (expected_crlf, False),
+            )
+            turn_result = store.end_turn("shared.md")
+            self.assertFalse(turn_result["conflict"])
+            self.assertEqual(md.read_bytes(), expected_crlf.encode("utf-8"))
 
     def test_lanbot_multi_tab_newchat_no_ghost_sessions_and_2level_fork_tree(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -378,7 +383,7 @@ class V92TenFixesAndMasterChecklistTests(unittest.TestCase):
     D. GFM table separator rows & unequal row counts rendered inside <table> (never raw pipe blocks)
     E. Lowered floating Save/Undo pill (top: -10px / top: -8px) for effortless hover/click
     F. Multi-image paste in Preview/Source with .md-diff-img-frame and split per-image hunk counter
-    G. Right-click context menu in Preview jumps to Source ('Go to Source') instead of retired Visual
+    G. Right-click opens Source from Edit visually and keeps the native menu in Preview
     H. Subagent status stays 'Running' on background spawn until get_subagent_result / notification completes
     I. Prior assistant steps (Todo response & subagent cards) preserved across continuation/wake-up turns
     J. Visible [skill] banner rendered directly in .lc-step-slot & broadened skill path detection
@@ -390,12 +395,12 @@ class V92TenFixesAndMasterChecklistTests(unittest.TestCase):
             store = LiveMarkdownStore(root, root / ".work", {".md"})
             doc = root / "AGENTS.md"
             base = "# Title\n\nPara 1 old\n\nPara 2 old\n"
-            doc.write_text(base, encoding="utf-8")
+            doc.write_text(base, encoding="utf-8", newline="\r\n")
 
             st0 = store.get("AGENTS.md")
             # Bot edits Para 1 on disk
             bot_real = "# Title\n\nPara 1 bot\n\nPara 2 old\n"
-            doc.write_text(bot_real, encoding="utf-8")
+            doc.write_text(bot_real, encoding="utf-8", newline="\r\n")
 
             # User edits Para 2 in Preview (creating .user_draft.md)
             user_draft = "# Title\n\nPara 1 bot\n\nPara 2 user\n"
@@ -458,9 +463,11 @@ class V92TenFixesAndMasterChecklistTests(unittest.TestCase):
         self.assertIn("if (tag === 'IMG')", shell_js)
         self.assertIn(".md-diff-img-frame", shell_css)
 
-        # Issue G: Right-click context menu in Preview jumps to Source ('Go to Source')
-        self.assertIn("Go to Source", anchor_js)
-        self.assertIn("open('source'", anchor_js)
+        # v9.24: Preview keeps its native menu. Edit visually opens Source at the bookmark.
+        context_menu = anchor_js.split("document.addEventListener('contextmenu', event => {", 1)[1]
+        visual_guard = context_menu.index("if (mode !== 'visual') return;")
+        self.assertLess(visual_guard, context_menu.index("event.preventDefault();"))
+        self.assertLess(visual_guard, context_menu.index("visualApi.open('source'"))
         self.assertNotIn("Edit selection in Visual", anchor_js)
 
     def test_v92_issues_h_i_j_subagent_status_step_preservation_and_skill_display(self) -> None:
