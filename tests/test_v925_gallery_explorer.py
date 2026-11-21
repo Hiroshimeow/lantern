@@ -493,7 +493,20 @@ class TestV925GalleryBackend(unittest.TestCase):
 
 class TestV925GalleryBrowserE2E(unittest.TestCase):
     def setUp(self):
-        self.browser_bin = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chromium-browser")
+        self.browser_bin = os.environ.get("LANTERN_BROWSER_BIN", "").strip() or (
+            shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chromium-browser")
+        )
+        if not self.browser_bin and os.environ.get("LANTERN_BROWSER_UNIT") == "1":
+            # GitHub's Playwright-managed Chromium is not on PATH. Resolve its
+            # executable directly so the same CDP suite is a mandatory CI gate.
+            try:
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as play:
+                    candidate = Path(play.chromium.executable_path)
+                if candidate.is_file():
+                    self.browser_bin = str(candidate)
+            except Exception:
+                self.browser_bin = ""
         if not self.browser_bin:
             self.skipTest("No Chromium/Chrome binary available for real browser E2E")
 
@@ -1669,6 +1682,7 @@ class SolReviewRepairRegressionTests(unittest.TestCase):
         self.assertIn("uv lock --check", ci_yml)
         self.assertIn("uv sync --locked --no-dev", ci_yml)
         self.assertIn("LANTERN_E2E", ci_yml)
+        self.assertIn("LANTERN_BROWSER_UNIT", ci_yml)
         self.assertIn("--require-browser", ci_yml)
 
 

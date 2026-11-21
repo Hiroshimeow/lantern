@@ -177,14 +177,14 @@
   async function navigateToFolder(relPath, opts = {}) {
     const clean = String(relPath || '').replace(/^\/+|\/+$/g, '');
     const href = clean ? '/' + enc(clean) + '/' : '/';
-    // Persist the outgoing entry before changing path. Popstate restores an
-    // existing entry and must not overwrite its cached viewport with the
-    // transient scroll position of the entry being left.
-    if (!opts.fromPopstate) {
-      try { sessionStorage.setItem(scrollKey(), String(window.scrollY)); } catch (_) {}
-      saveListCache({ preserveDeep: true });
-    }
-    const historyCache = opts.fromPopstate ? readListCacheForPath(clean, '') : null;
+    // Persist the outgoing entry before changing path. This is required for
+    // both native and in-app Back/Forward so a deep scroll position survives
+    // the round trip; the target cache is read independently below.
+    try { sessionStorage.setItem(scrollKey(), String(window.scrollY)); } catch (_) {}
+    saveListCache({ preserveDeep: true });
+    const historyCache = (opts.fromPopstate || typeof opts.commitNavIndex === 'number')
+      ? readListCacheForPath(clean, '')
+      : null;
     const searchVal = opts.keepSearch ? (q?.value || '') : '';
     const myNavGen = ++navGen;
     if (navAbortCtrl) { try { navAbortCtrl.abort(); } catch (_) {} }

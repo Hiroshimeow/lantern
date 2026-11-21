@@ -251,6 +251,7 @@ class ListRefreshE2E(unittest.TestCase):
             arg=self.case,
         )
         self.load_until(500)
+        anchor = self.focus_file()
         self.page.evaluate("path => navigateToFolder(path)", f"{self.case}-b")
         self.page.wait_for_function(
             "path => window.APP.currentPath === path && !state.loading",
@@ -265,6 +266,68 @@ class ListRefreshE2E(unittest.TestCase):
         self.assertEqual(self.page.evaluate("state.items.filter(x=>!x.special).length"), 500)
         self.assertEqual(self.page.evaluate("state.navIndex"), 1)
         self.assertEqual(self.page.evaluate("window.APP.currentPath"), self.case)
+        self.assert_anchor(anchor)
+
+    def test_toolbar_back_restores_deep_loaded_window_and_scroll(self) -> None:
+        sibling = self.shared / f"{self.case}-b"
+        sibling.mkdir()
+        (sibling / "b.txt").write_text("sibling\n", encoding="utf-8")
+
+        self.page.goto(self.base + "/")
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_function("typeof state !== 'undefined' && !state.loading")
+        self.page.evaluate("path => navigateToFolder(path)", self.case)
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.load_until(500)
+        anchor = self.focus_file()
+        self.page.evaluate("path => navigateToFolder(path)", f"{self.case}-b")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.locator("#navBackBtn").evaluate("button => button.click()")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.assertEqual(self.page.evaluate("state.items.filter(x=>!x.special).length"), 500)
+        self.assert_anchor(anchor)
+
+    def test_native_forward_restores_deep_scroll_after_back(self) -> None:
+        sibling = self.shared / f"{self.case}-b"
+        sibling.mkdir()
+        (sibling / "b.txt").write_text("sibling\n", encoding="utf-8")
+
+        self.page.goto(self.base + "/")
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_function("typeof state !== 'undefined' && !state.loading")
+        self.page.evaluate("path => navigateToFolder(path)", f"{self.case}-b")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.evaluate("path => navigateToFolder(path)", self.case)
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.load_until(500)
+        anchor = self.focus_file()
+        self.page.go_back()
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.go_forward()
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.assertEqual(self.page.evaluate("state.items.filter(x=>!x.special).length"), 500)
+        self.assert_anchor(anchor)
 
     def test_repeated_history_entries_restore_identity_and_scroll(self) -> None:
         """Repeated paths must keep entry identity and restore the cached viewport."""
