@@ -6,7 +6,8 @@ Runs:
   2. Python bytecode compilation across main.py, plugin.py, and lantern/**/*.py.
   3. Full repository-native `unittest discover -s tests` (zero omitted modules).
   4. Strict browser gate: when --require-browser or LANTERN_CI_REQUIRE_BROWSER=1
-     is set, any skipped browser E2E test fails the run instead of passing silently.
+     is set, skipped acceptance browser E2E tests fail the run. Explicitly
+     opt-in crop performance benchmarks remain allowed to skip.
 """
 from __future__ import annotations
 
@@ -70,7 +71,9 @@ def main(argv: list[str] | None = None) -> int:
         browser_skips = [
             (test, reason)
             for test, reason in result.skipped
-            if any(k in str(test).lower() or k in str(reason).lower() for k in ("browser", "e2e", "chromium", "playwright"))
+            if "cropperformancee2e" not in str(test).lower()
+            and "crop performance" not in str(reason).lower()
+            and any(k in str(test).lower() or k in str(reason).lower() for k in ("browser", "e2e", "chromium", "playwright"))
         ]
         if browser_skips:
             print(f"\nFAIL: --require-browser set, but {len(browser_skips)} browser test(s) were skipped:")
