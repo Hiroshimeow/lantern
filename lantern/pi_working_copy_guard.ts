@@ -122,9 +122,10 @@ export default function (pi) {
       };
     }
     const state = loaded.state;
-    const procScope = process.env.LANTERN_PI_PROCESS_SCOPE || state.activeScope;
-    let procAllowed = state.allowedTools;
-    if (process.env.LANTERN_PI_PROCESS_TOOLS) {
+    const envScope = process.env.LANTERN_PI_PROCESS_SCOPE;
+    const procScope = envScope || state.activeScope;
+    let procAllowed = envScope === "local" ? ["*"] : state.allowedTools;
+    if (process.env.LANTERN_PI_PROCESS_TOOLS && envScope !== "local") {
       try {
         procAllowed = JSON.parse(process.env.LANTERN_PI_PROCESS_TOOLS);
       } catch {}

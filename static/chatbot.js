@@ -97,11 +97,12 @@
         width: Math.max(360, Math.min(820, Number(raw.width) || 430)),
         inputHeight: Math.max(106, Math.min(360, Number(raw.inputHeight) || 110)),
         expanded: Boolean(raw.expanded),
+        autoHide: Boolean(raw.autoHide),
         autoContext: raw.autoContext !== false,
         fabTopRatio: typeof raw.fabTopRatio === 'number' ? raw.fabTopRatio : 0.85,
       };
     } catch {
-      return { open: false, dock: 'right', width: 430, inputHeight: 110, expanded: false, autoContext: true, fabTopRatio: 0.85 };
+      return { open: false, dock: 'right', width: 430, inputHeight: 110, expanded: false, autoHide: false, autoContext: true, fabTopRatio: 0.85 };
     }
   }
 
@@ -158,6 +159,14 @@
     dismissedPaths: new Set(),
     skipDraftFlush: false,
     uploadingCount: 0,
+    workerTabs: [
+      { id: 'w1', cid: INITIAL_CLIENT_SESSION_ID, label: '#bot', busy: false, error: false, snapshot: null },
+    ],
+    activeWorkerId: 'w1',
+    terminalTabs: [],
+    subagentTabs: [],
+    todoState: { status: 'idle', lines: [], rawText: '' },
+    autoHideHovered: false,
   };
   let reconnectAttempts = 0;
   const MAX_RECONNECT_ATTEMPTS = 5;
@@ -175,15 +184,108 @@
   let lastTranscriptFingerprint = '';
   const activeToolRows = new Map();
 
-  function loadTabCache() {
+  const WORKER_TABS_STORAGE_KEY = 'lantern_chat_worker_tabs_v923';
+
+  function loadTabCache(cid = state.clientSessionId) {
     try {
-      const raw = sessionStorage.getItem(TAB_CACHE_PREFIX + state.clientSessionId);
+      const raw = sessionStorage.getItem(TAB_CACHE_PREFIX + cid);
       if (!raw) return null;
       return JSON.parse(raw);
     } catch {
       return null;
     }
   }
+
+  function persistWorkerTabsBar() {
+    try {
+      const tabsMeta = (state.workerTabs || []).map(w => {
+        const isCur = w.id === state.activeWorkerId;
+        const snap = isCur ? {
+          sessionId: state.sessionId,
+          sessionName: state.sessionName,
+          model: state.model,
+          thinkingLevel: state.thinkingLevel,
+          messages: Array.isArray(state.messages) ? state.messages.slice(-60) : [],
+        } : (w.snapshot || {});
+        if (w.cid && Array.isArray(snap.messages)) {
+          const wPayload = JSON.stringify({
+            sessionId: snap.sessionId || '',
+            sessionName: snap.sessionName || '',
+            model: snap.model || null,
+            thinkingLevel: snap.thinkingLevel || 'medium',
+            messages: snap.messages.slice(-60),
+          });
+          sessionStorage.setItem(TAB_CACHE_PREFIX + w.cid, wPayload);
+        }
+        return {
+          id: w.id,
+          cid: w.cid,
+          label: w.label || '#bot',
+          sessionId: snap.sessionId || '',
+          sessionName: snap.sessionName || '',
+          model: snap.model || null,
+          thinkingLevel: snap.thinkingLevel || 'medium',
+        };
+      });
+      const barJson = JSON.stringify({
+        activeWorkerId: state.activeWorkerId,
+        tabs: tabsMeta,
+      });
+      sessionStorage.setItem(WORKER_TABS_STORAGE_KEY, barJson);
+    } catch {}
+  }
+
+  function restoreWorkerTabsFromStorage() {
+    try {
+      const raw = sessionStorage.getItem(WORKER_TABS_STORAGE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.tabs) || !parsed.tabs.length) return false;
+      const restoredTabs = parsed.tabs.map((t, idx) => {
+        const cached = loadTabCache(t.cid) || {};
+        return {
+          id: t.id || ('w' + (idx + 1)),
+          cid: t.cid || `${INITIAL_CLIENT_SESSION_ID}__w${idx + 1}`,
+          label: t.label || `#s${idx + 1}`,
+          busy: false,
+          error: false,
+          streamTurn: null,
+          activeToolRows: new Map(),
+          subagentTabs: [],
+          activeBackgroundSubagents: new Map(),
+          snapshot: {
+            sessionId: t.sessionId || cached.sessionId || '',
+            sessionName: t.sessionName || cached.sessionName || '',
+            model: t.model || cached.model || null,
+            thinkingLevel: t.thinkingLevel || cached.thinkingLevel || 'medium',
+            messages: Array.isArray(cached.messages) ? cached.messages : [],
+            contextUsage: { messageCount: Array.isArray(cached.messages) ? cached.messages.length : 0, estimatedTokens: 0 },
+            hasMoreOlder: false,
+            oldestLoadedIndex: 0,
+            totalHistoryMessages: Array.isArray(cached.messages) ? cached.messages.length : 0,
+          },
+        };
+      });
+      state.workerTabs = restoredTabs;
+      const activeTab = restoredTabs.find(w => w.id === parsed.activeWorkerId) || restoredTabs[0];
+      state.activeWorkerId = activeTab.id;
+      state.clientSessionId = activeTab.cid;
+      if (activeTab.snapshot) {
+        state.sessionId = activeTab.snapshot.sessionId || state.sessionId;
+        state.sessionName = activeTab.snapshot.sessionName || state.sessionName;
+        if (activeTab.snapshot.model) state.model = { ...activeTab.snapshot.model };
+        if (activeTab.snapshot.thinkingLevel) state.thinkingLevel = activeTab.snapshot.thinkingLevel;
+        if (Array.isArray(activeTab.snapshot.messages) && activeTab.snapshot.messages.length > 0) {
+          state.messages = [...activeTab.snapshot.messages];
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  restoreWorkerTabsFromStorage();
 
   function saveTabCache() {
     try {
@@ -196,14 +298,31 @@
         scrollTop: els?.transcript ? els.transcript.scrollTop : 0,
         isUserScrolledUp: Boolean(isUserScrolledUp),
       };
-      sessionStorage.setItem(TAB_CACHE_PREFIX + state.clientSessionId, JSON.stringify(payload));
+      const jsonStr = JSON.stringify(payload);
+      sessionStorage.setItem(TAB_CACHE_PREFIX + state.clientSessionId, jsonStr);
+      persistWorkerTabsBar();
     } catch {}
   }
 
   function updateScrollBottomButton() {
-    if (!els?.scrollBottomBtn) return;
-    els.scrollBottomBtn.hidden = !isUserScrolledUp;
-    els.scrollBottomBtn.classList.toggle('is-streaming', Boolean(state.streaming && isUserScrolledUp));
+    if (els?.scrollBottomBtn) {
+      els.scrollBottomBtn.hidden = !isUserScrolledUp;
+      els.scrollBottomBtn.classList.toggle('is-streaming', Boolean(state.streaming && isUserScrolledUp));
+    }
+    // v9.0: Auto-hide Todo popover when user scrolls up in chat container; auto-restore at bottom if bot is responding
+    if (els?.todoPopover) {
+      if (isUserScrolledUp) {
+        if (!els.todoPopover.hidden) {
+          els.todoPopover.hidden = true;
+          els.todoBtn?.classList.remove('is-open');
+        }
+      } else if (state.busy && state.todoState?.items?.length > 0 && !state.todoDismissedForTurn && !hasOpenOverlayModalInsideDrawer()) {
+        if (els.todoPopover.hidden) {
+          els.todoPopover.hidden = false;
+          els.todoBtn?.classList.add('is-open');
+        }
+      }
+    }
   }
 
   function escapeHtml(raw) {
@@ -302,10 +421,13 @@
   }
   let messageEndSettleTimer = null;
   let streamTurn = {
+    turnUid: 'st-init',
     text: '',
     thinking: '',
     subturnText: '',
     subturnThinking: '',
+    subturnToolCalls: [],
+    steps: [],
     toolCalls: [],
     subagents: [],
     saved: false,
@@ -316,11 +438,27 @@
   function resetStreamTurn() {
     clearTimeout(messageEndSettleTimer);
     messageEndSettleTimer = null;
+    // Stamp any existing steps on the last assistant message so a subsequent wake-up/continuation turn
+    // appends its new steps after prior completed steps rather than overwriting them!
+    if (Array.isArray(state.messages) && state.messages.length > 0) {
+      const lastMsg = state.messages[state.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant') {
+        const existingSteps = Array.isArray(lastMsg.steps) && lastMsg.steps.length
+          ? lastMsg.steps
+          : buildChronologicalStepsForAssistant(normalizeRawMessage(lastMsg));
+        const frozenUid = lastMsg._frozenTurnUid || ('prior-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6));
+        lastMsg._frozenTurnUid = frozenUid;
+        lastMsg.steps = existingSteps.map(s => ({ ...s, _turnUid: s._turnUid || frozenUid }));
+      }
+    }
     streamTurn = {
+      turnUid: 'st-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
       text: '',
       thinking: '',
       subturnText: '',
       subturnThinking: '',
+      subturnToolCalls: [],
+      steps: [],
       toolCalls: [],
       subagents: [],
       saved: false,
@@ -329,6 +467,7 @@
     };
     streamingNode = null;
     streamingThinkingNode = null;
+    streamingToolDetails = null;
   }
 
   function estimateSessionTokens(messagesList, summarySessionTokens = null) {
@@ -376,7 +515,8 @@
     const thinking = safeText(msgObj.thinking || '');
     const toolCalls = Array.isArray(msgObj.toolCalls) ? msgObj.toolCalls : [];
     const subagents = Array.isArray(msgObj.subagents) ? msgObj.subagents : [];
-    if (!text && !thinking && !toolCalls.length && !subagents.length) return;
+    const incomingSteps = Array.isArray(msgObj.steps) ? msgObj.steps.map(s => ({ ...s })) : [];
+    if (!text && !thinking && !toolCalls.length && !subagents.length && !incomingSteps.length) return;
 
     state.messages = Array.isArray(state.messages) ? state.messages : [];
     const entry = {
@@ -385,6 +525,7 @@
       thinking,
       toolCalls,
       subagents,
+      steps: incomingSteps,
       timestamp: msgObj.timestamp || Date.now(),
       usage: msgObj.usage || null,
     };
@@ -410,6 +551,36 @@
         entry.text = `${prev.text}\n\n${text}`;
       } else {
         entry.text = text || prev.text || '';
+      }
+      const prevSubs = Array.isArray(prev.subagents) ? prev.subagents : [];
+      const subMap = new Map();
+      [...prevSubs, ...subagents].forEach(s => {
+        if (s && typeof s === 'object') {
+          const k = String(s.taskId || s.toolUseId || s.id || s.toolName || Math.random());
+          subMap.set(k, { ...(subMap.get(k) || {}), ...s });
+        }
+      });
+      entry.subagents = Array.from(subMap.values());
+      const curUid = streamTurn?.turnUid || 'st-cur';
+      const taggedIncoming = incomingSteps.map(s => ({ ...s, _turnUid: s._turnUid || curUid }));
+      const rawPrevSteps = (Array.isArray(state.messages[state.messages.length - 1].steps) && state.messages[state.messages.length - 1].steps.length)
+        ? state.messages[state.messages.length - 1].steps
+        : (Array.isArray(prev.steps) && prev.steps.length ? prev.steps : buildChronologicalStepsForAssistant(prev));
+      const priorTurnSteps = rawPrevSteps.filter(s => s && s._turnUid && s._turnUid !== curUid);
+      if (taggedIncoming.length > 0) {
+        if (priorTurnSteps.length > 0) {
+          // Ensure any earlier step that had toolCalls and textAfterBox keeps its text visible
+          priorTurnSteps.forEach(st => {
+            if (st.toolCalls && st.toolCalls.length && st.textAfterBox && !st.textBeforeBox) {
+              // Keep textAfterBox right below the subagent cards of that prior step
+            }
+          });
+          entry.steps = [...priorTurnSteps, ...taggedIncoming];
+        } else {
+          entry.steps = taggedIncoming;
+        }
+      } else if (rawPrevSteps.length > 0) {
+        entry.steps = [...rawPrevSteps];
       }
       state.messages[state.messages.length - 1] = entry;
       streamTurn.saved = true;
@@ -589,7 +760,13 @@
       return { role: 'system', text: safeText(rawMsg), thinking: '', toolCalls: [], subagents: [] };
     }
     if (Array.isArray(rawMsg.toolCalls) && typeof rawMsg.text === 'string' && !rawMsg.content) {
-      return rawMsg;
+      const { cleanedText: cTxt, subagents: pSubs } = extractSubagentBlocks(rawMsg.text);
+      return {
+        ...rawMsg,
+        text: cTxt,
+        subagents: (Array.isArray(rawMsg.subagents) && rawMsg.subagents.length) ? rawMsg.subagents : pSubs,
+        steps: Array.isArray(rawMsg.steps) ? rawMsg.steps : [],
+      };
     }
     const role = String(rawMsg.role || 'assistant');
     const content = rawMsg.content;
@@ -640,7 +817,21 @@
     let fullText = textParts.join('\n');
     let parsedContext = rawMsg.context || null;
 
+    const invokedSkills = [];
     if (role === 'user') {
+      const skInvRe = /<skill_invocation\s+[^>]*?name=["']([^"']+)["']/gi;
+      let skM;
+      while ((skM = skInvRe.exec(fullText)) !== null) {
+        const sName = String(skM[1] || '').trim();
+        if (sName && !invokedSkills.includes(sName)) invokedSkills.push(sName);
+      }
+      const preSkM = fullText.match(/(?:Trước khi thực hiện,?\s*hãy đọc skill[^:]*:|Before executing,?\s*read[^:]*:)\s*([^\r\n]+)/i);
+      if (preSkM) {
+        const cleanP = preSkM[1].replace(/\\+/g, '/').replace(/["']/g, '').trim();
+        const parts = cleanP.split('/').filter(p => p && p.toLowerCase() !== 'skill.md');
+        const sTag = parts[parts.length - 1];
+        if (sTag && !invokedSkills.includes(sTag)) invokedSkills.push(sTag);
+      }
       const ctxMatch = fullText.match(/<lantern_context>\s*([\s\S]*?)\s*<\/lantern_context>/i);
       const reqMatch = fullText.match(/<user_request>\s*([\s\S]*?)\s*<\/user_request>/i);
       if (ctxMatch && !parsedContext) {
@@ -664,12 +855,96 @@
     }
 
     const { cleanedText, subagents } = extractSubagentBlocks(fullText);
+    const resolvedThinking = thinkingParts.filter(Boolean).join('\n') || safeText(rawMsg.thinking);
+    const resolvedTools = toolCalls.length ? toolCalls : (Array.isArray(rawMsg.tools) ? rawMsg.tools : (Array.isArray(rawMsg.toolCalls) ? rawMsg.toolCalls : []));
+
+    let steps = [];
+    if (Array.isArray(rawMsg.steps) && rawMsg.steps.length) {
+      steps = rawMsg.steps.map(s => ({
+        textBeforeBox: extractSubagentBlocks(s.textBeforeBox || '').cleanedText,
+        thinking: safeText(s.thinking || ''),
+        toolCalls: Array.isArray(s.toolCalls) ? s.toolCalls.map(tc => ({ ...tc })) : [],
+        subagents: Array.isArray(s.subagents) ? s.subagents.map(sa => ({ ...sa })) : [],
+        textAfterBox: extractSubagentBlocks(s.textAfterBox || '').cleanedText,
+      }));
+    } else if (role === 'assistant' && Array.isArray(content)) {
+      let curStep = { textBeforeBox: '', thinking: '', toolCalls: [], subagents: [], textAfterBox: '' };
+      let sawToolResult = false;
+      content.forEach(item => {
+        if (!item || typeof item !== 'object') return;
+        const btype = String(item.type || '');
+        if (btype === 'thinking' || btype === 'reasoning') {
+          const thk = safeText(item.thinking ?? item.text).trim();
+          if (!thk) return;
+          if (curStep.toolCalls.length && sawToolResult && curStep.textAfterBox) {
+            steps.push(curStep);
+            curStep = { textBeforeBox: '', thinking: thk, toolCalls: [], subagents: [], textAfterBox: '' };
+            sawToolResult = false;
+          } else {
+            curStep.thinking = curStep.thinking ? `${curStep.thinking}\n${thk}` : thk;
+          }
+        } else if (btype === 'text') {
+          const txt = extractSubagentBlocks(safeText(item.text ?? item.content)).cleanedText;
+          if (!txt) return;
+          if (curStep.toolCalls.length) {
+            if (sawToolResult) {
+              steps.push(curStep);
+              curStep = { textBeforeBox: txt, thinking: '', toolCalls: [], subagents: [], textAfterBox: '' };
+              sawToolResult = false;
+            } else {
+              curStep.textAfterBox = curStep.textAfterBox ? `${curStep.textAfterBox}\n\n${txt}` : txt;
+            }
+          } else {
+            curStep.textBeforeBox = curStep.textBeforeBox ? `${curStep.textBeforeBox}\n\n${txt}` : txt;
+          }
+        } else if (btype === 'toolCall' || btype === 'tool_use' || btype === 'tool_call') {
+          if (sawToolResult && curStep.textAfterBox) {
+            steps.push(curStep);
+            curStep = { textBeforeBox: '', thinking: '', toolCalls: [], subagents: [], textAfterBox: '' };
+            sawToolResult = false;
+          }
+          curStep.toolCalls.push({
+            id: String(item.id || item.toolCallId || ''),
+            name: String(item.name || item.toolName || 'tool'),
+            arguments: item.arguments || item.input || item.args || {},
+          });
+        } else if (btype === 'toolResult' || btype === 'tool_result') {
+          sawToolResult = true;
+          const trId = String(item.toolUseId || item.toolCallId || '');
+          const trRes = safeText(item.content ?? item.text);
+          const existingCall = curStep.toolCalls.find(tc => trId && tc.id === trId && tc.result === undefined);
+          if (existingCall) {
+            existingCall.result = trRes;
+            existingCall.isError = Boolean(item.isError);
+            existingCall.details = item.details;
+          } else {
+            curStep.toolCalls.push({
+              id: trId,
+              name: String(item.toolName || 'result'),
+              result: trRes,
+              isError: Boolean(item.isError),
+              details: item.details,
+            });
+          }
+        }
+      });
+      if (curStep.textBeforeBox || curStep.thinking || curStep.toolCalls.length || curStep.textAfterBox) {
+        if (!curStep.toolCalls.length && curStep.textBeforeBox && !curStep.textAfterBox) {
+          curStep.textAfterBox = curStep.textBeforeBox;
+          curStep.textBeforeBox = '';
+        }
+        steps.push(curStep);
+      }
+    }
+
     return {
       role,
       text: cleanedText,
-      thinking: thinkingParts.filter(Boolean).join('\n') || safeText(rawMsg.thinking),
-      toolCalls: toolCalls.length ? toolCalls : (Array.isArray(rawMsg.tools) ? rawMsg.tools : []),
-      subagents,
+      thinking: resolvedThinking,
+      toolCalls: resolvedTools,
+      subagents: Array.isArray(rawMsg.subagents) && rawMsg.subagents.length ? rawMsg.subagents : subagents,
+      steps,
+      invokedSkills,
       context: parsedContext,
       _msgIndex: rawMsg._msgIndex ?? rawMsg.msgIndex,
       truncated: Boolean(rawMsg.truncated),
@@ -957,15 +1232,14 @@
     </div>
     <header class="lc-header">
       <div class="lc-brand">
-        <span class="lc-status-dot" id="lcStatusDot"></span>
-        ${LANTERN_SVG.replace('lc-lantern-svg', 'lc-brand-svg')}
-        <span>Lanbot</span>
-        <button type="button" class="lc-icon-btn" id="lcSessionBtn" title="Switch or manage conversations" style="max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          · <span id="lcSessionTitle">New chat</span> ▾
+        <span class="lc-status-dot" id="lcStatusDot" title="Ready"></span>
+        <button type="button" class="lc-icon-btn" id="lcSessionBtn" title="Switch or manage conversations" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <span id="lcSessionTitle">New chat</span> ▾
         </button>
       </div>
       <div class="lc-header-actions">
         <button type="button" class="lc-icon-btn" id="lcNewBtn" title="New chat (+)">＋</button>
+        <button type="button" class="lc-icon-btn" id="lcAutoHideBtn" title="Toggle Auto-Hide mode (slides to edge on mouse leave without pushing page layout)">📌</button>
         <button type="button" class="lc-icon-btn" id="lcPopoutBtn" title="Pop out Lanbot into a standalone window (stays still across folder navigations)">↗</button>
         <button type="button" class="lc-icon-btn" id="lcSettingsBtn" title="Settings (Thinking, System Prompt, Skills & Export HTML)">⚙</button>
         <button type="button" class="lc-icon-btn" id="lcDockBtn" title="Dock Left / Right">⇤</button>
@@ -974,16 +1248,21 @@
       </div>
     </header>
     <div class="lc-subbar">
-      <span class="lc-subbar-status" id="lcStatusText">Ready</span>
-      <span id="lcTokenBadge" title="Current context size (use /compact to reduce)">0 msgs · 0 tok</span>
+      <div class="lc-worker-tabs" id="lcWorkerTabs" role="tablist" aria-label="Session & Terminal Tabs"></div>
+      <span class="lc-subbar-status" id="lcStatusText" hidden>Ready</span>
+      <div class="lc-subbar-right">
+        <span id="lcTokenBadge" title="Current context size (use /compact to reduce)" style="flex-shrink:0">0 msgs · 0 tok</span>
+      </div>
     </div>
     <div class="lc-transcript" id="lcTranscript"></div>
+    <div class="lc-terminal-stage" id="lcTerminalStage" hidden></div>
     <div class="lc-context-bar" id="lcContextBar"></div>
     <div id="lanternChatAttachments" hidden></div>
     <div class="lc-composer">
       <button type="button" class="lc-scroll-bottom-btn" id="lcScrollBottomBtn" title="Scroll to bottom" aria-label="Scroll to bottom" hidden>↓</button>
       <div class="lc-input-resizer" id="lcInputResizer" title="Drag up or down to resize prompt box"><span></span></div>
       <div class="lc-slash-popover" id="lcSlashPopover" hidden></div>
+      <div class="lc-active-agents-bar" id="lcActiveAgentsBar" hidden></div>
       <div class="lc-activity-ticker" id="lcActivityTicker" hidden>
         <div class="lc-activity-ticker-left">
           <span class="lc-activity-spinner"></span>
@@ -1038,7 +1317,7 @@
         <span>⚙ Lanbot Settings</span>
         <button type="button" class="lc-icon-btn" data-close-modal="lcSettingsModal">✕</button>
       </div>
-      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;padding-right:2px">
+      <div class="lc-settings-scroll-body" style="display:flex;flex-direction:column;gap:12px;flex:1 1 0%;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-right:4px">
         <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:700">
           <span>🧠 Thinking Level</span>
           <select id="lcThinkingSelect" class="lc-input" style="min-height:36px"></select>
@@ -1072,14 +1351,51 @@
             <button type="button" class="lc-diff-btn" id="lcResetBotBtn" style="border-color:#f59e0b;color:#fcd34d" title="Force-restart Lanbot process and clear stuck turn locks without restarting the server (/reset-bot)">🔄 Reset Lanbot</button>
           </div>
         </div>
-        <div id="lcAuthBox" style="display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:1px solid var(--lc-border)">
-          <span style="font-size:12px;font-weight:700">🔒 Terminal & LAN Master Lock (Localhost Keyholder)</span>
+        <div id="lcAuthBox" style="display:flex;flex-direction:column;gap:8px;padding-top:8px;border-top:1px solid var(--lc-border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+            <span style="font-size:12px;font-weight:700">⚙️ LAN &amp; Workspace Settings (lan_drive_config.yaml)</span>
+            <span id="lcLanLockStatusBadge" class="lc-ctx-pill" style="font-size:10.5px">Checking…</span>
+          </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap" id="lcLocalMasterLockRow">
-            <button type="button" class="lc-diff-btn" id="lcLockLanBtn" title="Revoke all active LAN sessions and hard-lock LAN access">🔒 Lock All LAN</button>
-            <button type="button" class="lc-diff-btn accept" id="lcAllowLanBtn" title="Allow LAN clients to unlock with password">🔓 Allow LAN Login</button>
+            <button type="button" class="lc-diff-btn" id="lcLockLanBtn" title="Lock LAN access and require password">🔒 LAN Lock</button>
+            <button type="button" class="lc-diff-btn accept" id="lcAllowLanBtn" title="Unlock LAN access without password">🔓 LAN Unlocked</button>
+          </div>
+          <div id="lcLocalLanAdminPanel" style="display:flex;flex-direction:column;gap:7px;padding:8px;border-radius:8px;background:rgba(15,23,42,0.65);border:1px solid var(--lc-border)">
+            <div style="font-size:11px;font-weight:700;color:#93c5fd">🔑 Set LAN Password (4–12 characters, no CLI needed):</div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="password" id="lcSetLanPwdInput" class="lc-input" minlength="4" maxlength="12" style="min-height:30px;max-height:30px;flex:1" placeholder="New password (4–12 chars)…" />
+              <button type="button" class="lc-send-btn" id="lcSaveLanPwdBtn" style="height:30px;padding:0 10px;font-size:11px">💾 Set Pass</button>
+              <button type="button" class="lc-diff-btn" id="lcClearLanPwdBtn" style="height:30px;padding:0 8px;font-size:11px" title="Clear LAN password">✕ Clear</button>
+            </div>
+            <div style="font-size:11px;font-weight:700;color:#93c5fd;margin-top:2px">🛠️ Feature Switches &amp; Hard-Pinned Model (YAML):</div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px">
+              <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="lcCfgLanbotEnabled" checked />
+                <span>Allow Lanbot</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="lcCfgTerminalEnabled" checked />
+                <span>Allow Terminal</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="lcCfgLockModelCheck" />
+                <span>Hard-Pin LAN Provider/Model</span>
+              </label>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <input type="text" id="lcCfgPinProvider" class="lc-input" style="min-height:28px;max-height:28px;width:110px" placeholder="Provider (openai)" />
+              <input type="text" id="lcCfgPinModel" class="lc-input" style="min-height:28px;max-height:28px;flex:1" placeholder="Model ID (gpt-6.1-sol)" />
+              <select id="lcCfgLanToolsMode" class="lc-select" style="height:28px;font-size:11px" title="LAN Tool Permissions">
+                <option value="readonly">LAN: Read-Only</option>
+                <option value="code">LAN: Code Edit</option>
+                <option value="full">LAN: Full Tools</option>
+                <option value="none">LAN: No Tools</option>
+              </select>
+            </div>
+            <button type="button" class="lc-send-btn" id="lcSaveLanSettingsBtn" style="align-self:flex-start;height:30px;padding:0 12px;font-size:11.5px">💾 Save LAN Settings to YAML</button>
           </div>
           <div style="display:flex;gap:6px" id="lcLanPasswordRow">
-            <input type="password" id="lcPasswordInput" class="lc-input" style="min-height:34px" placeholder="Terminal password (LAN)…" />
+            <input type="password" id="lcPasswordInput" class="lc-input" style="min-height:34px" placeholder="Enter LAN password (4–12 chars)…" />
             <button type="button" class="lc-send-btn" id="lcUnlockBtn">Unlock</button>
           </div>
         </div>
@@ -1105,7 +1421,10 @@
         <input type="text" class="lc-input" id="lcForkNameInput" style="min-height:32px;max-height:32px;flex:1" placeholder="Optional name for forked session (e.g. Tab 2 - File B)…" />
         <button type="button" class="lc-send-btn" id="lcForkFullBtn" style="height:32px;padding:0 10px;font-size:11.5px;white-space:nowrap">⑂ Fork Latest</button>
       </div>
-      <div style="font-size:11px;color:var(--lc-muted);margin-bottom:4px">Or click any turn below to fork right after that step (e.g. right after loading a workflow):</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <input type="search" class="lc-input" id="lcForkTurnSearch" style="min-height:28px;max-height:28px;flex:1" placeholder="Filter turns (all 100+ messages loaded from session)…" />
+        <span id="lcForkTurnCountBadge" class="lc-ctx-pill" style="font-size:10.5px">0 turns</span>
+      </div>
       <div class="lc-model-list" id="lcForkTurnList"></div>
     </div>
 
@@ -1127,9 +1446,17 @@
     </div>
   `;
 
-  document.body.append(fab, drawer);
+  const edgeStrip = document.createElement('div');
+  edgeStrip.className = 'lantern-chat-edge-strip';
+  edgeStrip.id = 'lcEdgeStrip';
+  edgeStrip.title = 'Hover to slide out Lanbot (Auto-Hide mode)';
+
+  document.body.append(fab, edgeStrip, drawer);
 
   const els = {
+    edgeStrip,
+    autoHideBtn: drawer.querySelector('#lcAutoHideBtn'),
+    workerTabs: drawer.querySelector('#lcWorkerTabs'),
     resizer: drawer.querySelector('.lantern-chat-resizer'),
     inputResizer: drawer.querySelector('#lcInputResizer'),
     dropOverlay: drawer.querySelector('#lcDropOverlay'),
@@ -1145,7 +1472,12 @@
     closeBtn: drawer.querySelector('#lcCloseBtn'),
     statusText: drawer.querySelector('#lcStatusText'),
     tokenBadge: drawer.querySelector('#lcTokenBadge'),
+    todoBtn: drawer.querySelector('#lcTodoBtn'),
+    todoDot: drawer.querySelector('#lcTodoDot'),
+    todoPopover: drawer.querySelector('#lcTodoPopover'),
+    activeAgentsBar: drawer.querySelector('#lcActiveAgentsBar'),
     transcript: drawer.querySelector('#lcTranscript'),
+    terminalStage: drawer.querySelector('#lcTerminalStage'),
     contextBar: drawer.querySelector('#lcContextBar'),
     scrollBottomBtn: drawer.querySelector('#lcScrollBottomBtn'),
     slashPopover: drawer.querySelector('#lcSlashPopover'),
@@ -1209,33 +1541,463 @@
     if (els.input) els.input.style.height = `${Math.round(inputH)}px`;
     drawer.dataset.dock = prefs.dock;
     fab.dataset.dock = prefs.dock;
+    if (els.edgeStrip) els.edgeStrip.dataset.dock = prefs.dock;
     document.body.dataset.chatDock = prefs.dock;
     els.dockBtn.textContent = prefs.dock === 'right' ? '⇤' : '⇥';
     els.expandBtn.textContent = prefs.expanded ? '⤡' : '⤢';
+    if (els.autoHideBtn) {
+      els.autoHideBtn.classList.toggle('is-active', Boolean(prefs.autoHide));
+      els.autoHideBtn.title = prefs.autoHide
+        ? 'Auto-Hide ON (slides to edge on mouse leave without pushing page layout — click to pin)'
+        : 'Enable Auto-Hide mode (Windows taskbar style — overlay without pushing page layout)';
+    }
     els.contextToggle.textContent = prefs.autoContext ? '👁 Context: ON' : '👁 Context: OFF';
     els.contextToggle.style.color = prefs.autoContext ? '#68e37a' : '#9fb1c5';
 
     const topPx = Math.max(16, Math.min(window.innerHeight - 62, Math.round(prefs.fabTopRatio * window.innerHeight)));
     fab.style.top = `${topPx}px`;
     fab.style.bottom = 'auto';
+    if (els.edgeStrip) {
+      els.edgeStrip.style.top = `${Math.max(8, Math.min(window.innerHeight - 218, topPx - 80))}px`;
+      els.edgeStrip.style.bottom = 'auto';
+      els.edgeStrip.style.height = '210px';
+    }
+
+    document.body.classList.toggle('lantern-chat-autohide', Boolean(prefs.autoHide));
 
     if (prefs.open) {
       drawer.classList.add('open');
-      fab.classList.add('hidden-when-open');
       document.body.classList.add('lantern-chat-open');
+      syncAutoHideCollapseState();
     } else {
-      drawer.classList.remove('open');
+      drawer.classList.remove('open', 'autohide-collapsed');
+      if (els.edgeStrip) els.edgeStrip.classList.remove('visible');
       fab.classList.remove('hidden-when-open');
       document.body.classList.remove('lantern-chat-open');
     }
     saveUiPrefs();
   }
 
+  let autoHideCollapseTimer = 0;
+  function isChatInputFocused() {
+    return Boolean(els.input && document.activeElement === els.input);
+  }
+
+  function hasOpenOverlayModalInsideDrawer() {
+    return Boolean(
+      (els.modelModal && !els.modelModal.hidden) ||
+      (els.sessionModal && !els.sessionModal.hidden) ||
+      (els.settingsModal && !els.settingsModal.hidden) ||
+      (els.transcriptModal && !els.transcriptModal.hidden) ||
+      (els.forkModal && !els.forkModal.hidden) ||
+      (els.attachModal && !els.attachModal.hidden)
+    );
+  }
+
+  function syncAutoHideCollapseState() {
+    if (els.edgeStrip) els.edgeStrip.classList.remove('visible');
+    if (!prefs.open || !prefs.autoHide || IS_STANDALONE_CHAT) {
+      drawer.classList.remove('autohide-collapsed');
+      fab.classList.toggle('hidden-when-open', Boolean(prefs.open));
+      return;
+    }
+    if (state.autoHideHovered || hasOpenOverlayModalInsideDrawer() || isChatInputFocused()) {
+      drawer.classList.remove('autohide-collapsed');
+      fab.classList.add('hidden-when-open');
+    } else {
+      drawer.classList.add('autohide-collapsed');
+      fab.classList.remove('hidden-when-open');
+    }
+  }
+
+  function formatShortSessionIdTag(sid, fallbackIdx = 0) {
+    const clean = String(sid || '').replace(/^(?:newchat-|fork-|session-)/, '').trim();
+    if (clean) return `#${clean.slice(0, 3)}`;
+    return `#s${fallbackIdx + 1}`;
+  }
+
+  function setChatModeVsTerminalMode(isTerminalMode) {
+    const termStage = els.terminalStage;
+    const composerEl = drawer.querySelector('.lc-composer');
+    if (isTerminalMode) {
+      if (els.transcript) els.transcript.hidden = true;
+      if (els.contextBar) els.contextBar.hidden = true;
+      if (composerEl) composerEl.hidden = true;
+      if (termStage) termStage.hidden = false;
+    } else {
+      if (termStage) termStage.hidden = true;
+      if (els.transcript) els.transcript.hidden = false;
+      if (els.contextBar) els.contextBar.hidden = false;
+      if (composerEl) composerEl.hidden = false;
+    }
+  }
+
+  function renderWorkerTabs() {
+    if (!els.workerTabs) return;
+    els.workerTabs.textContent = '';
+    const workers = Array.isArray(state.workerTabs) ? state.workerTabs : [];
+    workers.forEach((w, idx) => {
+      if (w.cid === state.clientSessionId) {
+        w.busy = Boolean(state.busy);
+        if (state.sessionId) {
+          if (!w.snapshot) w.snapshot = {};
+          w.snapshot.sessionId = state.sessionId;
+          w.snapshot.sessionName = state.sessionName;
+        }
+      }
+      const wSid = (w.cid === state.clientSessionId ? state.sessionId : w.snapshot?.sessionId) || '';
+      const wName = (w.cid === state.clientSessionId ? state.sessionName : w.snapshot?.sessionName) || '';
+      const shortTag = formatShortSessionIdTag(wSid, idx);
+      w.label = shortTag;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lc-worker-tab' + (w.id === state.activeWorkerId ? ' active' : '');
+      btn.dataset.workerIndex = String(idx + 1);
+      btn.dataset.workerId = w.id;
+      btn.title = `${wName ? wName + ' ' : ''}(${wSid ? '#' + wSid : shortTag}) — ${w.busy ? 'Responding…' : 'Ready'}`;
+      const dot = document.createElement('span');
+      dot.className = 'lc-worker-tab-dot';
+      dot.dataset.state = w.busy ? 'busy' : (w.error ? 'error' : 'ready');
+      const lbl = document.createElement('span');
+      lbl.textContent = shortTag;
+      btn.append(dot, lbl);
+      if (workers.length > 1) {
+        const closeSpan = document.createElement('span');
+        closeSpan.className = 'lc-worker-tab-close';
+        closeSpan.textContent = '×';
+        closeSpan.title = `Close tab ${shortTag}`;
+        closeSpan.addEventListener('click', ev => {
+          ev.stopPropagation();
+          closeWorkerTab(w.id);
+        });
+        btn.append(closeSpan);
+      }
+      btn.addEventListener('click', () => {
+        switchWorkerTab(w.id);
+      });
+      els.workerTabs.append(btn);
+    });
+
+    const termTabs = Array.isArray(state.terminalTabs) ? state.terminalTabs : [];
+    termTabs.forEach(tt => {
+      const tabKey = 'ter:' + tt.id;
+      const tBtn = document.createElement('button');
+      tBtn.type = 'button';
+      tBtn.className = 'lc-worker-tab is-terminal' + (state.activeWorkerId === tabKey ? ' active' : '');
+      tBtn.title = `${tt.label} — Live Terminal in Lanbot (click × to return to bottom Terminal bar)`;
+      const dot = document.createElement('span');
+      dot.className = 'lc-worker-tab-dot';
+      dot.dataset.state = 'ready';
+      const lbl = document.createElement('span');
+      lbl.textContent = tt.label;
+      const closeSpan = document.createElement('span');
+      closeSpan.className = 'lc-worker-tab-close';
+      closeSpan.textContent = '×';
+      closeSpan.title = `Return ${tt.label} to bottom Terminal bar (keeps session alive)`;
+      closeSpan.addEventListener('click', ev => {
+        ev.stopPropagation();
+        detachTerminalTab(tt.id);
+      });
+      tBtn.append(dot, lbl, closeSpan);
+      tBtn.addEventListener('click', () => {
+        activateTerminalTabInLanbot(tt.id);
+      });
+      els.workerTabs.append(tBtn);
+    });
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'lc-worker-add-btn';
+    addBtn.id = 'lcAddWorkerTabBtn';
+    addBtn.textContent = '＋';
+    addBtn.title = 'Open a new session tab (+)';
+    addBtn.addEventListener('click', () => {
+      spawnParallelWorkerTab();
+    });
+    els.workerTabs.append(addBtn);
+  }
+
+  els.workerTabs?.addEventListener('wheel', ev => {
+    if (Math.abs(ev.deltaY) > 0 || Math.abs(ev.deltaX) > 0) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      els.workerTabs.scrollLeft += (ev.deltaY || ev.deltaX);
+    }
+  }, { passive: false });
+
+  function attachTerminalTab(termId, label, hostEl, onReady) {
+    state.terminalTabs = Array.isArray(state.terminalTabs) ? state.terminalTabs : [];
+    let existing = state.terminalTabs.find(x => x.id === termId);
+    if (!existing) {
+      existing = { id: termId, label: label || ('Ter' + (state.terminalTabs.length + 1)), hostEl };
+      state.terminalTabs.push(existing);
+    } else {
+      existing.label = label || existing.label;
+      existing.hostEl = hostEl || existing.hostEl;
+    }
+    prefs.open = true;
+    state.autoHideHovered = true;
+    applyLayout();
+    activateTerminalTabInLanbot(termId, onReady);
+  }
+
+  function activateTerminalTabInLanbot(termId, onReady) {
+    const tt = (state.terminalTabs || []).find(x => x.id === termId);
+    if (!tt) return;
+    if (!String(state.activeWorkerId || '').startsWith('ter:')) {
+      saveCurrentWorkerSnapshot();
+    }
+    state.activeWorkerId = 'ter:' + termId;
+    setChatModeVsTerminalMode(true);
+    if (els.terminalStage && tt.hostEl) {
+      Array.from(els.terminalStage.children).forEach(ch => {
+        if (ch !== tt.hostEl) ch.classList.add('hidden');
+      });
+      if (tt.hostEl.parentElement !== els.terminalStage) {
+        els.terminalStage.appendChild(tt.hostEl);
+      }
+      tt.hostEl.classList.remove('hidden');
+    }
+    renderWorkerTabs();
+    requestAnimationFrame(() => {
+      globalThis.__lanternTerminalScm?.activateLanbotTerminal?.(termId);
+      if (typeof onReady === 'function') onReady();
+    });
+  }
+
+  function updateTerminalTabLabel(termId, newLabel) {
+    const tt = (state.terminalTabs || []).find(x => x.id === termId);
+    if (tt && newLabel) {
+      tt.label = newLabel;
+      renderWorkerTabs();
+    }
+  }
+
+  function detachTerminalTab(termId, skipReturn = false) {
+    const idx = (state.terminalTabs || []).findIndex(x => x.id === termId);
+    if (idx < 0) return;
+    state.terminalTabs.splice(idx, 1);
+    const wasActive = state.activeWorkerId === ('ter:' + termId);
+    if (!skipReturn) {
+      globalThis.__lanternTerminalScm?.returnTerminalFromLanbot?.(termId);
+    }
+    if (wasActive) {
+      const fallbackWorker = (state.workerTabs || [])[0];
+      if (fallbackWorker) {
+        switchWorkerTab(fallbackWorker.id, true);
+      } else {
+        setChatModeVsTerminalMode(false);
+        renderWorkerTabs();
+      }
+    } else {
+      renderWorkerTabs();
+    }
+  }
+
+  function cloneStreamTurnState(st) {
+    if (!st || typeof st !== 'object') {
+      return {
+        text: '',
+        thinking: '',
+        subturnText: '',
+        subturnThinking: '',
+        subturnToolCalls: [],
+        steps: [],
+        toolCalls: [],
+        subagents: [],
+        saved: false,
+        hadToolCall: false,
+        lastStopReason: '',
+      };
+    }
+    return {
+      text: String(st.text || ''),
+      thinking: String(st.thinking || ''),
+      subturnText: String(st.subturnText || ''),
+      subturnThinking: String(st.subturnThinking || ''),
+      subturnToolCalls: Array.isArray(st.subturnToolCalls) ? st.subturnToolCalls.map(t => ({ ...t })) : [],
+      steps: Array.isArray(st.steps) ? st.steps.map(s => ({
+        textBeforeBox: String(s.textBeforeBox || ''),
+        thinking: String(s.thinking || ''),
+        toolCalls: Array.isArray(s.toolCalls) ? s.toolCalls.map(tc => ({ ...tc })) : [],
+        subagents: Array.isArray(s.subagents) ? s.subagents.map(sa => ({ ...sa })) : [],
+        textAfterBox: String(s.textAfterBox || ''),
+      })) : [],
+      toolCalls: Array.isArray(st.toolCalls) ? st.toolCalls.map(t => ({ ...t })) : [],
+      subagents: Array.isArray(st.subagents) ? st.subagents.map(s => ({ ...s })) : [],
+      saved: Boolean(st.saved),
+      hadToolCall: Boolean(st.hadToolCall),
+      lastStopReason: String(st.lastStopReason || ''),
+    };
+  }
+
+  function hasActiveStreamTurn(st = streamTurn) {
+    if (!st || typeof st !== 'object') return false;
+    return Boolean(
+      st.text ||
+      st.subturnText ||
+      st.thinking ||
+      st.subturnThinking ||
+      (Array.isArray(st.steps) && st.steps.length > 0) ||
+      (Array.isArray(st.subturnToolCalls) && st.subturnToolCalls.length > 0) ||
+      (Array.isArray(st.toolCalls) && st.toolCalls.length > 0) ||
+      (Array.isArray(st.subagents) && st.subagents.length > 0)
+    );
+  }
+
+  function syncModelPillUi() {
+    const curModel = state.model;
+    if (curModel && (curModel.id || curModel.name)) {
+      els.providerSpan.textContent = curModel.provider || 'auto';
+      els.providerSpan.hidden = !curModel.provider;
+      els.modelSpan.textContent = curModel.name || curModel.id || 'model';
+    } else {
+      els.providerSpan.textContent = 'auto';
+      els.providerSpan.hidden = true;
+      els.modelSpan.textContent = 'Default model';
+    }
+  }
+
+  function saveCurrentWorkerSnapshot() {
+    const cur = (state.workerTabs || []).find(w => w.id === state.activeWorkerId);
+    if (!cur) return;
+    cur.cid = state.clientSessionId;
+    cur.busy = Boolean(state.busy);
+    cur.streamTurn = cloneStreamTurnState(streamTurn);
+    cur.activeToolRows = new Map(activeToolRows);
+    cur.subagentTabs = Array.isArray(state.subagentTabs) ? state.subagentTabs.map(s => ({ ...s })) : [];
+    cur.activeBackgroundSubagents = new Map(state.activeBackgroundSubagents || []);
+    cur.snapshot = {
+      sessionId: state.sessionId,
+      sessionName: state.sessionName,
+      model: state.model ? { ...state.model } : (cur.snapshot?.model ? { ...cur.snapshot.model } : null),
+      thinkingLevel: state.thinkingLevel || cur.snapshot?.thinkingLevel || 'medium',
+      messages: Array.isArray(state.messages) && state.messages.length > 0
+        ? [...state.messages]
+        : (Array.isArray(cur.snapshot?.messages) ? [...cur.snapshot.messages] : []),
+      contextUsage: { ...state.contextUsage },
+      hasMoreOlder: state.hasMoreOlder,
+      oldestLoadedIndex: state.oldestLoadedIndex,
+      totalHistoryMessages: state.totalHistoryMessages,
+    };
+    persistWorkerTabsBar();
+  }
+
+  function spawnParallelWorkerTab() {
+    saveCurrentWorkerSnapshot();
+    const nextNum = (state.workerTabs?.length || 1) + 1;
+    const newId = 'w' + Date.now().toString(36).slice(-4) + nextNum;
+    const newCid = `${INITIAL_CLIENT_SESSION_ID}__w${nextNum}_${Math.random().toString(36).slice(2, 6)}`;
+    state.workerTabs.push({
+      id: newId,
+      cid: newCid,
+      label: `#s${nextNum}`,
+      busy: false,
+      error: false,
+      streamTurn: cloneStreamTurnState(null),
+      activeToolRows: new Map(),
+      subagentTabs: [],
+      activeBackgroundSubagents: new Map(),
+      snapshot: {
+        sessionId: '',
+        sessionName: '',
+        model: state.model ? { ...state.model } : null,
+        thinkingLevel: state.thinkingLevel || 'medium',
+        messages: [],
+        contextUsage: { messageCount: 0, estimatedTokens: 0 },
+        hasMoreOlder: false,
+        oldestLoadedIndex: 0,
+        totalHistoryMessages: 0,
+      },
+    });
+    switchWorkerTab(newId, true);
+  }
+
+  let tabSyncTimer = 0;
+  function switchWorkerTab(workerId, isNewlySpawned = false) {
+    const target = (state.workerTabs || []).find(w => w.id === workerId);
+    if (!target) return;
+    if (workerId === state.activeWorkerId && !isNewlySpawned) return;
+    if (!String(state.activeWorkerId || '').startsWith('ter:')) {
+      flushStreamingDomUpdate();
+      saveCurrentWorkerSnapshot();
+    }
+    setChatModeVsTerminalMode(false);
+    streamingNode = null;
+    streamingThinkingNode = null;
+    streamingToolDetails = null;
+    state.activeWorkerId = target.id;
+    state.clientSessionId = target.cid;
+    const snap = target.snapshot;
+    state.sessionId = snap?.sessionId || '';
+    state.sessionName = snap?.sessionName || '';
+    if (snap?.model) {
+      state.model = { ...snap.model };
+    }
+    if (snap?.thinkingLevel) {
+      state.thinkingLevel = snap.thinkingLevel;
+    }
+    state.messages = Array.isArray(snap?.messages) ? [...snap.messages] : [];
+    state.contextUsage = snap?.contextUsage || { messageCount: 0, estimatedTokens: 0 };
+    state.hasMoreOlder = Boolean(snap?.hasMoreOlder);
+    state.oldestLoadedIndex = Number(snap?.oldestLoadedIndex || 0);
+    state.totalHistoryMessages = Number(snap?.totalHistoryMessages || 0);
+    streamTurn = cloneStreamTurnState(target.streamTurn);
+    activeToolRows.clear();
+    if (target.activeToolRows instanceof Map) {
+      target.activeToolRows.forEach((v, k) => activeToolRows.set(k, v));
+    }
+    state.subagentTabs = Array.isArray(target.subagentTabs) ? target.subagentTabs.map(s => ({ ...s })) : [];
+    state.activeBackgroundSubagents = target.activeBackgroundSubagents instanceof Map
+      ? new Map(target.activeBackgroundSubagents)
+      : new Map();
+    setStreaming(Boolean(target.busy));
+    lastTranscriptFingerprint = '';
+    els.sessionTitle.textContent = state.sessionName || (state.sessionId ? `Session #${String(state.sessionId).slice(0, 6)}` : 'New chat');
+    syncModelPillUi();
+    updateTokenBadgeDisplay();
+    renderTranscript({ force: true, scrollToBottom: true });
+    renderWorkerTabs();
+    refreshActiveAgentsBar();
+    persistWorkerTabsBar();
+    clearTimeout(tabSyncTimer);
+    const targetCid = target.cid;
+    tabSyncTimer = setTimeout(() => {
+      if (wsConnected && state.clientSessionId === targetCid) {
+        sendSync();
+      }
+    }, 35);
+  }
+
+  function closeWorkerTab(workerId) {
+    if (!Array.isArray(state.workerTabs) || state.workerTabs.length <= 1) return;
+    const idx = state.workerTabs.findIndex(w => w.id === workerId);
+    if (idx < 0) return;
+    const wasActive = state.activeWorkerId === workerId;
+    state.workerTabs.splice(idx, 1);
+    if (wasActive) {
+      const nextTab = state.workerTabs[Math.max(0, idx - 1)] || state.workerTabs[0];
+      if (nextTab) switchWorkerTab(nextTab.id, true);
+    } else {
+      renderWorkerTabs();
+    }
+  }
+
   function setStatus(text, kind = 'info') {
-    els.statusText.textContent = text || 'Ready';
+    const clean = text || 'Ready';
+    els.statusText.textContent = clean;
     els.statusText.dataset.kind = kind;
-    els.statusDot.dataset.state = state.busy ? 'busy' : (kind === 'error' ? 'error' : 'ready');
+    const dotState = state.busy ? 'busy' : (kind === 'error' ? 'error' : 'ready');
+    els.statusDot.dataset.state = dotState;
+    els.statusDot.title = clean;
     fab.dataset.busy = state.busy ? 'true' : 'false';
+    if (els.edgeStrip) els.edgeStrip.dataset.busy = state.busy ? 'true' : 'false';
+    const curW = (state.workerTabs || []).find(w => w.id === state.activeWorkerId);
+    if (curW) {
+      curW.busy = Boolean(state.busy);
+      curW.error = kind === 'error';
+    }
+    renderWorkerTabs();
   }
 
   function setActivityTicker(text = '', showSteerHint = null) {
@@ -1409,7 +2171,7 @@
     if (els.transcript && els.transcript.contains(target)) {
       return; // .lc-transcript has overscroll-behavior: contain; never block native smooth wheel scroll
     }
-    if (target.closest('.lc-model-list, .lc-slash-popover, .lc-input, .lc-context-bar, pre')) {
+    if (target.closest('#lcSettingsModal, .lc-overlay-modal, .lc-settings-scroll-body, .lc-model-list, .lc-slash-popover, .lc-input, .lc-context-bar, .lc-worker-tabs, .lc-todo-popover, .lc-terminal-stage, pre')) {
       return;
     }
     event.preventDefault();
@@ -1782,11 +2544,27 @@
       addChip(`⏳ Uploading ${state.uploadingCount} file(s)…`);
     }
 
+    const formatAttachmentLabel = (rawName, maxLen = 28) => {
+      const s = String(rawName || '').trim();
+      if (s.length <= maxLen) return s;
+      const dotIdx = s.lastIndexOf('.');
+      if (dotIdx > 0 && s.length - dotIdx <= 8) {
+        const ext = s.slice(dotIdx);
+        const base = s.slice(0, dotIdx);
+        const keep = Math.max(8, maxLen - ext.length - 1);
+        const head = Math.ceil(keep * 0.65);
+        const tail = Math.max(3, keep - head);
+        return `${base.slice(0, head)}…${base.slice(-tail)}${ext}`;
+      }
+      return `${s.slice(0, Math.ceil(maxLen * 0.65))}…${s.slice(-7)}`;
+    };
+
     if (Array.isArray(ctx.attachments) && ctx.attachments.length) {
       ctx.attachments.forEach(att => {
         const isImg = Boolean(att.isImage || inferIsImage(att.path));
         const icon = att.isDir ? '📁 ' : (isImg ? '🖼️ ' : '📎 ');
-        const displayName = att.name || att.path.split('/').pop() || att.path;
+        const fullName = att.name || att.path.split('/').pop() || att.path;
+        const displayName = formatAttachmentLabel(fullName, 28);
         addChip(
           `${isImg ? '' : icon}${displayName}`,
           () => {
@@ -1797,7 +2575,7 @@
             const cb = card?.querySelector('input[type="checkbox"]');
             if (cb && cb.checked) cb.click();
           },
-          att.path,
+          `${fullName} (${att.path})`,
           {
             className: isImg ? 'is-image' : '',
             thumbUrl: isImg ? (att.previewUrl || inferPreviewUrl(att.path, true)) : '',
@@ -1831,62 +2609,957 @@
     }
   });
 
-  // --- Subagent Card Renderer ---
-  function createSubagentGrid(subagents) {
-    const grid = document.createElement('div');
-    grid.className = 'lc-subagent-grid';
-    subagents.forEach(sub => {
-      const card = document.createElement('div');
-      card.className = 'lc-subagent-card';
-      const top = document.createElement('div');
-      top.className = 'lc-subagent-top';
-      const title = document.createElement('div');
-      title.className = 'lc-subagent-title';
-      title.textContent = `🤖 ${sub.summary || sub.taskId || 'Subagent Task'}`;
-      const badge = document.createElement('span');
-      badge.className = 'lc-subagent-badge';
-      badge.textContent = sub.status || 'Done';
-      top.append(title, badge);
-      card.append(top);
+  // --- v8.1: Structured Python-Dict / JSON Parser, Todo Popover & Claude-Style Subagent Renderer ---
+  function tryParseJsonOrPyDict(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
+    const str = String(raw).trim();
+    if (!str || (str[0] !== '{' && str[0] !== '[')) return null;
+    try {
+      return JSON.parse(str);
+    } catch (_) {}
+    // Convert Python repr dict/list (single-quoted strings, True/False/None) to valid JSON
+    try {
+      let out = '';
+      let i = 0;
+      const n = str.length;
+      while (i < n) {
+        const ch = str[i];
+        if (ch === "'" || ch === '"') {
+          const quote = ch;
+          out += '"';
+          i++;
+          while (i < n && str[i] !== quote) {
+            if (str[i] === '\\' && i + 1 < n) {
+              const next = str[i + 1];
+              if (next === "'") {
+                out += "'";
+                i += 2;
+                continue;
+              }
+              if (next === '"' || next === '\\' || next === '/' || next === 'b' || next === 'f' || next === 'n' || next === 'r' || next === 't' || next === 'u') {
+                out += '\\' + next;
+                i += 2;
+                continue;
+              }
+              out += '\\\\';
+              i++;
+              continue;
+            }
+            if (str[i] === '"') out += '\\"';
+            else if (str[i] === '\n') out += '\\n';
+            else if (str[i] === '\r') out += '\\r';
+            else if (str[i] === '\t') out += '\\t';
+            else out += str[i];
+            i++;
+          }
+          out += '"';
+          i++;
+          continue;
+        }
+        if ((ch === 'T' && str.slice(i, i + 4) === 'True' && !/[\w]/.test(str[i + 4] || '')) && !/[\w]/.test(str[i - 1] || '')) {
+          out += 'true';
+          i += 4;
+          continue;
+        }
+        if ((ch === 'F' && str.slice(i, i + 5) === 'False' && !/[\w]/.test(str[i + 5] || '')) && !/[\w]/.test(str[i - 1] || '')) {
+          out += 'false';
+          i += 5;
+          continue;
+        }
+        if ((ch === 'N' && str.slice(i, i + 4) === 'None' && !/[\w]/.test(str[i + 4] || '')) && !/[\w]/.test(str[i - 1] || '')) {
+          out += 'null';
+          i += 4;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return JSON.parse(out);
+    } catch (_) {
+      return null;
+    }
+  }
 
-      if (sub.result) {
-        const res = document.createElement('div');
-        res.className = 'lc-subagent-result';
-        res.textContent = sub.result;
-        card.append(res);
+  function formatCleanToolResult(rawResult) {
+    const parsed = tryParseJsonOrPyDict(rawResult);
+    if (parsed && typeof parsed === 'object') {
+      if (Array.isArray(parsed.content)) {
+        const texts = parsed.content
+          .map(c => (c && typeof c === 'object' ? String(c.text || c.content || '') : String(c || '')))
+          .filter(Boolean);
+        if (texts.length) return texts.join('\n');
+      }
+      if (typeof parsed.text === 'string' && parsed.text) return parsed.text;
+    }
+    return safeText(rawResult);
+  }
+
+  function normalizeTodoTaskStatus(rawStatus, rawText = '') {
+    const st = String(rawStatus || '').toLowerCase().trim();
+    const txt = String(rawText || '').toLowerCase();
+    if (/^(completed|complete|done|checked|finished|success)$/.test(st) || /→\s*completed|status['"]?\s*:\s*['"]completed/.test(txt)) {
+      return 'done';
+    }
+    if (/^(in_progress|active|running|doing|working)$/.test(st)) {
+      return 'active';
+    }
+    if (/^(error|failed|fail|blocked)$/.test(st)) {
+      return 'error';
+    }
+    return 'pending';
+  }
+
+  function extractTodosFromToolCalls(allToolCalls) {
+    let hasError = false;
+    const taskMap = new Map();
+    let orderedTasks = [];
+
+    const ingestTaskArray = (arr, fallbackText = '') => {
+      if (!Array.isArray(arr) || !arr.length) return false;
+      const nextList = [];
+      arr.forEach((it, idx) => {
+        if (!it) return;
+        if (typeof it === 'string') {
+          const id = idx + 1;
+          const item = { id, subject: it, description: '', activeForm: '', status: normalizeTodoTaskStatus('', it) };
+          taskMap.set(String(id), item);
+          nextList.push(item);
+          return;
+        }
+        if (typeof it === 'object') {
+          const id = it.id ?? (idx + 1);
+          const subject = String(it.subject || it.title || it.content || it.text || it.name || `Task #${id}`).trim();
+          const description = String(it.description || it.details || '').trim();
+          const activeForm = String(it.activeForm || it.active_form || '').trim();
+          const status = normalizeTodoTaskStatus(it.status || (it.completed || it.done ? 'completed' : ''), fallbackText);
+          const prev = taskMap.get(String(id)) || {};
+          const merged = {
+            id,
+            subject: subject || prev.subject || `Task #${id}`,
+            description: description || prev.description || '',
+            activeForm: activeForm || prev.activeForm || '',
+            status,
+          };
+          taskMap.set(String(id), merged);
+          nextList.push(merged);
+        }
+      });
+      if (nextList.length) orderedTasks = nextList;
+      return nextList.length > 0;
+    };
+
+    for (const tc of (allToolCalls || [])) {
+      const name = String(tc?.name || '').toLowerCase();
+      const argsObj = typeof tc?.arguments === 'object' && tc?.arguments ? tc.arguments : tryParseJsonOrPyDict(tc?.arguments);
+      const resObj = tc?.details ? { details: tc.details, ...(tryParseJsonOrPyDict(tc?.result) || {}) } : tryParseJsonOrPyDict(tc?.result);
+      const argsStr = typeof tc?.arguments === 'string' ? tc.arguments : JSON.stringify(tc?.arguments || {});
+      const resStr = String(tc?.result ?? '');
+      const combinedStr = argsStr + '\n' + resStr;
+      const isTodoTool = /todo|checklist|task_list|rpiv/i.test(name)
+        || Boolean(resObj?.details?.tasks || resObj?.tasks || resObj?.todos || argsObj?.todos || argsObj?.tasks)
+        || /"todos"\s*:|'tasks'\s*:|"tasks"\s*:|Update Todos|^\s*[☒☐]/m.test(combinedStr);
+      if (!isTodoTool) continue;
+      if (tc.isError) hasError = true;
+
+      const contentText = formatCleanToolResult(tc?.result);
+      if (argsObj && typeof argsObj === 'object') {
+        const list = argsObj.tasks || argsObj.todos || argsObj.items || argsObj.details?.tasks;
+        ingestTaskArray(list, contentText);
+        if (argsObj.action === 'update' && argsObj.id != null && argsObj.status) {
+          const key = String(argsObj.id);
+          const existing = taskMap.get(key) || { id: argsObj.id, subject: argsObj.subject || `Task #${argsObj.id}`, description: '', activeForm: '' };
+          existing.status = normalizeTodoTaskStatus(argsObj.status, contentText);
+          if (argsObj.subject) existing.subject = String(argsObj.subject);
+          if (argsObj.description) existing.description = String(argsObj.description);
+          if (argsObj.activeForm) existing.activeForm = String(argsObj.activeForm);
+          taskMap.set(key, existing);
+        }
       }
 
-      const foot = document.createElement('div');
-      foot.className = 'lc-subagent-foot';
-      const stats = document.createElement('span');
-      const dur = sub.durationMs ? `${(sub.durationMs / 1000).toFixed(2)}s` : '';
-      const tok = sub.totalTokens ? `${sub.totalTokens.toLocaleString()} tok` : '';
-      stats.textContent = [ `ID: ${(sub.taskId || '').slice(0, 12)}`, tok, dur ].filter(Boolean).join(' · ');
-      foot.append(stats);
+      if (resObj && typeof resObj === 'object') {
+        const det = resObj.details || resObj;
+        const list = det?.tasks || det?.todos || det?.items || resObj.tasks || resObj.todos || resObj.items;
+        ingestTaskArray(list, contentText);
+        const p = det?.params || resObj.params;
+        if (p && p.id != null && p.status) {
+          const key = String(p.id);
+          const existing = taskMap.get(key) || { id: p.id, subject: p.subject || `Task #${p.id}`, description: '', activeForm: '' };
+          existing.status = normalizeTodoTaskStatus(p.status, contentText);
+          taskMap.set(key, existing);
+        }
+      } else if (resStr.trim()) {
+        // Fallback regex if raw string was truncated before closing brace
+        const taskBlockMatch = /['"]tasks['"]\s*:\s*(\[[\s\S]*?\])/.exec(resStr);
+        if (taskBlockMatch) {
+          const arr = tryParseJsonOrPyDict(taskBlockMatch[1]);
+          ingestTaskArray(arr, contentText);
+        }
+        const updMatch = /Updated\s+#(\d+)\s*\([^)]*→\s*(completed|in_progress|pending|done)\)/i.exec(contentText);
+        if (updMatch) {
+          const key = String(updMatch[1]);
+          const existing = taskMap.get(key);
+          if (existing) existing.status = normalizeTodoTaskStatus(updMatch[2], contentText);
+        }
+        if (!taskMap.size) {
+          const lines = contentText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          lines.forEach((l, idx) => {
+            const clean = l.replace(/^[L└├│\s]+/, '').trim();
+            if (!clean || /^update todos/i.test(clean) || clean.startsWith('{')) return;
+            const isDone = /^[☒✓✔]|^\[[xX]\]|→\s*completed/i.test(clean);
+            const isActive = /^\[[\/\->]/.test(clean) || /in_progress|running/i.test(clean);
+            const txt = clean.replace(/^[☒☐✓✔]\s*|^\[[ xX\/\->]\]\s*/, '');
+            const id = idx + 1;
+            const item = { id, subject: txt || clean, description: '', activeForm: '', status: isDone ? 'done' : (isActive ? 'active' : 'pending') };
+            taskMap.set(String(id), item);
+          });
+        }
+      }
+    }
 
-      if (sub.outputFile) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'lc-diff-btn';
-        btn.textContent = '📄 Full Transcript';
-        btn.addEventListener('click', async () => {
-          els.transcriptModalTitle.textContent = `Transcript · ${sub.taskId || 'Subagent'}`;
-          els.transcriptModalBody.textContent = 'Loading transcript…';
-          els.transcriptModal.hidden = false;
-          try {
-            const resp = await fetch(`/api/chatbot/subagent-transcript?path=${encodeURIComponent(sub.outputFile)}`, { credentials: 'same-origin' });
-            const data = await resp.json();
-            els.transcriptModalBody.textContent = data.content || data.error || 'Empty transcript.';
-          } catch (err) {
-            els.transcriptModalBody.textContent = 'Failed to load transcript: ' + err.message;
+    const displayItems = (orderedTasks.length ? orderedTasks : Array.from(taskMap.values())).map((it, idx) => {
+      const latest = taskMap.get(String(it.id)) || it;
+      return {
+        id: latest.id ?? (idx + 1),
+        subject: String(latest.subject || latest.text || `Task #${idx + 1}`).trim(),
+        description: String(latest.description || '').trim(),
+        activeForm: String(latest.activeForm || '').trim(),
+        status: latest.status || 'pending',
+      };
+    });
+
+    // Only mark a pending item as active while Lanbot is actively streaming, NEVER overwriting 'done'
+    if (state.busy && displayItems.length && !displayItems.some(d => d.status === 'active')) {
+      const firstPending = displayItems.find(d => d.status === 'pending');
+      if (firstPending) firstPending.status = 'active';
+    }
+
+    let dotStatus = 'idle';
+    if (hasError || displayItems.some(d => d.status === 'error')) dotStatus = 'error';
+    else if (displayItems.length > 0 && displayItems.every(d => d.status === 'done')) dotStatus = 'done';
+    else if (displayItems.some(d => d.status === 'active' || d.status === 'pending')) dotStatus = 'active';
+    return { status: dotStatus, items: displayItems };
+  }
+
+  if (state.todoDismissedForTurn === undefined) state.todoDismissedForTurn = false;
+  if (state.subagentDismissedForTurn === undefined) state.subagentDismissedForTurn = false;
+  if (!state.expandedTodoIds) state.expandedTodoIds = new Set();
+
+  function closeTodoPopover(_dismissForCurrentTurn = true) {}
+
+  function refreshTodoUi(_opts = {}) {
+    return;
+    if (!els.todoDot || !els.todoPopover) return;
+    const allCalls = [];
+    (state.messages || []).forEach(m => {
+      const norm = normalizeRawMessage(m);
+      if (Array.isArray(norm.toolCalls)) allCalls.push(...norm.toolCalls);
+    });
+    if (Array.isArray(streamTurn?.toolCalls)) {
+      allCalls.push(...streamTurn.toolCalls);
+    }
+    const parsed = extractTodosFromToolCalls(allCalls);
+    state.todoState = parsed;
+    els.todoDot.dataset.status = parsed.status;
+
+    // Response-scoped Todo auto-show / auto-close:
+    // - Auto-opens during a response turn when todos exist unless dismissed during this turn (!state.todoDismissedForTurn).
+    // - Auto-closes when the response turn finishes (opts.turnFinished), NOT when todo items are marked completed.
+    if (opts.turnFinished || !state.busy) {
+      if (!opts.manualToggle) {
+        els.todoPopover.hidden = true;
+        els.todoBtn?.classList.remove('is-open');
+      }
+      if (opts.turnFinished) state.todoDismissedForTurn = false;
+    } else if (isUserScrolledUp) {
+      els.todoPopover.hidden = true;
+      els.todoBtn?.classList.remove('is-open');
+    } else if (state.busy && parsed.items.length > 0 && !state.todoDismissedForTurn && !hasOpenOverlayModalInsideDrawer()) {
+      if (els.todoPopover.hidden) {
+        els.todoPopover.hidden = false;
+        els.todoBtn?.classList.add('is-open');
+      }
+    }
+
+    els.todoPopover.textContent = '';
+    const doneCount = parsed.items.filter(x => x.status === 'done').length;
+    const head = document.createElement('div');
+    head.className = 'lc-todo-popover-head';
+    head.innerHTML = `<span class="lc-todo-dot" data-status="${parsed.status}"></span><span>Todo (${doneCount}/${parsed.items.length})</span>`;
+    els.todoPopover.appendChild(head);
+    if (!parsed.items.length) {
+      const empty = document.createElement('div');
+      empty.style.color = '#94a3b8';
+      empty.textContent = 'No active todos in this session.';
+      els.todoPopover.appendChild(empty);
+      return;
+    }
+    parsed.items.forEach(item => {
+      const itemWrap = document.createElement('div');
+      itemWrap.className = 'lc-todo-item';
+      const mainRow = document.createElement('div');
+      mainRow.className = `lc-todo-line lc-todo-row-main is-${item.status}`;
+      const leftSpan = document.createElement('span');
+      const box = item.status === 'done' ? '☒' : (item.status === 'active' ? '⏳' : '☐');
+      leftSpan.textContent = `${box} #${item.id}: ${item.subject}`;
+      mainRow.appendChild(leftSpan);
+
+      const hasExtra = Boolean(item.description || item.activeForm);
+      const itemKey = String(item.id);
+      if (hasExtra) {
+        const moreBtn = document.createElement('button');
+        moreBtn.type = 'button';
+        moreBtn.className = 'lc-todo-more-btn';
+        const isExp = state.expandedTodoIds.has(itemKey);
+        moreBtn.textContent = isExp ? '▴ hide' : '.. show more';
+        const detailsBox = document.createElement('div');
+        detailsBox.className = 'lc-todo-details-box';
+        detailsBox.hidden = !isExp;
+        if (item.description) {
+          const descDiv = document.createElement('div');
+          descDiv.textContent = item.description;
+          detailsBox.appendChild(descDiv);
+        }
+        if (item.activeForm) {
+          const actDiv = document.createElement('div');
+          actDiv.className = 'lc-todo-details-active';
+          actDiv.textContent = `⚡ ${item.activeForm}`;
+          detailsBox.appendChild(actDiv);
+        }
+        moreBtn.addEventListener('click', ev => {
+          ev.stopPropagation();
+          const nextOpen = detailsBox.hidden;
+          detailsBox.hidden = !nextOpen;
+          if (nextOpen) state.expandedTodoIds.add(itemKey);
+          else state.expandedTodoIds.delete(itemKey);
+          moreBtn.textContent = nextOpen ? '▴ hide' : '.. show more';
+        });
+        mainRow.appendChild(moreBtn);
+        itemWrap.append(mainRow, detailsBox);
+      } else {
+        itemWrap.appendChild(mainRow);
+      }
+      els.todoPopover.appendChild(itemWrap);
+    });
+  }
+
+  els.todoBtn?.addEventListener('click', ev => {
+    ev.stopPropagation();
+    if (!els.todoPopover) return;
+    const willOpen = els.todoPopover.hidden;
+    els.todoPopover.hidden = !willOpen;
+    els.todoBtn.classList.toggle('is-open', willOpen);
+    if (willOpen) {
+      state.todoDismissedForTurn = false;
+      refreshTodoUi({ manualToggle: true });
+    } else if (state.busy) {
+      state.todoDismissedForTurn = true;
+    }
+  });
+
+  function formatSingleLineToolSummary(toolCalls, runningName = '') {
+    const calls = Array.isArray(toolCalls) ? toolCalls : [];
+    const names = Array.from(new Set(calls.map(t => t?.name).filter(n => n && n !== 'result')));
+    const shortNames = names.length > 3 ? `${names.slice(0, 3).join(', ')}, ...` : (names.join(', ') || runningName || 'tool');
+    const count = Math.max(1, calls.filter(t => t?.result === undefined).length || calls.length);
+    if (runningName) {
+      return `⚡ ${count} tool call(s): ${shortNames} (running ${runningName}…)`;
+    }
+    return `⚡ ${count} tool call(s): ${shortNames}`;
+  }
+
+  // --- Claude-CLI-Style Subagent Parser & Renderer (supports @tintinweb/pi-subagents & <task-notification>) ---
+  const subagentStartTimes = new Map();
+
+  function formatSubagentDuration(msOrSec, isSec = false) {
+    const sec = isSec ? Number(msOrSec || 0) : Number(msOrSec || 0) / 1000;
+    if (!Number.isFinite(sec) || sec <= 0) return '0.1s';
+    if (sec >= 60) {
+      const m = Math.floor(sec / 60);
+      const rem = (sec - m * 60).toFixed(1);
+      return `${m}m ${rem}s`;
+    }
+    return `${sec.toFixed(1)}s`;
+  }
+
+  function formatSubagentTokens(tok) {
+    const n = Number(tok || 0);
+    if (!Number.isFinite(n) || n <= 0) {
+      const est = Number(state.contextUsage?.estimatedTokens || 0);
+      return est > 0 ? `${(est / 1000).toFixed(1)}k tok` : '0.0k tok';
+    }
+    return `${(n / 1000).toFixed(1)}k tok`;
+  }
+
+  function parseWorkflowScriptMetadata(scriptText) {
+    const src = String(scriptText || '');
+    let agentName = 'delegate';
+    let taskLabel = '';
+    let parallelCount = 0;
+
+    const agArrMatch = /agents\s*=\s*\[([^\]]+)\]/i.exec(src);
+    if (agArrMatch) {
+      const agList = agArrMatch[1].split(',').map(s => s.replace(/['"`\s]/g, '')).filter(Boolean);
+      if (agList.length) {
+        agentName = agList[0];
+        parallelCount = agList.length;
+      }
+    }
+    const arrayFromMatch = /Array\.from\(\s*\{\s*length\s*:\s*(\d+)\s*\}/i.exec(src);
+    if (arrayFromMatch) {
+      parallelCount = Math.max(parallelCount, Number(arrayFromMatch[1]) || 0);
+    }
+    const singleAgentMatch = /agent\s*:\s*['"`]([^'"`]+)['"`]/i.exec(src);
+    if (singleAgentMatch && singleAgentMatch[1]) {
+      agentName = singleAgentMatch[1];
+    }
+    const labelMatch = /label\s*:\s*['"`]([^'"`]+)['"`]/i.exec(src);
+    const taskMatch = /task\s*:\s*['"`]([^'"`]+)['"`]/i.exec(src);
+    if (labelMatch && labelMatch[1]) {
+      taskLabel = labelMatch[1].replace(/\$\{[^}]+\}/g, '').trim();
+    } else if (taskMatch && taskMatch[1]) {
+      taskLabel = taskMatch[1].replace(/\$\{[^}]+\}/g, '').trim();
+    }
+    return {
+      agentName: agentName || 'subagent',
+      taskLabel: taskLabel || 'Async workflow',
+      parallelCount: parallelCount || 1,
+    };
+  }
+
+  if (!state.activeBackgroundSubagents) state.activeBackgroundSubagents = new Map();
+  if (!state.completedSubagentMap) state.completedSubagentMap = new Map();
+
+  function extractSkillsFromToolCalls(toolCalls, rawText = '', promptSkills = []) {
+    const calls = Array.isArray(toolCalls) ? toolCalls : [];
+    const skillsMap = new Map();
+    if (Array.isArray(promptSkills)) {
+      promptSkills.forEach(ps => {
+        const sName = String(ps || '').replace(/^(?:system|user):/, '').trim();
+        if (sName) skillsMap.set(sName, { name: sName, details: `Invoked skill: ${sName}`, status: 'done' });
+      });
+    }
+    const knownSkillNames = new Set(
+      (Array.isArray(state.discoveredSkills) ? state.discoveredSkills : [])
+        .map(s => String(s?.name || '').trim())
+        .filter(Boolean)
+    );
+    const scanTextForSkillPath = (str, status = 'done', detailsFallback = '') => {
+      if (!str) return;
+      // Normalize Windows escaped backslashes (\\ -> /) so JSON strings and PowerShell paths match reliably!
+      const normStr = String(str).replace(/\\+/g, '/');
+      const re1 = /(?:^|[/\s"'`=:])skills\/([A-Za-z0-9._-]+)(?:\/SKILL\.md|\.md|\b)/gi;
+      let m;
+      while ((m = re1.exec(normStr)) !== null) {
+        const skName = m[1].replace(/\.md$/i, '').trim();
+        if (skName && !/^(?:skill|skills|scripts|references|assets)$/i.test(skName)) {
+          skillsMap.set(skName, { name: skName, details: detailsFallback || normStr.slice(0, 1200), status });
+        }
+      }
+      const re2 = /(?:^|[/\s"'`=:])([A-Za-z0-9._-]+)\/SKILL\.md\b/gi;
+      while ((m = re2.exec(normStr)) !== null) {
+        const skName = m[1].trim();
+        if (skName && !/^(?:skill|skills)$/i.test(skName)) {
+          skillsMap.set(skName, { name: skName, details: detailsFallback || normStr.slice(0, 1200), status });
+        }
+      }
+      // Also detect YAML frontmatter of a SKILL.md read by read / powershell / Get-Content / cat
+      const fmMatch = normStr.match(/^---\s*\r?\n([\s\S]{1,800}?)\r?\n---/m);
+      if (fmMatch && /description\s*:/i.test(fmMatch[1])) {
+        const nameM = fmMatch[1].match(/^\s*name\s*:\s*["']?([A-Za-z0-9._-]+)["']?\s*$/m);
+        if (nameM && nameM[1]) {
+          const skName = nameM[1].trim();
+          if (skName && !skillsMap.has(skName)) {
+            skillsMap.set(skName, { name: skName, details: detailsFallback || normStr.slice(0, 1200), status });
+          }
+        }
+      }
+    };
+
+    for (const tc of calls) {
+      const name = String(tc?.name || '').toLowerCase();
+      const argsObj = typeof tc?.arguments === 'object' && tc?.arguments ? tc.arguments : tryParseJsonOrPyDict(tc?.arguments);
+      const rawArgsStr = typeof tc?.arguments === 'string' ? tc.arguments : JSON.stringify(tc?.arguments || {});
+      const cleanRes = formatCleanToolResult(tc?.result);
+      const st = tc?.result === undefined ? 'running' : 'done';
+
+      if (/^(?:skill|use_skill|load_skill|lookup_skills|activate_skill|run_skill)$/.test(name)) {
+        const names = [];
+        if (Array.isArray(argsObj?.skill_names)) names.push(...argsObj.skill_names);
+        else if (Array.isArray(argsObj?.skills)) names.push(...argsObj.skills);
+        else if (argsObj?.skill || argsObj?.name || argsObj?.skillName) {
+          names.push(argsObj.skill || argsObj.name || argsObj.skillName);
+        }
+        names.forEach(rawN => {
+          const skName = String(rawN || '').replace(/^(?:system|user):/, '').trim();
+          if (skName) {
+            skillsMap.set(skName, {
+              name: skName,
+              details: cleanRes || rawArgsStr || `Skill: ${skName}`,
+              status: st,
+            });
           }
         });
-        foot.append(btn);
+      } else {
+        const pathCandidate = String(argsObj?.path || argsObj?.file_path || argsObj?.AbsolutePath || argsObj?.command || argsObj?.prompt || argsObj?.task || '');
+        scanTextForSkillPath(pathCandidate, st, cleanRes || pathCandidate);
       }
-      card.append(foot);
-      grid.append(card);
+    }
+    const textStr = String(rawText || '');
+    scanTextForSkillPath(textStr, 'done', textStr);
+    const textMatchRe = /\[skill\]\s*([A-Za-z0-9._:-]+)/gi;
+    let tm;
+    while ((tm = textMatchRe.exec(textStr)) !== null) {
+      const skName = tm[1].replace(/^(?:system|user):/, '').trim();
+      if (skName && !skillsMap.has(skName)) {
+        skillsMap.set(skName, { name: skName, details: `Active skill: ${skName}`, status: 'done' });
+      }
+    }
+    return Array.from(skillsMap.values());
+  }
+
+  function createSkillBannerList(skills) {
+    const items = Array.isArray(skills) ? skills : [];
+    const wrap = document.createElement('div');
+    wrap.className = 'lc-pi-skill-list';
+    if (!items.length) {
+      wrap.hidden = true;
+      return wrap;
+    }
+    const allNames = items.map(sk => sk.name).filter(Boolean);
+    const card = document.createElement('div');
+    card.className = 'lc-pi-skill-card';
+    card.dataset.skillName = allNames.join(',');
+    const head = document.createElement('div');
+    head.className = 'lc-pi-skill-head';
+    head.innerHTML = `<span class="lc-pi-skill-tag">[skill]</span> <span class="lc-pi-skill-name">${allNames.map(escapeHtml).join(', ')}</span> <span class="lc-pi-skill-hint">(ctrl+o to expand)</span>`;
+    const body = document.createElement('pre');
+    body.className = 'lc-pi-skill-body';
+    body.hidden = true;
+    body.textContent = items
+      .map(sk => `=== [skill] ${sk.name} ===\n${String(sk.details || `Skill ${sk.name}`).slice(0, 1200)}`)
+      .join('\n\n');
+    card.addEventListener('click', ev => {
+      ev.stopPropagation();
+      body.hidden = !body.hidden;
+      card.classList.toggle('is-expanded', !body.hidden);
+    });
+    card.append(head, body);
+    wrap.appendChild(card);
+    return wrap;
+  }
+
+  // Global Ctrl+O shortcut to expand/collapse Pi skill & subagent cards in Lanbot
+  document.addEventListener('keydown', ev => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'o') {
+      const skillCards = [...drawer.querySelectorAll('.lc-pi-skill-card')];
+      const subCards = [...drawer.querySelectorAll('.lc-pi-subagent-card')];
+      if (!skillCards.length && !subCards.length) return;
+      ev.preventDefault();
+      const targetSkill = skillCards[skillCards.length - 1];
+      if (targetSkill) {
+        const b = targetSkill.querySelector('.lc-pi-skill-body');
+        if (b) {
+          b.hidden = !b.hidden;
+          targetSkill.classList.toggle('is-expanded', !b.hidden);
+        }
+      }
+      subCards.forEach(sc => {
+        const d = sc.querySelector('.lc-pi-subagent-details');
+        if (d) {
+          d.hidden = !d.hidden;
+          sc.classList.toggle('is-expanded', !d.hidden);
+        }
+      });
+    }
+  });
+
+  function extractSubagentsFromToolCalls(toolCalls, isStreaming = false) {
+    const calls = Array.isArray(toolCalls) ? toolCalls : [];
+    const runsById = new Map();
+    let pendingWorkflowScript = '';
+    const totalToolCallsCount = Math.max(1, calls.filter(t => t?.name && t.name !== 'result').length);
+
+    // Pair separate toolCall + toolResult entries that share the same id so we always have both arguments AND result!
+    const mergedCalls = [];
+    const byCallId = new Map();
+    for (const rawTc of calls) {
+      if (!rawTc || typeof rawTc !== 'object') continue;
+      const cid = String(rawTc.id || '');
+      if (cid && byCallId.has(cid)) {
+        const prev = byCallId.get(cid);
+        if (rawTc.result !== undefined) {
+          prev.result = rawTc.result;
+          prev.isError = Boolean(rawTc.isError);
+          if (rawTc.details) prev.details = rawTc.details;
+          if (rawTc.durationMs) prev.durationMs = rawTc.durationMs;
+        }
+        if (rawTc.arguments && (!prev.arguments || Object.keys(prev.arguments).length === 0)) {
+          prev.arguments = rawTc.arguments;
+        }
+      } else {
+        const clone = { ...rawTc };
+        if (cid) byCallId.set(cid, clone);
+        mergedCalls.push(clone);
+      }
+    }
+
+    for (const tc of mergedCalls) {
+      const name = String(tc?.name || '').toLowerCase();
+      const argsObj = typeof tc?.arguments === 'object' && tc?.arguments ? tc.arguments : tryParseJsonOrPyDict(tc?.arguments);
+      const resObj = tc?.details ? { details: tc.details, ...(tryParseJsonOrPyDict(tc?.result) || {}) } : tryParseJsonOrPyDict(tc?.result);
+      const cleanTxt = formatCleanToolResult(tc?.result);
+
+      const isResultWaitCall = /^(?:get_subagent_result|subagent_result|wait_subagent|check_subagent|subagent_status|bg_wait)$/i.test(name);
+      const isAgentCall = !isResultWaitCall && (
+        /^(?:subagent|delegate|task|spawn_subagent|run_subagent|explore|agent|twin|spawn_agent)$/i.test(name)
+        || Boolean(argsObj && (argsObj.agent || argsObj.subagent_type || argsObj.workflow || argsObj.run_in_background))
+      );
+
+      if (isAgentCall) {
+        if (typeof argsObj?.workflow === 'string' && argsObj.workflow.trim()) {
+          pendingWorkflowScript = argsObj.workflow;
+        }
+        const wfMeta = parseWorkflowScriptMetadata(pendingWorkflowScript);
+        const explicitAgent = argsObj?.agent || argsObj?.subagent_type || argsObj?.name || (name === 'explore' ? 'Explore' : wfMeta.agentName) || 'general-purpose';
+        const subAlias = String(argsObj?.name || argsObj?.id || '').trim();
+        const rawDesc = argsObj?.description || argsObj?.task || argsObj?.prompt || wfMeta.taskLabel || 'Working on subagent task';
+        if (tc.result === undefined) {
+          const runKey = String(tc.id || subAlias || 'subagent-call');
+          if (!subagentStartTimes.has(runKey)) subagentStartTimes.set(runKey, Date.now());
+          const completedOverride = state.completedSubagentMap?.get(runKey) || (subAlias ? state.completedSubagentMap?.get(subAlias) : null);
+          const estSubTok = Number(completedOverride?.usage?.totalTokens || Math.max(120, Math.round(String(rawDesc).length / 3.5)));
+          if (!runsById.has(runKey)) {
+            const entry = {
+              taskId: runKey,
+              alias: subAlias,
+              toolName: explicitAgent,
+              summary: String(rawDesc).replace(/\s+/g, ' ').trim().slice(0, 84),
+              parallelCount: wfMeta.parallelCount || 1,
+              toolUses: totalToolCallsCount,
+              totalTokens: estSubTok,
+              durationStr: formatSubagentDuration(Date.now() - (subagentStartTimes.get(runKey) || Date.now())),
+              status: completedOverride ? 'Done' : 'Running',
+              activeStep: completedOverride ? 'completed' : 'running in background...',
+              result: completedOverride?.result || '',
+            };
+            runsById.set(runKey, entry);
+            if (!completedOverride) state.activeBackgroundSubagents.set(runKey, entry);
+          }
+        } else {
+          if (/must use a safe resource name/i.test(cleanTxt) || tc.isError) {
+            const callEntry = runsById.get(String(tc.id || ''));
+            if (callEntry) runsById.delete(String(tc.id || ''));
+            continue;
+          }
+          const det = resObj?.details || {};
+          const bgIdMatch = /\b(?:ID|id|task_id|taskId|agent_id|agentId)\s*[:=]\s*['"`]?([A-Za-z0-9_-]{6,})/i.exec(cleanTxt)
+            || /Async workflow \[([^\]]+)\]/i.exec(cleanTxt)
+            || /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{3,})\b/i.exec(cleanTxt);
+          const runId = String(
+            det.runId || det.asyncId || det.taskId || det.id ||
+            resObj?.runId || resObj?.taskId || resObj?.task_id || resObj?.agentId || resObj?.id ||
+            bgIdMatch?.[1] || subAlias || tc.id || 'workflow'
+          );
+          if (!subagentStartTimes.has(runId)) {
+            subagentStartTimes.set(runId, subagentStartTimes.get(String(tc.id || '')) || Date.now());
+          }
+          const resStatusStr = String(resObj?.status || det?.status || det?.workflowChildren?.workflowState || '').toLowerCase();
+          const isBgSpawned = Boolean(
+            argsObj?.run_in_background || argsObj?.async || argsObj?.background || argsObj?.wait === false ||
+            /^(?:background|async)$/i.test(String(argsObj?.mode || '')) ||
+            /^(?:running|spawned|started|pending|in_progress|queued|background)$/.test(resStatusStr) ||
+            /running in background|async workflow|chạy nền|đang chạy|spawned|started background|get_subagent_result|bg_wait/i.test(cleanTxt) ||
+            (bgIdMatch && cleanTxt.length < 480 && !/completed|finished|hoàn thành/i.test(cleanTxt))
+          );
+          const completedOverride = state.completedSubagentMap?.get(runId)
+            || (subAlias ? state.completedSubagentMap?.get(subAlias) : null)
+            || (tc.id ? state.completedSubagentMap?.get(String(tc.id)) : null);
+          const wfState = String(completedOverride?.status || det.workflowChildren?.workflowState || (isBgSpawned ? 'Running' : 'Done'));
+          const children = Array.isArray(det.workflowChildren?.children) ? det.workflowChildren.children : [];
+          if (tc.id && runId !== tc.id) runsById.delete(String(tc.id));
+
+          const pCount = Math.max(wfMeta.parallelCount || 1, children.length || 1);
+          const reportedTok = Number(completedOverride?.usage?.totalTokens || resObj?.usage?.totalTokens || det?.usage?.totalTokens || resObj?.tokens || det?.tokens || 0);
+          const estTok = reportedTok > 0
+            ? reportedTok
+            : Math.max(150, Math.round((String(rawDesc).length + String(completedOverride?.result || cleanTxt).length) / 3.5));
+          const isDoneNow = Boolean(completedOverride) || (/complet|done|finish|success/i.test(wfState) && !isBgSpawned);
+          const subEntry = {
+            taskId: runId,
+            alias: subAlias,
+            callId: String(tc.id || ''),
+            toolName: explicitAgent,
+            summary: String(rawDesc || wfMeta.taskLabel || `Run ${runId.slice(0, 8)}`).replace(/\s+/g, ' ').trim().slice(0, 84),
+            parallelCount: pCount,
+            toolUses: Number(completedOverride?.usage?.toolUses || totalToolCallsCount),
+            totalTokens: estTok,
+            durationStr: formatSubagentDuration(Date.now() - (subagentStartTimes.get(runId) || Date.now())),
+            status: isDoneNow ? 'Done' : 'Running',
+            activeStep: isDoneNow ? 'completed' : 'running in background...',
+            result: completedOverride?.result || cleanTxt,
+            outputFile: completedOverride?.outputFile || det.outputFile || '',
+          };
+          runsById.set(runId, subEntry);
+          if (!isDoneNow) {
+            state.activeBackgroundSubagents.set(runId, subEntry);
+            if (subAlias) state.activeBackgroundSubagents.set(subAlias, subEntry);
+          } else {
+            state.activeBackgroundSubagents.delete(runId);
+            if (subAlias) state.activeBackgroundSubagents.delete(subAlias);
+          }
+        }
+      } else if (isResultWaitCall) {
+        const waitId = String(argsObj?.id || argsObj?.taskId || argsObj?.task_id || argsObj?.agentId || argsObj?.name || '').trim();
+        if (tc.result === undefined) {
+          if (waitId && runsById.has(waitId)) {
+            const entry = runsById.get(waitId);
+            entry.status = 'Running';
+            entry.activeStep = 'waiting for result...';
+            entry.toolUses = totalToolCallsCount;
+            entry.durationStr = formatSubagentDuration(Date.now() - (subagentStartTimes.get(waitId) || Date.now()));
+          }
+        } else {
+          const det = resObj?.details || {};
+          const completions = Array.isArray(det.completions) ? det.completions : [];
+          const stillRunning = /still running|in_progress|status['"]?\s*:\s*['"]running/i.test(cleanTxt) && !/completed|done|finished|hoàn thành/i.test(cleanTxt);
+          const isDone = !stillRunning;
+          const targetId = waitId || String(completions[0]?.runId || resObj?.id || resObj?.taskId || '');
+          const waitedMatch = /Waited\s+(\d+(?:\.\d+)?)s/i.exec(cleanTxt);
+          const waitedSec = waitedMatch ? Number(waitedMatch[1]) : null;
+          const tok = Number(resObj?.usage?.totalTokens || det?.usage?.totalTokens || Math.max(250, Math.round(cleanTxt.length / 3.5)));
+
+          const markSubagentEntryDone = (key, entryObj = null) => {
+            if (!key) return;
+            const compData = {
+              taskId: key,
+              status: isDone ? 'Done' : 'Running',
+              result: cleanTxt,
+              usage: { totalTokens: tok, toolUses: totalToolCallsCount },
+            };
+            if (isDone) {
+              state.completedSubagentMap.set(key, compData);
+              state.activeBackgroundSubagents.delete(key);
+            }
+            if (entryObj) {
+              entryObj.status = isDone ? 'Done' : 'Running';
+              entryObj.activeStep = isDone ? 'completed' : 'running in background...';
+              entryObj.toolUses = totalToolCallsCount;
+              if (tok > 0) entryObj.totalTokens = tok;
+              if (waitedSec !== null) entryObj.durationStr = formatSubagentDuration(waitedSec, true);
+              entryObj.result = cleanTxt;
+              if (entryObj.alias && isDone) {
+                state.completedSubagentMap.set(entryObj.alias, compData);
+                state.activeBackgroundSubagents.delete(entryObj.alias);
+              }
+            }
+          };
+
+          if (targetId && runsById.has(targetId)) {
+            markSubagentEntryDone(targetId, runsById.get(targetId));
+          } else if (targetId) {
+            // Also check if targetId matches an alias or prefix of a key in runsById or activeBackgroundSubagents
+            let matchedExisting = false;
+            runsById.forEach((v, k) => {
+              if (k === targetId || v.alias === targetId || k.startsWith(targetId) || targetId.startsWith(k)) {
+                markSubagentEntryDone(k, v);
+                matchedExisting = true;
+              }
+            });
+            state.activeBackgroundSubagents.forEach((v, k) => {
+              if (k === targetId || v.alias === targetId || k.startsWith(targetId) || targetId.startsWith(k)) {
+                markSubagentEntryDone(k, v);
+                matchedExisting = true;
+              }
+            });
+            if (!matchedExisting) {
+              markSubagentEntryDone(targetId, null);
+            }
+          } else {
+            // get_subagent_result called without a single id (or batch wait for all spawned subagents in this turn)
+            runsById.forEach((v, k) => markSubagentEntryDone(k, v));
+            state.activeBackgroundSubagents.forEach((v, k) => {
+              if (cleanTxt.includes(k) || (v.alias && cleanTxt.includes(v.alias)) || isDone) {
+                markSubagentEntryDone(k, v);
+              }
+            });
+          }
+        }
+      }
+    }
+    return Array.from(runsById.values());
+  }
+
+  function populateSubagentCardDom(row, sub, idx = 0) {
+    const subKey = String(sub.taskId || sub.toolName || idx);
+    row.dataset.subagentKey = subKey;
+    row.dataset.color = String(idx % 4);
+    const isRunning = /running|working|active|pending|waiting/i.test(String(sub.status || ''));
+    const isError = /error|fail/i.test(String(sub.status || ''));
+    const agentName = String(sub.toolName || sub.agent || sub.taskId || 'general-purpose').trim();
+    const tokStr = formatSubagentTokens(sub.totalTokens);
+    const statusLabel = isRunning ? '🟡 running' : (isError ? '🔴 Error' : '🟢 Completed');
+    const taskDesc = String(sub.summary || sub.activeStep || 'Working on task').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const modelName = state.model?.id || state.model?.name || 'default';
+    const thkLvl = state.thinkingLevel || 'medium';
+    const turnCount = Math.max(1, Number(sub.toolUses) || 1);
+    const metaHeader = `Agent: ${agentName} · ${modelName} · thinking: ${thkLvl} · ↻ ${turnCount} tool call(s)` + (sub.durationStr ? ` · ${sub.durationStr}` : '');
+    const stateHeader = `Status: ${isRunning ? '🟡 running in background...' : (isError ? '🔴 Error' : '🟢 Completed')}`;
+    const taskHeader = `Task: ${sub.summary || sub.activeStep || agentName}`;
+    const rawBodyRes = String(sub.result || '').trim();
+    const detailText = [metaHeader, stateHeader, taskHeader, rawBodyRes ? `\n${rawBodyRes}` : ''].filter(Boolean).join('\n').slice(0, 4000);
+
+    let headLine = row.querySelector(':scope > .lc-pi-subagent-head');
+    let subline = row.querySelector(':scope > .lc-pi-subagent-branch');
+    let detailsPre = row.querySelector(':scope > .lc-pi-subagent-details');
+
+    if (!headLine) {
+      headLine = document.createElement('div');
+      headLine.className = 'lc-subagent-head-line lc-pi-subagent-head';
+      subline = document.createElement('div');
+      subline.className = 'lc-subagent-subline lc-pi-subagent-branch';
+      detailsPre = document.createElement('pre');
+      detailsPre.className = 'lc-pi-subagent-details';
+      detailsPre.hidden = true;
+      const toggleExpand = ev => {
+        if (ev.target instanceof Element && ev.target.closest('.lc-pi-subagent-details')) return;
+        ev.stopPropagation();
+        detailsPre.hidden = !detailsPre.hidden;
+        row.classList.toggle('is-expanded', !detailsPre.hidden);
+      };
+      row.addEventListener('click', toggleExpand);
+      row.append(headLine, subline, detailsPre);
+    }
+
+    const nextHeadHtml =
+      `<span class="lc-pi-subagent-tag">[Agent]</span> ` +
+      `<span class="lc-subagent-pill lc-pi-subagent-name">${escapeHtml(agentName)}</span> ` +
+      `<span class="lc-pi-subagent-sep">-</span> ` +
+      `<span class="lc-pi-subagent-status ${isRunning ? 'is-running' : (isError ? 'is-error' : 'is-done')}">${statusLabel}</span> ` +
+      `<span class="lc-pi-subagent-sep">-</span> ` +
+      `<span class="lc-pi-subagent-tok">${escapeHtml(tokStr)}</span>`;
+    if (headLine.innerHTML !== nextHeadHtml) {
+      headLine.innerHTML = nextHeadHtml;
+    }
+
+    const nextSubText = `└ ${taskDesc}`;
+    if (subline.textContent !== nextSubText) {
+      subline.textContent = nextSubText;
+    }
+
+    if (detailsPre.textContent !== detailText) {
+      detailsPre.textContent = detailText;
+    }
+  }
+
+  function createSubagentGrid(subagents, opts = {}) {
+    const grid = document.createElement('div');
+    grid.className = 'lc-subagent-grid';
+    const items = Array.isArray(subagents) ? subagents : [];
+    if (!items.length) {
+      grid.hidden = true;
+      return grid;
+    }
+    items.forEach((sub, idx) => {
+      const row = document.createElement('div');
+      row.className = 'lc-claude-subagent lc-pi-subagent-card';
+      populateSubagentCardDom(row, sub, idx);
+      grid.appendChild(row);
     });
     return grid;
+  }
+
+  function updateSubagentGridInPlace(grid, subagents) {
+    const items = Array.isArray(subagents) ? subagents : [];
+    if (!items.length) {
+      grid.hidden = true;
+      grid.textContent = '';
+      return;
+    }
+    grid.hidden = false;
+    const existingCards = [...grid.querySelectorAll(':scope > .lc-pi-subagent-card')];
+    const byKey = new Map();
+    existingCards.forEach(c => {
+      if (c.dataset.subagentKey) byKey.set(c.dataset.subagentKey, c);
+    });
+    const nextCards = [];
+    items.forEach((sub, idx) => {
+      const key = String(sub.taskId || sub.toolName || idx);
+      let card = byKey.get(key) || existingCards[idx] || null;
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'lc-claude-subagent lc-pi-subagent-card';
+      }
+      populateSubagentCardDom(card, sub, idx);
+      nextCards.push(card);
+    });
+    existingCards.forEach(c => {
+      if (!nextCards.includes(c)) c.remove();
+    });
+    nextCards.forEach(c => {
+      if (c.parentElement !== grid) grid.appendChild(c);
+    });
+  }
+
+  function refreshActiveAgentsBar() {
+    if (!els?.activeAgentsBar) return;
+    // Issue #8 (v9.21): Keep bottom #lcActiveAgentsBar hidden so it never wastes space;
+    // subagent status and expandable details are shown directly in the green [Agent] cards at the top!
+    els.activeAgentsBar.hidden = true;
+    els.activeAgentsBar.textContent = '';
+    if (Boolean(true)) return;
+    const activeMap = new Map();
+    if (state.activeBackgroundSubagents instanceof Map) {
+      state.activeBackgroundSubagents.forEach((v, k) => {
+        if (/running|working|active|pending|waiting/i.test(String(v?.status || 'Running'))) {
+          activeMap.set(k, v);
+        }
+      });
+    }
+    if (state.busy && Array.isArray(streamTurn?.toolCalls)) {
+      const liveSubs = extractSubagentsFromToolCalls(streamTurn.toolCalls, true);
+      liveSubs.forEach(s => {
+        if (/running|working|active|pending|waiting/i.test(String(s.status || ''))) {
+          activeMap.set(String(s.taskId || s.toolName), s);
+        }
+      });
+    }
+    const runningList = Array.from(activeMap.values());
+    if (!runningList.length) {
+      els.activeAgentsBar.hidden = true;
+      els.activeAgentsBar.textContent = '';
+      return;
+    }
+    els.activeAgentsBar.hidden = false;
+    els.activeAgentsBar.textContent = '';
+
+    const header = document.createElement('div');
+    header.className = 'lc-agents-bar-header';
+    header.innerHTML = `<span class="lc-agents-dot">●</span> <span>Agents</span>`;
+    els.activeAgentsBar.appendChild(header);
+
+    const modelName = state.model?.id || state.model?.name || 'gpt-6.1-sol';
+    const thkLvl = state.thinkingLevel || 'medium';
+    runningList.forEach(sub => {
+      const entry = document.createElement('div');
+      entry.className = 'lc-agents-bar-entry';
+
+      const mainLine = document.createElement('div');
+      mainLine.className = 'lc-agents-bar-main';
+      const turnCount = Math.max(1, Number(sub.toolUses) || 1);
+      mainLine.innerHTML = `<span class="lc-agents-branch">└ ⋮</span> <strong class="lc-agents-name">${escapeHtml(sub.toolName || 'Agent')}</strong> <span class="lc-agents-task">${escapeHtml(String(sub.summary || 'Working on task').slice(0, 64))}</span> <span class="lc-agents-model">· ${escapeHtml(modelName)} · thinking: ${escapeHtml(thkLvl)} · ↻${turnCount}</span>`;
+
+      const subLine = document.createElement('div');
+      subLine.className = 'lc-agents-bar-sub';
+      subLine.innerHTML = `<span>&nbsp;&nbsp;&nbsp;&nbsp;└</span> <span>${escapeHtml(sub.activeStep || 'thinking...')}</span>`;
+
+      entry.append(mainLine, subLine);
+      els.activeAgentsBar.appendChild(entry);
+    });
+    const workingDiv = document.createElement('div');
+    workingDiv.className = 'lc-agents-working-line';
+    workingDiv.textContent = `── ⠋ Working (${runningList.length} running agent${runningList.length > 1 ? 's' : ''}) ──────────────────────────`;
+    els.activeAgentsBar.appendChild(workingDiv);
   }
 
   // --- Pure-Logic Clickable Line Citation Pills for Modified Markdown Hunks (#18, #19) ---
@@ -2347,6 +4020,437 @@
     }
   }
 
+  function coalesceConsecutiveToolSteps(rawSteps) {
+    const list = Array.isArray(rawSteps) ? rawSteps : [];
+    if (list.length <= 1) return list;
+    const out = [];
+    for (const st of list) {
+      if (!st || typeof st !== 'object') continue;
+      const prev = out.length > 0 ? out[out.length - 1] : null;
+      const prevHasTools = Array.isArray(prev?.toolCalls) && prev.toolCalls.length > 0;
+      const prevHasTextAfter = Boolean(String(prev?.textAfterBox || '').trim());
+      const curHasTools = Array.isArray(st.toolCalls) && st.toolCalls.length > 0;
+      const curHasTextBefore = Boolean(String(st.textBeforeBox || '').trim());
+      // Merge consecutive tool steps when there is NO visible assistant text separating them
+      if (prev && prevHasTools && !prevHasTextAfter && curHasTools && !curHasTextBefore) {
+        const combinedCalls = [...prev.toolCalls];
+        const seenKeys = new Set(combinedCalls.map(t => `${t?.id || ''}:${t?.result !== undefined ? 'res' : 'call'}:${t?.name || ''}`));
+        st.toolCalls.forEach(tc => {
+          const k = `${tc?.id || ''}:${tc?.result !== undefined ? 'res' : 'call'}:${tc?.name || ''}`;
+          if (!tc?.id || !seenKeys.has(k)) {
+            combinedCalls.push(tc);
+            seenKeys.add(k);
+          } else {
+            const idx = combinedCalls.findIndex(c => c?.id && c.id === tc.id);
+            if (idx >= 0) combinedCalls[idx] = { ...combinedCalls[idx], ...tc };
+          }
+        });
+        prev.toolCalls = combinedCalls;
+        const curThk = String(st.thinking || '').trim();
+        if (curThk && !String(prev.thinking || '').includes(curThk)) {
+          prev.thinking = prev.thinking ? `${prev.thinking}\n${curThk}` : curThk;
+        }
+        if (Array.isArray(st.subagents) && st.subagents.length) {
+          prev.subagents = [...(prev.subagents || []), ...st.subagents];
+        }
+        if (Array.isArray(st._promptSkills) && st._promptSkills.length) {
+          prev._promptSkills = Array.from(new Set([...(prev._promptSkills || []), ...st._promptSkills]));
+        }
+        if (String(st.textAfterBox || '').trim()) {
+          prev.textAfterBox = String(st.textAfterBox || '').trim();
+        }
+        continue;
+      }
+      out.push({
+        ...st,
+        toolCalls: Array.isArray(st.toolCalls) ? [...st.toolCalls] : [],
+        subagents: Array.isArray(st.subagents) ? [...st.subagents] : [],
+        _promptSkills: Array.isArray(st._promptSkills) ? [...st._promptSkills] : [],
+      });
+    }
+    return out;
+  }
+
+  function buildChronologicalStepsForAssistant(msg) {
+    if (!msg || typeof msg !== 'object') return [];
+    const promptSkills = Array.isArray(msg._promptSkills) ? msg._promptSkills : [];
+    if (Array.isArray(msg.steps) && msg.steps.length > 0) {
+      const mapped = msg.steps.map((s, idx) => ({
+        _turnUid: s._turnUid || '',
+        _promptSkills: idx === 0 ? Array.from(new Set([...(s._promptSkills || []), ...promptSkills])) : (s._promptSkills || []),
+        textBeforeBox: String(s.textBeforeBox || ''),
+        thinking: String(s.thinking || ''),
+        toolCalls: Array.isArray(s.toolCalls) ? s.toolCalls : [],
+        subagents: Array.isArray(s.subagents) ? s.subagents : [],
+        textAfterBox: String(s.textAfterBox || ''),
+      }));
+      return coalesceConsecutiveToolSteps(mapped);
+    }
+    const rawText = safeText(msg.text || '');
+    const { cleanedText, subagents: parsedSub } = extractSubagentBlocks(rawText);
+    const toolCalls = Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+    const subagents = (Array.isArray(msg.subagents) && msg.subagents.length) ? msg.subagents : parsedSub;
+    const thinking = safeText(msg.thinking || '');
+    if (!cleanedText && !thinking && !toolCalls.length && !subagents.length) return [];
+    return [{
+      textBeforeBox: '',
+      thinking,
+      toolCalls,
+      subagents,
+      textAfterBox: cleanedText,
+    }];
+  }
+
+  function computeStepToolDurationStr(calls, step, isStreamingOpen = false) {
+    let totalMs = 0;
+    let earliestStart = 0;
+    for (const tc of calls) {
+      if (!tc || typeof tc !== 'object') continue;
+      if (typeof tc.durationMs === 'number' && tc.durationMs > 0) {
+        totalMs += tc.durationMs;
+      } else if (typeof tc.startedAt === 'number' && tc.startedAt > 0) {
+        if (!earliestStart || tc.startedAt < earliestStart) earliestStart = tc.startedAt;
+      }
+    }
+    if (totalMs <= 0 && earliestStart > 0) {
+      totalMs = Math.max(100, Date.now() - earliestStart);
+    }
+    if (totalMs <= 0 && typeof step?.durationMs === 'number' && step.durationMs > 0) {
+      totalMs = step.durationMs;
+    }
+    if (totalMs <= 0 && calls.length > 0) {
+      const isSpawn = calls.some(t => /^(?:subagent|delegate|task|spawn_subagent|run_subagent|explore|agent|twin|spawn_agent)$/i.test(String(t?.name || '')));
+      const callIds = new Set(calls.map(t => t?.id).filter(Boolean));
+      const count = Math.max(1, callIds.size || calls.filter(t => t?.name && t.name !== 'result').length || 1);
+      totalMs = isSpawn ? 1200 : Math.min(4800, count * 400);
+    }
+    return formatSubagentDuration(Math.max(100, totalMs));
+  }
+
+  function buildStepWorkBoxSummaryHtml(step, calls, thinking, stepSkills, isStreamingOpen = false) {
+    const skillPrefix = stepSkills.length > 0
+      ? `<span class="lc-pi-skill-tag">[skill]</span> <span class="lc-pi-skill-name">${stepSkills.map(s => escapeHtml(s.name)).join(', ')}</span>`
+      : '';
+    if (calls.length > 0) {
+      const callIds = new Set(calls.map(t => t?.id).filter(Boolean));
+      const nonResCount = calls.filter(t => t?.name && t.name !== 'result' && t.result === undefined).length;
+      const count = Math.max(1, callIds.size || nonResCount || calls.length);
+      const isSpawn = calls.some(t => /^(?:subagent|delegate|task|spawn_subagent|run_subagent|explore|agent|twin|spawn_agent)$/i.test(String(t?.name || '')));
+      const toolNames = Array.from(new Set(calls.map(t => t?.name).filter(n => n && n !== 'result')));
+      const shortNames = toolNames.length > 3 ? `${toolNames.slice(0, 3).join(', ')}, ...` : toolNames.join(', ');
+      const suffix = isSpawn ? ' · spawn agent' : (shortNames ? ` · ${shortNames}` : '');
+      const thkBadge = thinking ? ' · 💭 thinking' : '';
+      const durStr = computeStepToolDurationStr(calls, step, isStreamingOpen);
+      const toolPart = `⚡ ${count} tool call(s)${escapeHtml(suffix)}${escapeHtml(thkBadge)} · <span class="lc-work-box-dur">${escapeHtml(durStr)}</span>`;
+      return skillPrefix ? `${skillPrefix} · ${toolPart}` : toolPart;
+    }
+    if (skillPrefix) {
+      const thkBadge = thinking ? ' · 💭 thinking' : '';
+      return `${skillPrefix}${escapeHtml(thkBadge)}`;
+    }
+    if (thinking) {
+      return isStreamingOpen ? '💭 Thinking…' : '💭 Thinking process';
+    }
+    return '';
+  }
+
+  function formatStepToolsPreText(calls) {
+    return calls.map(t => {
+      if (t.result !== undefined) {
+        const limit = t.truncated ? 1400 : 1200;
+        return `[${t.isError ? '❌ ' : ''}${t.name}] -> ${formatCleanToolResult(t.result).slice(0, limit)}`;
+      }
+      return `${t.name}(${safeText(t.arguments).slice(0, 300)})`;
+    }).join('\n\n');
+  }
+
+  function updateStepWorkBoxInPlace(box, step, turnIdx = -1, isStreamingOpen = false) {
+    const calls = Array.isArray(step?.toolCalls) ? step.toolCalls : [];
+    const thinking = safeText(step?.thinking || '').trim();
+    const stepSkills = extractSkillsFromToolCalls(calls, (step?.textBeforeBox || '') + '\n' + (step?.textAfterBox || ''), step?._promptSkills || []);
+    box.classList.toggle('has-thinking', Boolean(thinking));
+
+    let sum = box.querySelector(':scope > summary.lc-work-box-summary');
+    if (!sum) {
+      sum = document.createElement('summary');
+      sum.className = 'lc-work-box-summary';
+      box.prepend(sum);
+    }
+    let metaRow = sum.querySelector('.lc-work-box-tool-line');
+    if (!metaRow) {
+      sum.textContent = '';
+      metaRow = document.createElement('div');
+      metaRow.className = 'lc-work-box-tool-line';
+      sum.appendChild(metaRow);
+    }
+    const nextSummaryHtml = buildStepWorkBoxSummaryHtml(step, calls, thinking, stepSkills, isStreamingOpen);
+    if (metaRow.innerHTML !== nextSummaryHtml) {
+      metaRow.innerHTML = nextSummaryHtml;
+    }
+
+    let bodyWrap = box.querySelector(':scope > .lc-work-box-body');
+    if (!bodyWrap) {
+      bodyWrap = document.createElement('div');
+      bodyWrap.className = 'lc-work-box-body';
+      box.appendChild(bodyWrap);
+    }
+
+    let thkSec = bodyWrap.querySelector(':scope > .lc-thinking-card');
+    if (thinking) {
+      if (!thkSec) {
+        thkSec = document.createElement('div');
+        thkSec.className = 'lc-work-box-section lc-thinking-card';
+        const thkTitle = document.createElement('div');
+        thkTitle.className = 'lc-work-box-sec-title';
+        thkTitle.textContent = '💭 Thinking';
+        const thkPre = document.createElement('pre');
+        thkSec.append(thkTitle, thkPre);
+        bodyWrap.prepend(thkSec);
+      }
+      const thkPre = thkSec.querySelector('pre');
+      if (thkPre && thkPre.textContent !== thinking) {
+        thkPre.textContent = thinking;
+      }
+    } else if (thkSec) {
+      thkSec.remove();
+    }
+
+    let skillListEl = bodyWrap.querySelector(':scope > .lc-pi-skill-list');
+    if (stepSkills.length > 0) {
+      const skillKey = stepSkills.map(s => s.name).join(',');
+      if (!skillListEl || skillListEl.dataset.skillKey !== skillKey) {
+        const nextSkillList = createSkillBannerList(stepSkills);
+        nextSkillList.dataset.skillKey = skillKey;
+        if (skillListEl) skillListEl.replaceWith(nextSkillList);
+        else if (thkSec) thkSec.insertAdjacentElement('afterend', nextSkillList);
+        else bodyWrap.prepend(nextSkillList);
+      }
+    } else if (skillListEl) {
+      skillListEl.remove();
+    }
+
+    let pre = bodyWrap.querySelector(':scope > pre.lc-work-box-tools-pre');
+    if (calls.length > 0) {
+      if (!pre) {
+        pre = document.createElement('pre');
+        pre.className = 'lc-work-box-tools-pre';
+        bodyWrap.appendChild(pre);
+      }
+      const nextPreText = formatStepToolsPreText(calls);
+      if (pre.textContent !== nextPreText) {
+        pre.textContent = nextPreText;
+      }
+      // Attach truncated output buttons if not already mounted
+      const existingBtns = bodyWrap.querySelectorAll(':scope > .lc-tool-load-full-btn');
+      const truncatedCalls = calls.map((t, tIdx) => ({ t, tIdx })).filter(x => x.t && x.t.truncated);
+      if (existingBtns.length !== truncatedCalls.length) {
+        existingBtns.forEach(b => b.remove());
+        truncatedCalls.forEach(({ t, tIdx }) => {
+          const fullBtn = document.createElement('button');
+          fullBtn.type = 'button';
+          fullBtn.className = 'lc-tool-load-full-btn';
+          const kb = t.fullLength ? `${(t.fullLength / 1024).toFixed(1)} KB` : 'full';
+          fullBtn.textContent = `📥 Xem đầy đủ kết quả tool (${t.name || 'tool'} · ${kb})`;
+          fullBtn.addEventListener('click', async ev => {
+            ev.stopPropagation();
+            fullBtn.disabled = true;
+            fullBtn.textContent = '⏳ Đang tải kết quả đầy đủ…';
+            const targetMsgIdx = typeof t.msgIndex === 'number' ? t.msgIndex : turnIdx;
+            const targetToolIdx = typeof t.toolIndex === 'number' ? t.toolIndex : tIdx;
+            try {
+              const resp = await fetch(
+                `/api/chatbot/tool-output?msgIndex=${encodeURIComponent(targetMsgIdx)}&toolIndex=${encodeURIComponent(targetToolIdx)}&clientSessionId=${encodeURIComponent(state.clientSessionId || '')}`,
+                { credentials: 'same-origin' }
+              );
+              const data = await resp.json();
+              if (data && data.ok && typeof data.content === 'string') {
+                t.result = data.content;
+                t.truncated = false;
+                pre.textContent = calls.map(tc => {
+                  if (tc.result !== undefined) return `[${tc.name}] -> ${safeText(tc.result)}`;
+                  return `${tc.name}(${safeText(tc.arguments)})`;
+                }).join('\n\n');
+                fullBtn.remove();
+              } else {
+                throw new Error(data?.error || 'Failed to load tool output');
+              }
+            } catch (err) {
+              fullBtn.disabled = false;
+              fullBtn.textContent = `⚠️ Lỗi tải (${err.message || 'thử lại'})`;
+            }
+          });
+          bodyWrap.appendChild(fullBtn);
+        });
+      }
+    } else if (pre) {
+      pre.remove();
+    }
+  }
+
+  function createStepWorkBox(step, turnIdx = -1, isStreamingOpen = false) {
+    const calls = Array.isArray(step?.toolCalls) ? step.toolCalls : [];
+    const thinking = safeText(step?.thinking || '').trim();
+    const stepSkills = extractSkillsFromToolCalls(calls, (step?.textBeforeBox || '') + '\n' + (step?.textAfterBox || ''), step?._promptSkills || []);
+    if (!thinking && !calls.length && !stepSkills.length) return null;
+
+    const box = document.createElement('details');
+    box.className = 'lc-tool-card lc-work-box' + (thinking ? ' has-thinking' : '');
+    // Issue 7: Keep 1-line tool call box collapsed by default; expand on click
+    box.open = false;
+    updateStepWorkBoxInPlace(box, step, turnIdx, isStreamingOpen);
+    return box;
+  }
+
+  function syncAssistantStepsIntoCardIncrementally(card, head, steps, turnIdx = -1, isStreaming = false) {
+    const list = Array.isArray(steps) ? steps : [];
+    // Pre-scan all tool calls across all steps in this message so any get_subagent_result / bg_wait in a later step
+    // updates state.completedSubagentMap before earlier spawn steps render their [Agent] cards!
+    const allCardToolCalls = list.flatMap(s => Array.isArray(s?.toolCalls) ? s.toolCalls : []);
+    if (allCardToolCalls.length > 0) {
+      extractSubagentsFromToolCalls(allCardToolCalls, isStreaming);
+    }
+    const existingSlots = [...card.querySelectorAll(':scope > .lc-step-slot')];
+    for (let i = list.length; i < existingSlots.length; i++) {
+      existingSlots[i].remove();
+    }
+    const pillsEl = card.querySelector(':scope > .lc-ctx-pills');
+    const citeEl = card.querySelector(':scope > .lc-citation-bar');
+    const tailAnchor = pillsEl || citeEl || null;
+
+    list.forEach((step, sIdx) => {
+      const isLastStreamingStep = isStreaming && sIdx === list.length - 1;
+      let slot = existingSlots[sIdx];
+      if (!slot) {
+        slot = document.createElement('div');
+        slot.className = 'lc-step-slot';
+        slot.dataset.stepIndex = String(sIdx);
+        if (tailAnchor && tailAnchor.parentNode === card) {
+          card.insertBefore(slot, tailAnchor);
+        } else {
+          card.appendChild(slot);
+        }
+      }
+
+      const isRawMode = card.dataset.viewMode === 'raw';
+      const beforeTxt = extractSubagentBlocks(step.textBeforeBox || '').cleanedText;
+      let beforeEl = slot.querySelector(':scope > .lc-step-body.is-before');
+      if (beforeTxt) {
+        if (!beforeEl) {
+          beforeEl = document.createElement('div');
+          beforeEl.className = 'lc-msg-body lc-step-body is-before';
+          slot.prepend(beforeEl);
+        }
+        if (beforeEl.dataset.rawMd !== beforeTxt || beforeEl.dataset.renderedMode !== (isRawMode ? 'raw' : 'preview')) {
+          beforeEl.dataset.rawMd = beforeTxt;
+          beforeEl.dataset.renderedMode = isRawMode ? 'raw' : 'preview';
+          if (isRawMode) {
+            beforeEl.classList.add('is-raw');
+            beforeEl.textContent = beforeTxt;
+          } else {
+            beforeEl.classList.remove('is-raw');
+            beforeEl.innerHTML = renderChatMarkdownHtml(beforeTxt);
+          }
+        }
+      } else if (beforeEl) {
+        beforeEl.remove();
+      }
+
+      const calls = Array.isArray(step?.toolCalls) ? step.toolCalls : [];
+      const thinking = safeText(step?.thinking || '').trim();
+      const stepSkills = extractSkillsFromToolCalls(calls, (step?.textBeforeBox || '') + '\n' + (step?.textAfterBox || ''), step?._promptSkills || []);
+      const hasWorkBox = Boolean(thinking || calls.length || stepSkills.length);
+      let workBox = slot.querySelector(':scope > details.lc-work-box');
+      if (hasWorkBox) {
+        if (!workBox) {
+          workBox = createStepWorkBox(step, turnIdx, isLastStreamingStep);
+          if (beforeEl && beforeEl.nextSibling) {
+            slot.insertBefore(workBox, beforeEl.nextSibling);
+          } else if (beforeEl) {
+            slot.appendChild(workBox);
+          } else {
+            slot.prepend(workBox);
+          }
+        } else {
+          updateStepWorkBoxInPlace(workBox, step, turnIdx, isLastStreamingStep);
+        }
+      } else if (workBox) {
+        workBox.remove();
+      }
+
+      let visibleSkillList = slot.querySelector(':scope > .lc-pi-skill-list');
+      if (visibleSkillList) {
+        visibleSkillList.remove();
+      }
+
+      const toolSubs = extractSubagentsFromToolCalls(calls, isLastStreamingStep);
+      const stepSubs = [
+        ...(Array.isArray(step.subagents) ? step.subagents : []),
+        ...toolSubs,
+      ].map(s => {
+        if (!s || typeof s !== 'object') return s;
+        const tid = String(s.taskId || '');
+        const alias = String(s.alias || '');
+        const comp = (tid && state.completedSubagentMap?.get(tid)) || (alias && state.completedSubagentMap?.get(alias));
+        if (comp) {
+          return {
+            ...s,
+            status: 'Done',
+            activeStep: 'completed',
+            result: comp.result || s.result,
+            totalTokens: Number(comp.usage?.totalTokens || s.totalTokens || 0),
+          };
+        }
+        return s;
+      });
+      const dedupSubs = new Map();
+      stepSubs.forEach(s => {
+        if (s && typeof s === 'object') {
+          dedupSubs.set(String(s.taskId || s.toolName || Math.random()), s);
+        }
+      });
+      let subGrid = slot.querySelector(':scope > .lc-subagent-grid');
+      if (dedupSubs.size > 0) {
+        if (!subGrid) {
+          subGrid = createSubagentGrid(Array.from(dedupSubs.values()));
+          const afterCandidate = slot.querySelector(':scope > .lc-step-body.is-after');
+          if (afterCandidate) slot.insertBefore(subGrid, afterCandidate);
+          else slot.appendChild(subGrid);
+        } else {
+          updateSubagentGridInPlace(subGrid, Array.from(dedupSubs.values()));
+        }
+      } else if (subGrid) {
+        subGrid.remove();
+      }
+
+      const afterTxt = extractSubagentBlocks(step.textAfterBox || '').cleanedText;
+      let afterEl = slot.querySelector(':scope > .lc-step-body.is-after');
+      if (afterTxt) {
+        if (!afterEl) {
+          afterEl = document.createElement('div');
+          afterEl.className = 'lc-msg-body lc-step-body is-after';
+          slot.appendChild(afterEl);
+        }
+        if (afterEl.dataset.rawMd !== afterTxt || afterEl.dataset.renderedMode !== (isRawMode ? 'raw' : 'preview')) {
+          afterEl.dataset.rawMd = afterTxt;
+          afterEl.dataset.renderedMode = isRawMode ? 'raw' : 'preview';
+          if (isRawMode) {
+            afterEl.classList.add('is-raw');
+            afterEl.textContent = afterTxt;
+          } else {
+            afterEl.classList.remove('is-raw');
+            afterEl.innerHTML = renderChatMarkdownHtml(afterTxt);
+          }
+        }
+      } else if (afterEl) {
+        afterEl.remove();
+      }
+    });
+  }
+
+  function renderAssistantStepsIntoCard(card, head, steps, turnIdx = -1, isStreaming = false) {
+    syncAssistantStepsIntoCardIncrementally(card, head, steps, turnIdx, isStreaming);
+  }
+
   // --- Render Transcript Messages ---
   function renderTranscript(options = {}) {
     const rawCheck = (Array.isArray(state.messages) ? state.messages : []).map(normalizeRawMessage);
@@ -2367,7 +4471,9 @@
     streamingNode = null;
     streamingThinkingNode = null;
     streamingToolDetails = null;
-    activeToolRows.clear();
+    if (!state.busy) {
+      activeToolRows.clear();
+    }
 
     const rawNormalized = (Array.isArray(state.messages) ? state.messages : [])
       .map((m, idx) => {
@@ -2381,28 +4487,39 @@
       if (m.role === 'toolResult' || m.role === 'tool') {
         const prev = normalizedList[normalizedList.length - 1];
         if (prev && prev.role === 'assistant') {
-          if (m.toolCalls && m.toolCalls.length) {
-            prev.toolCalls = [...(prev.toolCalls || []), ...m.toolCalls];
-          } else if (m.text) {
-            prev.toolCalls = [...(prev.toolCalls || []), {
-              id: '',
-              name: 'result',
-              result: m.text,
-              truncated: Boolean(m.truncated),
-              fullLength: Number(m.fullLength || 0),
-              msgIndex: m._rawIdx,
-              toolIndex: 0,
-            }];
+          const addedTools = (m.toolCalls && m.toolCalls.length) ? m.toolCalls : (m.text ? [{
+            id: '',
+            name: 'result',
+            result: m.text,
+            truncated: Boolean(m.truncated),
+            fullLength: Number(m.fullLength || 0),
+            msgIndex: m._rawIdx,
+            toolIndex: 0,
+          }] : []);
+          prev.toolCalls = [...(prev.toolCalls || []), ...addedTools];
+          prev.steps = buildChronologicalStepsForAssistant(prev);
+          if (prev.steps.length) {
+            const lastSt = prev.steps[prev.steps.length - 1];
+            lastSt.toolCalls = [...(lastSt.toolCalls || []), ...addedTools];
+          }
+          if (m.subagents && m.subagents.length) {
+            prev.subagents = [...(prev.subagents || []), ...m.subagents];
           }
           prev._turnIdx = m._rawIdx;
         }
         return;
       }
       if (m.role !== 'user') {
-        const hasBody = Boolean(m.text || m.thinking || (m.toolCalls && m.toolCalls.length) || (m.subagents && m.subagents.length));
+        const hasBody = Boolean(m.text || m.thinking || (m.toolCalls && m.toolCalls.length) || (m.subagents && m.subagents.length) || (m.steps && m.steps.length));
         if (!hasBody) return;
         const prev = normalizedList[normalizedList.length - 1];
+        if (prev && prev.role === 'user' && Array.isArray(prev.invokedSkills) && prev.invokedSkills.length) {
+          m._promptSkills = Array.from(new Set([...(m._promptSkills || []), ...prev.invokedSkills]));
+        }
         if (prev && prev.role === 'assistant') {
+          const prevSteps = buildChronologicalStepsForAssistant(prev);
+          const nextSteps = buildChronologicalStepsForAssistant(m);
+          prev.steps = coalesceConsecutiveToolSteps([...prevSteps, ...nextSteps]);
           prev.toolCalls = [...(prev.toolCalls || []), ...(m.toolCalls || [])];
           prev.subagents = [...(prev.subagents || []), ...(m.subagents || [])];
           if (m.thinking && m.thinking !== prev.thinking) {
@@ -2419,7 +4536,7 @@
       normalizedList.push({ ...m, _turnIdx: m._rawIdx });
     });
 
-    if (!normalizedList.length) {
+    if (!normalizedList.length && !(state.busy && hasActiveStreamTurn())) {
       const welcome = document.createElement('div');
       welcome.className = 'lc-msg system';
       welcome.textContent = state.greeting || 'Ask Lanbot about your files or Markdown document.';
@@ -2452,90 +4569,22 @@
       head.className = 'lc-msg-head';
       card.append(head);
 
-      if (msg.thinking) {
-        const think = document.createElement('details');
-        think.className = 'lc-thinking-card';
-        const sum = document.createElement('summary');
-        sum.textContent = '💭 Thinking process';
-        const pre = document.createElement('pre');
-        pre.textContent = safeText(msg.thinking);
-        think.append(sum, pre);
-        card.append(think);
-      }
-
-      if (Array.isArray(msg.toolCalls) && msg.toolCalls.length) {
-        const toolDetails = document.createElement('details');
-        toolDetails.className = 'lc-tool-card';
-        const sum = document.createElement('summary');
-        sum.textContent = `⚡ ${msg.toolCalls.length} tool call(s): ${msg.toolCalls.map(t => t.name).join(', ')}`;
-        const pre = document.createElement('pre');
-        pre.textContent = msg.toolCalls.map(t => {
-          if (t.result !== undefined) {
-            const limit = t.truncated ? 1400 : 1200;
-            return `[${t.name}] -> ${safeText(t.result).slice(0, limit)}`;
-          }
-          return `${t.name}(${safeText(t.arguments)})`;
-        }).join('\n\n');
-        toolDetails.append(sum, pre);
-
-        // v7.7: On-demand full tool output button for large truncated tool results
-        msg.toolCalls.forEach((t, tIdx) => {
-          if (t && t.truncated) {
-            const fullBtn = document.createElement('button');
-            fullBtn.type = 'button';
-            fullBtn.className = 'lc-tool-load-full-btn';
-            const kb = t.fullLength ? `${(t.fullLength / 1024).toFixed(1)} KB` : 'full';
-            fullBtn.textContent = `📥 Xem đầy đủ kết quả tool (${t.name || 'tool'} · ${kb})`;
-            fullBtn.addEventListener('click', async ev => {
-              ev.stopPropagation();
-              fullBtn.disabled = true;
-              fullBtn.textContent = '⏳ Đang tải kết quả đầy đủ…';
-              const targetMsgIdx = typeof t.msgIndex === 'number' ? t.msgIndex : turnIdx;
-              const targetToolIdx = typeof t.toolIndex === 'number' ? t.toolIndex : tIdx;
-              try {
-                const resp = await fetch(
-                  `/api/chatbot/tool-output?msgIndex=${encodeURIComponent(targetMsgIdx)}&toolIndex=${encodeURIComponent(targetToolIdx)}&clientSessionId=${encodeURIComponent(state.clientSessionId || '')}`,
-                  { credentials: 'same-origin' }
-                );
-                const data = await resp.json();
-                if (data && data.ok && typeof data.content === 'string') {
-                  t.result = data.content;
-                  t.truncated = false;
-                  pre.textContent = msg.toolCalls.map(tc => {
-                    if (tc.result !== undefined) return `[${tc.name}] -> ${safeText(tc.result)}`;
-                    return `${tc.name}(${safeText(tc.arguments)})`;
-                  }).join('\n\n');
-                  fullBtn.remove();
-                } else {
-                  throw new Error(data?.error || 'Failed to load tool output');
-                }
-              } catch (err) {
-                fullBtn.disabled = false;
-                fullBtn.textContent = `⚠️ Lỗi tải (${err.message || 'thử lại'})`;
-              }
-            });
-            toolDetails.append(fullBtn);
-          }
-        });
-
-        card.append(toolDetails);
-      }
-
-      const rawText = safeText(msg.text);
-      const { cleanedText, subagents: parsedSub } = extractSubagentBlocks(rawText);
-      const allSubagents = (Array.isArray(msg.subagents) && msg.subagents.length) ? msg.subagents : parsedSub;
-
-      if (cleanedText) {
-        const body = document.createElement('div');
-        body.className = 'lc-msg-body';
-        populateMessageBodyAndActions(card, head, body, cleanedText, { role: msg.role, turnIndex: turnIdx });
-        card.append(body);
+      if (msg.role === 'user') {
+        const rawText = safeText(msg.text);
+        const { cleanedText } = extractSubagentBlocks(rawText);
+        if (cleanedText) {
+          const body = document.createElement('div');
+          body.className = 'lc-msg-body';
+          populateMessageBodyAndActions(card, head, body, cleanedText, { role: msg.role, turnIndex: turnIdx });
+          card.append(body);
+        } else {
+          populateMessageBodyAndActions(card, head, null, '', { role: msg.role, turnIndex: turnIdx });
+        }
       } else {
-        populateMessageBodyAndActions(card, head, null, '', { role: msg.role, turnIndex: turnIdx });
-      }
-
-      if (allSubagents.length) {
-        card.append(createSubagentGrid(allSubagents));
+        const stepsToRender = buildChronologicalStepsForAssistant(msg);
+        const fullCleanText = safeText(msg.text);
+        populateMessageBodyAndActions(card, head, null, fullCleanText, { role: msg.role, turnIndex: turnIdx });
+        renderAssistantStepsIntoCard(card, head, stepsToRender, turnIdx, false);
       }
 
       if (msg.context && typeof msg.context === 'object') {
@@ -2576,22 +4625,94 @@
       els.transcript.scrollTop = els.transcript.scrollHeight;
     }
     requestAnimationFrame(() => { programmaticScroll = false; });
+    // v9.0: Re-mount in-flight streaming turn card so worker tab switches (#bot1 ⇄ #bot2) never lose live thinking/tools/response
+    if (state.busy && hasActiveStreamTurn()) {
+      hydrateActiveStreamTurnIntoDom();
+    }
+    refreshTodoUi();
+    refreshActiveAgentsBar();
+    renderWorkerTabs();
     saveTabCache();
+  }
+
+  function buildLiveStreamSteps() {
+    const curUid = streamTurn?.turnUid || 'st-cur';
+    let priorSteps = [];
+    if (Array.isArray(state.messages) && state.messages.length > 0) {
+      const lastMsg = state.messages[state.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant' && Array.isArray(lastMsg.steps)) {
+        priorSteps = lastMsg.steps.filter(s => s && s._turnUid && s._turnUid !== curUid).map(s => ({ ...s }));
+      }
+    }
+    const completed = Array.isArray(streamTurn.steps) ? streamTurn.steps.map(s => ({ ...s, _turnUid: s._turnUid || curUid })) : [];
+    const curTools = Array.isArray(streamTurn.subturnToolCalls) && streamTurn.subturnToolCalls.length
+      ? streamTurn.subturnToolCalls
+      : (completed.length === 0 && Array.isArray(streamTurn.toolCalls) ? streamTurn.toolCalls : []);
+    const curThk = String(streamTurn.subturnThinking || (completed.length === 0 ? streamTurn.thinking : '') || '').trim();
+    const curTxt = String(streamTurn.subturnText || (completed.length === 0 ? streamTurn.text : '') || '').trim();
+    if (curThk || curTools.length || curTxt) {
+      const hasTools = curTools.length > 0;
+      completed.push({
+        _turnUid: curUid,
+        textBeforeBox: hasTools ? curTxt : '',
+        thinking: curThk,
+        toolCalls: curTools,
+        subagents: [],
+        textAfterBox: hasTools ? '' : curTxt,
+      });
+    }
+    return coalesceConsecutiveToolSteps([...priorSteps, ...completed]);
+  }
+
+  function hydrateActiveStreamTurnIntoDom() {
+    if (!hasActiveStreamTurn()) return;
+    let card = els.transcript.querySelector('.lc-msg.assistant.streaming');
+    if (!card) {
+      const allCards = [...els.transcript.querySelectorAll('.lc-msg')];
+      const lastCard = allCards[allCards.length - 1];
+      if (lastCard && lastCard.classList.contains('assistant') && streamTurn.saved) {
+        card = lastCard;
+        card.classList.add('streaming');
+      } else {
+        card = ensureStreamingTurnCard();
+      }
+    }
+    const head = card.querySelector('.lc-msg-head') || (() => {
+      const h = document.createElement('div');
+      h.className = 'lc-msg-head';
+      card.prepend(h);
+      return h;
+    })();
+    // Issue 6 fix: Incremental Step DOM Update — NEVER remove existing step slots during active streaming!
+    const liveSteps = buildLiveStreamSteps();
+    const combinedTxt = [streamTurn.text, streamTurn.subturnText].filter(Boolean).join('\n\n').trim();
+    populateMessageBodyAndActions(card, head, null, combinedTxt, { role: 'assistant', turnIndex: state.messages.length - 1 });
+    syncAssistantStepsIntoCardIncrementally(card, head, liveSteps, state.messages.length - 1, true);
   }
 
   // --- Update Header & Controls from Snapshot / chat_state ---
   function applySnapshot(snap) {
     if (!snap || typeof snap !== 'object') return;
     const prevSessionId = state.sessionId;
+    const activeW = (state.workerTabs || []).find(w => w.id === state.activeWorkerId);
     if (snap.state && typeof snap.state === 'object') {
       state.sessionId = snap.state.sessionId || state.sessionId;
       state.sessionFile = snap.state.sessionFile || state.sessionFile;
-      if (snap.state.model) state.model = snap.state.model;
+      if (snap.state.model && !activeW?.userPinnedModel) state.model = snap.state.model;
     }
     if (snap.summary && typeof snap.summary === 'object') {
       state.busy = Boolean(snap.summary.streaming);
       state.streaming = Boolean(snap.summary.streaming);
-      if (snap.summary.model) state.model = snap.summary.model;
+      if (snap.summary.streaming && snap.summary.activeStreamTurn && typeof snap.summary.activeStreamTurn === 'object') {
+        const ast = snap.summary.activeStreamTurn;
+        if (ast.text && !streamTurn.text && !streamTurn.subturnText) streamTurn.subturnText = String(ast.text);
+        if (ast.thinking && !streamTurn.thinking && !streamTurn.subturnThinking) streamTurn.subturnThinking = String(ast.thinking);
+        if (Array.isArray(ast.toolCalls) && ast.toolCalls.length > streamTurn.toolCalls.length) {
+          streamTurn.toolCalls = ast.toolCalls.map(t => ({ ...t }));
+        }
+      }
+      if (snap.summary.model && !activeW?.userPinnedModel) state.model = snap.summary.model;
+      if (activeW?.userPinnedModel) state.model = { ...activeW.userPinnedModel };
       if (Array.isArray(snap.summary.favorites)) state.favoriteModels = snap.summary.favorites;
       if (snap.summary.thinkingLevel) state.thinkingLevel = snap.summary.thinkingLevel;
       if (snap.summary.policy) {
@@ -2602,7 +4723,9 @@
     if (Array.isArray(snap.models)) state.models = snap.models;
     if (Array.isArray(snap.messages)) {
       const sessionChanged = Boolean(snap.state?.sessionId && prevSessionId && snap.state.sessionId !== prevSessionId) || Boolean(snap.isSwitch);
-      if (snap.isNew || sessionChanged || snap.messages.length === 0 || snap.messages.length >= (state.messages?.length || 0)) {
+      if (snap.isNew) {
+        state.messages = [];
+      } else if (snap.messages.length > 0 && (sessionChanged || snap.messages.length >= (state.messages?.length || 0))) {
         state.messages = snap.messages;
       } else if (snap.messages.length === 0 || snap.messages.length >= (state.messages?.length || 0)) {
         state.messages = snap.messages;
@@ -2649,7 +4772,12 @@
     setStatus(state.busy ? 'Lanbot is working…' : 'Ready', 'info');
 
     els.thinkingSelect.textContent = '';
-    (state.thinkingLevels || ['off', 'low', 'medium', 'high']).forEach(lvl => {
+    const allowedThk = (Array.isArray(snap.summary?.allowedThinking) && snap.summary.allowedThinking.length)
+      ? snap.summary.allowedThinking
+      : ((Array.isArray(state.policy?.allowedThinking) && state.policy.allowedThinking.length)
+          ? state.policy.allowedThinking
+          : (state.thinkingLevels || ['off', 'low', 'medium', 'high']));
+    allowedThk.forEach(lvl => {
       const opt = new Option(lvl.toUpperCase(), lvl, lvl === state.thinkingLevel, lvl === state.thinkingLevel);
       els.thinkingSelect.add(opt);
     });
@@ -2764,6 +4892,15 @@
       });
 
       row.addEventListener('click', () => {
+        state.model = { provider: m.provider, id: m.id, name: m.name || m.id };
+        const curW = (state.workerTabs || []).find(w => w.id === state.activeWorkerId);
+        if (curW) {
+          if (!curW.snapshot) curW.snapshot = {};
+          curW.snapshot.model = { ...state.model };
+          curW.userPinnedModel = { ...state.model };
+        }
+        persistWorkerTabsBar();
+        syncModelPillUi();
         sendWs({ type: 'chat_set_model', provider: m.provider, modelId: m.id });
         els.modelModal.hidden = true;
       });
@@ -2776,71 +4913,114 @@
   // --- Fork Checkpoint Picker Modal & Session Rename Support (v7.5) ---
   let forkTargetSessionPath = null;
 
+  let forkCheckpointsCache = [];
+
+  function renderForkCheckpointsList() {
+    if (!els.forkTurnList) return;
+    els.forkTurnList.textContent = '';
+    const countBadge = drawer.querySelector('#lcForkTurnCountBadge');
+    const searchInput = drawer.querySelector('#lcForkTurnSearch');
+    const q = (searchInput?.value || '').trim().toLowerCase();
+    const allItems = Array.isArray(forkCheckpointsCache) ? forkCheckpointsCache : [];
+    if (countBadge) countBadge.textContent = `${allItems.length} turn(s)`;
+
+    const filtered = q
+      ? allItems.filter(it => `#${it.turn}`.includes(q) || String(it.snippet || '').toLowerCase().includes(q) || String(it.role || '').toLowerCase().includes(q))
+      : allItems;
+
+    if (!filtered.length) {
+      const note = document.createElement('div');
+      note.style.padding = '8px';
+      note.style.fontSize = '12px';
+      note.style.color = 'var(--lc-muted)';
+      note.textContent = allItems.length ? 'No turns match your filter.' : 'Click "⑂ Fork Latest" above to branch this session.';
+      els.forkTurnList.appendChild(note);
+      return;
+    }
+
+    filtered.forEach(item => {
+      const idx = typeof item.index === 'number' ? item.index : (item.turn - 1);
+      const turnNo = item.turn || (idx + 1);
+      const row = document.createElement('div');
+      row.className = 'lc-model-row';
+      row.dataset.forkTurn = String(turnNo);
+      const left = document.createElement('div');
+      left.style.minWidth = '0';
+      left.style.flex = '1';
+      const head = document.createElement('div');
+      head.style.fontWeight = '750';
+      head.style.fontSize = '11.5px';
+      head.style.color = item.role === 'user' ? '#68e37a' : '#93c5fd';
+      head.textContent = `#${turnNo} · ${item.role === 'user' ? '👤 You' : '🏮 Lanbot'}${item.toolCount ? ` (${item.toolCount} tools)` : ''}`;
+      const snip = document.createElement('div');
+      snip.style.fontSize = '11px';
+      snip.style.color = 'var(--lc-fg)';
+      snip.style.overflow = 'hidden';
+      snip.style.textOverflow = 'ellipsis';
+      snip.style.whiteSpace = 'nowrap';
+      snip.textContent = String(item.snippet || '(turn)');
+      left.append(head, snip);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lc-diff-btn accept';
+      btn.textContent = `⑂ Fork after #${turnNo}`;
+      row.append(left, btn);
+      row.addEventListener('click', () => {
+        const customName = (els.forkNameInput?.value || '').trim();
+        els.forkModal.hidden = true;
+        els.sessionModal.hidden = true;
+        setStatus(`Forking conversation after turn #${turnNo}…`, 'info');
+        sendWs({
+          type: 'chat_fork',
+          uptoIndex: idx,
+          sourceSessionPath: forkTargetSessionPath,
+          customName,
+        });
+      });
+      els.forkTurnList.appendChild(row);
+    });
+  }
+
+  drawer.querySelector('#lcForkTurnSearch')?.addEventListener('input', renderForkCheckpointsList);
+
   function openForkCheckpointModal(sourceSession = null) {
     if (!els.forkModal || !els.forkTurnList) {
       sendWs({ type: 'chat_fork' });
       return;
     }
     forkTargetSessionPath = sourceSession?.path || null;
-    const baseTitle = sourceSession?.label || sourceSession?.name || state.sessionName || state.sessionId || 'Current Session';
+    const targetSid = sourceSession?.id || state.sessionId || '';
+    const baseTitle = sourceSession?.label || sourceSession?.name || state.sessionName || targetSid || 'Current Session';
     if (els.forkModalTitle) {
       els.forkModalTitle.textContent = `⑂ Fork Checkpoint · ${String(baseTitle).slice(0, 32)}`;
     }
-    if (els.forkNameInput) {
-      els.forkNameInput.value = '';
-    }
-    els.forkTurnList.textContent = '';
-    const msgs = (Array.isArray(state.messages) ? state.messages : []).map(normalizeRawMessage);
-    if (!msgs.length) {
-      const note = document.createElement('div');
-      note.style.padding = '8px';
-      note.style.fontSize = '12px';
-      note.style.color = 'var(--lc-muted)';
-      note.textContent = 'Click "⑂ Fork Latest" above to branch this session.';
-      els.forkTurnList.appendChild(note);
-    } else {
-      msgs.forEach((m, idx) => {
-        const row = document.createElement('div');
-        row.className = 'lc-model-row';
-        const left = document.createElement('div');
-        left.style.minWidth = '0';
-        left.style.flex = '1';
-        const head = document.createElement('div');
-        head.style.fontWeight = '750';
-        head.style.fontSize = '11.5px';
-        head.style.color = m.role === 'user' ? '#68e37a' : '#93c5fd';
-        head.textContent = `#${idx + 1} · ${m.role === 'user' ? '👤 You' : '🏮 Lanbot'}`;
-        const snip = document.createElement('div');
-        snip.style.fontSize = '11px';
-        snip.style.color = 'var(--lc-fg)';
-        snip.style.overflow = 'hidden';
-        snip.style.textOverflow = 'ellipsis';
-        snip.style.whiteSpace = 'nowrap';
-        const cleanTxt = String(m.text || '').replace(/\s+/g, ' ').trim();
-        snip.textContent = cleanTxt.slice(0, 90) || (m.toolCalls?.length ? `[${m.toolCalls.length} tool call(s)]` : '(turn)');
-        left.append(head, snip);
+    if (els.forkNameInput) els.forkNameInput.value = '';
+    const searchInput = drawer.querySelector('#lcForkTurnSearch');
+    if (searchInput) searchInput.value = '';
 
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'lc-diff-btn accept';
-        btn.textContent = `⑂ Fork after #${idx + 1}`;
-        row.append(left, btn);
-        row.addEventListener('click', () => {
-          const customName = (els.forkNameInput?.value || '').trim();
-          els.forkModal.hidden = true;
-          els.sessionModal.hidden = true;
-          setStatus(`Forking conversation after turn #${idx + 1}…`, 'info');
-          sendWs({
-            type: 'chat_fork',
-            uptoIndex: idx,
-            sourceSessionPath: forkTargetSessionPath,
-            customName,
-          });
-        });
-        els.forkTurnList.appendChild(row);
-      });
+    // Seed with local messages immediately if opening for current session, then fetch full unabbreviated turn list from disk!
+    if (!sourceSession || sourceSession.id === state.sessionId) {
+      const localMsgs = (Array.isArray(state.messages) ? state.messages : []).map(normalizeRawMessage);
+      forkCheckpointsCache = localMsgs.map((m, idx) => ({
+        index: typeof m._msgIndex === 'number' ? m._msgIndex : idx,
+        turn: idx + 1,
+        role: m.role,
+        snippet: String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 120) || (m.toolCalls?.length ? `[${m.toolCalls.length} tool call(s)]` : '(turn)'),
+        toolCount: m.toolCalls?.length || 0,
+      }));
+    } else {
+      forkCheckpointsCache = [];
     }
+    renderForkCheckpointsList();
     els.forkModal.hidden = false;
+
+    sendWs({
+      type: 'chat_get_fork_checkpoints',
+      sessionId: targetSid,
+      sessionPath: forkTargetSessionPath || '',
+      sessionScope: sourceSession?.sessionScope || '',
+    });
   }
 
   els.forkFullBtn?.addEventListener('click', () => {
@@ -2856,9 +5036,99 @@
   });
 
   // --- Render Sessions Modal ---
+  let sessionDeleteSelectMode = false;
+  const selectedDeleteSessionIds = new Set();
+
+  function executeBulkSessionDelete() {
+    if (!selectedDeleteSessionIds.size) return;
+    const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+    const itemsToDelete = sessions
+      .filter(s => selectedDeleteSessionIds.has(s.id))
+      .map(s => ({ sessionId: s.id, sessionPath: s.path || '', sessionScope: s.sessionScope || '' }));
+    if (!itemsToDelete.length) {
+      selectedDeleteSessionIds.forEach(sid => itemsToDelete.push({ sessionId: sid }));
+    }
+    state.sessions = sessions.filter(s => !selectedDeleteSessionIds.has(s.id));
+    selectedDeleteSessionIds.clear();
+    sessionDeleteSelectMode = false;
+    renderSessionList();
+    sendWs({
+      type: 'chat_delete_sessions',
+      items: itemsToDelete,
+      deleteChildren: true,
+    });
+    setStatus(`🗑️ Deleted ${itemsToDelete.length} session(s).`, 'info');
+  }
+
   function renderSessionList() {
     els.sessionList.textContent = '';
     const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+    if (sessionDeleteSelectMode && sessions.length > 0) {
+      const bulkBar = document.createElement('div');
+      bulkBar.className = 'lc-session-delete-confirm lc-session-bulk-del-bar';
+      bulkBar.style.display = 'flex';
+      bulkBar.style.alignItems = 'center';
+      bulkBar.style.gap = '8px';
+      bulkBar.style.padding = '7px 10px';
+      bulkBar.style.marginBottom = '6px';
+      bulkBar.style.borderRadius = '8px';
+      bulkBar.style.background = 'rgba(127, 29, 29, 0.28)';
+      bulkBar.style.border = '1px solid rgba(248, 113, 113, 0.5)';
+
+      const allCheckLabel = document.createElement('label');
+      allCheckLabel.style.display = 'inline-flex';
+      allCheckLabel.style.alignItems = 'center';
+      allCheckLabel.style.gap = '5px';
+      allCheckLabel.style.fontSize = '11.5px';
+      allCheckLabel.style.fontWeight = '700';
+      allCheckLabel.style.cursor = 'pointer';
+      const allCb = document.createElement('input');
+      allCb.type = 'checkbox';
+      allCb.id = 'lcSelectAllSessionsCheck';
+      allCb.checked = sessions.length > 0 && sessions.every(s => selectedDeleteSessionIds.has(s.id));
+      allCb.addEventListener('change', () => {
+        if (allCb.checked) sessions.forEach(s => selectedDeleteSessionIds.add(s.id));
+        else selectedDeleteSessionIds.clear();
+        renderSessionList();
+      });
+      allCheckLabel.append(allCb, document.createTextNode('Select All'));
+
+      const countSpan = document.createElement('span');
+      countSpan.id = 'lcSelectedSessionsCount';
+      countSpan.style.marginRight = 'auto';
+      countSpan.style.fontSize = '11.5px';
+      countSpan.style.color = '#fecaca';
+      countSpan.textContent = `${selectedDeleteSessionIds.size} selected`;
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.id = 'lcConfirmBulkDeleteBtn';
+      confirmBtn.className = 'lc-diff-btn danger';
+      confirmBtn.style.background = '#dc2626';
+      confirmBtn.style.color = '#fff';
+      confirmBtn.style.borderColor = '#f87171';
+      confirmBtn.disabled = selectedDeleteSessionIds.size === 0;
+      confirmBtn.textContent = `🗑️ Delete (${selectedDeleteSessionIds.size})`;
+      confirmBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        executeBulkSessionDelete();
+      });
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.id = 'lcCancelBulkDeleteBtn';
+      cancelBtn.className = 'lc-diff-btn';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        sessionDeleteSelectMode = false;
+        selectedDeleteSessionIds.clear();
+        renderSessionList();
+      });
+
+      bulkBar.append(allCheckLabel, countSpan, confirmBtn, cancelBtn);
+      els.sessionList.appendChild(bulkBar);
+    }
     if (!sessions.length) {
       const empty = document.createElement('div');
       empty.style.color = 'var(--lc-muted)';
@@ -2867,9 +5137,25 @@
       els.sessionList.append(empty);
       return;
     }
-    sessions.forEach(s => {
+    const localHeldIds = new Set(
+      (state.workerTabs || [])
+        .map(w => (w.cid === state.clientSessionId ? state.sessionId : w.snapshot?.sessionId) || '')
+        .filter(Boolean)
+    );
+    const GLOBE_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`;
+    sessions.forEach((s, sIdx) => {
+      const parentExists = Boolean(s.parentSessionId && sessions.some(o => o.id === s.parentSessionId));
+      const treeDepth = parentExists ? Math.max(0, Math.min(2, Number(s.treeDepth ?? 1))) : 0;
+      const hasChildren = Boolean(s.hasChildren || sessions.some(o => o.parentSessionId === s.id));
+      const isHeldInUse = Boolean(s.inUse || s.activeInTab || localHeldIds.has(s.id));
+      const shortIdStr = s.shortId || formatShortSessionIdTag(s.id, sIdx);
+
       const row = document.createElement('div');
       row.className = 'lc-model-row' + (s.current ? ' active' : '');
+      row.style.flexWrap = 'wrap';
+      if (treeDepth > 0) {
+        row.dataset.treeDepth = String(treeDepth);
+      }
       const left = document.createElement('div');
       left.style.minWidth = '0';
       left.style.flex = '1';
@@ -2878,17 +5164,41 @@
       title.style.display = 'flex';
       title.style.alignItems = 'center';
       title.style.gap = '6px';
+      if (treeDepth > 0) {
+        const nextItem = sessions[sIdx + 1];
+        const nextParentExists = Boolean(nextItem?.parentSessionId && sessions.some(o => o.id === nextItem.parentSessionId));
+        const nextDepth = nextParentExists ? Number(nextItem?.treeDepth ?? 1) : 0;
+        const isLastBranch = nextDepth < treeDepth;
+        const branchSpan = document.createElement('span');
+        branchSpan.className = 'lc-tree-branch';
+        branchSpan.textContent = isLastBranch ? '└─ ⑂' : '├─ ⑂';
+        branchSpan.title = `Forked branch (level ${treeDepth}${s.forkTurn ? `, from turn #${s.forkTurn}` : ''})`;
+        title.append(branchSpan);
+      }
+      const idBadge = document.createElement('span');
+      idBadge.className = 'lc-session-id-tag';
+      idBadge.textContent = shortIdStr;
+      idBadge.title = `Session ID: #${s.id}`;
+      title.append(idBadge);
+
       const nameSpan = document.createElement('span');
       nameSpan.style.overflow = 'hidden';
       nameSpan.style.textOverflow = 'ellipsis';
       nameSpan.style.whiteSpace = 'nowrap';
       nameSpan.textContent = s.label || s.name || s.id;
       title.append(nameSpan);
+      if (s.forkTurn && parentExists) {
+        const forkBadge = document.createElement('span');
+        forkBadge.className = 'lc-ctx-pill';
+        forkBadge.style.color = '#a7f3d0';
+        forkBadge.textContent = `⑂ #${s.forkTurn}`;
+        title.append(forkBadge);
+      }
       if (s.shared) {
         const sharedBadge = document.createElement('span');
         sharedBadge.className = 'lc-ctx-pill';
         sharedBadge.style.color = '#38bdf8';
-        sharedBadge.textContent = '🌐 Shared';
+        sharedBadge.textContent = 'Shared';
         title.append(sharedBadge);
       }
       if (s.busy) {
@@ -2897,18 +5207,27 @@
         busyBadge.style.color = '#fbbf24';
         busyBadge.textContent = '⚡ Running';
         title.append(busyBadge);
-      } else if (s.current) {
+      }
+      if (s.current) {
         const curBadge = document.createElement('span');
         curBadge.className = 'lc-ctx-pill';
         curBadge.style.color = '#68e37a';
         curBadge.textContent = 'Current';
         title.append(curBadge);
       }
+      if (isHeldInUse && (!s.current || (s.holderCount && s.holderCount > 1))) {
+        const useBadge = document.createElement('span');
+        useBadge.className = 'lc-ctx-pill';
+        useBadge.style.color = '#c084fc';
+        useBadge.textContent = 'In Use';
+        useBadge.title = 'This session is currently open in a bot tab';
+        title.append(useBadge);
+      }
       const sub = document.createElement('div');
       sub.style.fontSize = '11px';
       sub.style.color = 'var(--lc-muted)';
       const countText = typeof s.messageCount === 'number' ? `${s.messageCount} msgs · ` : '';
-      sub.textContent = `${countText}${s.updatedAt || s.id}`;
+      sub.textContent = `${countText}#${String(s.id).slice(0, 8)} · ${s.updatedAt || ''}`;
       left.append(title, sub);
 
       const rightBtns = document.createElement('div');
@@ -2916,16 +5235,15 @@
       rightBtns.style.gap = '4px';
       rightBtns.style.flexShrink = '0';
 
-      // v7.8: 🌐 Share button ONLY on localhost and ONLY for localhost sessions (not [Lan]-... sessions)
+      // v8.0: Gray-by-default SVG Share Globe button (turns blue when shared)
       if (state.isLocal && s.sessionScope !== 'lan') {
         const rowShareBtn = document.createElement('button');
         rowShareBtn.type = 'button';
-        rowShareBtn.className = 'lc-icon-btn' + (s.shared ? ' active' : '');
-        rowShareBtn.style.color = s.shared ? '#38bdf8' : '';
-        rowShareBtn.textContent = '🌐';
+        rowShareBtn.className = 'lc-icon-btn lc-share-globe-btn' + (s.shared ? ' active' : '');
+        rowShareBtn.innerHTML = GLOBE_SVG;
         rowShareBtn.title = s.shared
           ? 'Shared with LAN (click to stop sharing)'
-          : 'Share this localhost session with LAN';
+          : 'Not shared (click to share this session with LAN)';
         rowShareBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           sendWs({
@@ -2958,46 +5276,53 @@
 
       const rowForkBtn = document.createElement('button');
       rowForkBtn.type = 'button';
-      rowForkBtn.className = 'lc-icon-btn';
+      rowForkBtn.className = 'lc-icon-btn lc-session-fork-btn';
       rowForkBtn.textContent = '⑂';
       rowForkBtn.title = 'Fork this session (or pick checkpoint)';
       rowForkBtn.addEventListener('click', ev => {
         ev.stopPropagation();
-        if (s.current) {
-          openForkCheckpointModal(s);
-        } else {
-          lastTranscriptFingerprint = '';
-          sendWs({
-            type: 'chat_switch_session',
-            sessionPath: s.path,
-            sessionId: s.id,
-            sessionScope: s.sessionScope || '',
-          });
-          setTimeout(() => openForkCheckpointModal(s), 220);
-        }
+        openForkCheckpointModal(s);
       });
+
+      if (sessionDeleteSelectMode) {
+        const delCb = document.createElement('input');
+        delCb.type = 'checkbox';
+        delCb.className = 'lc-session-del-checkbox';
+        delCb.dataset.sessionId = s.id;
+        delCb.checked = selectedDeleteSessionIds.has(s.id);
+        delCb.style.marginRight = '8px';
+        delCb.style.cursor = 'pointer';
+        delCb.addEventListener('click', ev => {
+          ev.stopPropagation();
+          if (delCb.checked) selectedDeleteSessionIds.add(s.id);
+          else selectedDeleteSessionIds.delete(s.id);
+          renderSessionList();
+        });
+        row.appendChild(delCb);
+      }
 
       const rowDeleteBtn = document.createElement('button');
       rowDeleteBtn.type = 'button';
-      rowDeleteBtn.className = 'lc-icon-btn';
+      rowDeleteBtn.className = 'lc-icon-btn lc-session-trash-btn';
       rowDeleteBtn.style.color = '#f87171';
       rowDeleteBtn.textContent = '🗑️';
-      rowDeleteBtn.title = 'Delete this session';
+      rowDeleteBtn.title = 'Select sessions to delete (multi-select checkbox mode)';
       rowDeleteBtn.addEventListener('click', ev => {
         ev.stopPropagation();
-        const label = s.label || s.name || s.id;
-        if (!window.confirm(`Delete session "${label}"?`)) return;
-        sendWs({
-          type: 'chat_delete_session',
-          sessionId: s.id,
-          sessionPath: s.path,
-          sessionScope: s.sessionScope || '',
-        });
+        sessionDeleteSelectMode = true;
+        selectedDeleteSessionIds.add(s.id);
+        renderSessionList();
       });
 
       rightBtns.append(renameBtn, rowForkBtn, rowDeleteBtn);
       row.append(left, rightBtns);
       row.addEventListener('click', () => {
+        if (sessionDeleteSelectMode) {
+          if (selectedDeleteSessionIds.has(s.id)) selectedDeleteSessionIds.delete(s.id);
+          else selectedDeleteSessionIds.add(s.id);
+          renderSessionList();
+          return;
+        }
         if (s.id && s.id === state.sessionId && !s.busy) {
           els.sessionModal.hidden = true;
           return;
@@ -3035,7 +5360,8 @@
   // --- Slash Command Autocomplete with ArrowUp/Down & Tab ---
   function updateSlashPopover(skipRemoteRefresh = false) {
     const val = els.input.value;
-    if (!val.startsWith('/') || val.includes('\n')) {
+    // Hide slash autocomplete once user has typed a space after the /command to enter skill arguments
+    if (!val.startsWith('/') || val.includes('\n') || /^\/\S+\s/.test(val)) {
       els.slashPopover.hidden = true;
       slashFiltered = [];
       return;
@@ -3064,7 +5390,8 @@
       `;
       row.addEventListener('mousedown', ev => {
         ev.preventDefault();
-        applySlashCompletion(item, true);
+        // For skills, insert `/skill-name ` and focus input so user can type instructions or press Enter
+        applySlashCompletion(item, !isSkill);
       });
       els.slashPopover.append(row);
     });
@@ -3232,6 +5559,23 @@
     const isAdminSlash = isPureAdminSlashCommand(text);
     const includeCtx = !isAdminSlash && (prefs.autoContext || (Array.isArray(state.attachments) && state.attachments.length > 0));
 
+    const clearTurnAttachmentsAfterSend = (capturedCtx) => {
+      if (capturedCtx && Array.isArray(capturedCtx.attachments) && capturedCtx.attachments.length) {
+        capturedCtx.attachments.forEach(a => {
+          if (a && a.path) {
+            state.dismissedPaths.add(a.path);
+            try {
+              const card = document.querySelector(`.card[data-rel="${CSS.escape(a.path)}"]`);
+              const cb = card?.querySelector('input[type="checkbox"]');
+              if (cb && cb.checked) cb.click();
+            } catch {}
+          }
+        });
+      }
+      saveAttachments([]);
+      renderContextBar();
+    };
+
     if (state.busy) {
       // Mid-turn steering: queue steer message while Lanbot is responding!
       const captured = includeCtx ? captureContext() : {};
@@ -3244,11 +5588,14 @@
         selectedText: captured.selectedText,
         attachments: captured.attachmentPaths,
       } : {};
+      if (includeCtx) {
+        clearTurnAttachmentsAfterSend(captured);
+      }
       state.messages = Array.isArray(state.messages) ? state.messages : [];
       state.messages.push({
         role: 'user',
         text: `↳ [Steer] ${text}`,
-        context: includeCtx ? { path: captured.path || captured.folder, line: captured.line } : null,
+        context: includeCtx ? { path: captured.path || captured.folder, line: captured.line, attachments: captured.attachments } : null,
       });
       renderTranscript();
       els.input.value = '';
@@ -3292,6 +5639,7 @@
         line: captured.line,
         attachments: captured.attachments,
       };
+      clearTurnAttachmentsAfterSend(captured);
     }
 
     // Append user turn card immediately for responsive UX
@@ -3477,25 +5825,211 @@
     triggerResetBotRuntime();
   });
   els.forkBtn.addEventListener('click', () => {
+    closeTodoPopover(false);
     openForkCheckpointModal(null);
   });
   els.sessionBtn.addEventListener('click', () => {
+    closeTodoPopover(false);
     sendWs({ type: 'chat_list_sessions' });
     renderSessionList();
     els.sessionModal.hidden = !els.sessionModal.hidden;
   });
   els.modelBtn.addEventListener('click', () => {
+    closeTodoPopover(false);
     renderModelList();
     els.modelModal.hidden = !els.modelModal.hidden;
     if (!els.modelModal.hidden) setTimeout(() => els.modelSearch.focus(), 40);
   });
   els.modelSearch.addEventListener('input', renderModelList);
-  els.settingsBtn.addEventListener('click', () => {
-    els.settingsModal.hidden = !els.settingsModal.hidden;
-    if (!els.settingsModal.hidden) {
-      void refreshSlashCommands(true);
+  async function loadLanSettingsUi() {
+    try {
+      const resp = await fetch('/api/lan-settings', { cache: 'no-store', credentials: 'same-origin' });
+      if (!resp.ok) return;
+      const d = await resp.json();
+      const badge = drawer.querySelector('#lcLanLockStatusBadge');
+      const adminPanel = drawer.querySelector('#lcLocalLanAdminPanel');
+      if (adminPanel) adminPanel.hidden = !d.isLocal;
+      if (badge) {
+        badge.textContent = d.lanLocked
+          ? (d.passwordConfigured ? '🔒 LAN Locked (Password Active)' : '🔒 LAN Locked (No Password)')
+          : '🔓 LAN Unlocked';
+        badge.style.color = d.lanLocked ? '#fbbf24' : '#68e37a';
+      }
+      const lbCb = drawer.querySelector('#lcCfgLanbotEnabled');
+      const tmCb = drawer.querySelector('#lcCfgTerminalEnabled');
+      const lkCb = drawer.querySelector('#lcCfgLockModelCheck');
+      const pProv = drawer.querySelector('#lcCfgPinProvider');
+      const pMod = drawer.querySelector('#lcCfgPinModel');
+      const tSel = drawer.querySelector('#lcCfgLanToolsMode');
+      if (lbCb) lbCb.checked = Boolean(d.lanbotEnabled);
+      if (tmCb) tmCb.checked = Boolean(d.terminalEnabled);
+      const sel = d.lanSelection || {};
+      if (lkCb) lkCb.checked = Boolean(sel.lockModel);
+      if (pProv) pProv.value = sel.provider || (state.model?.provider || '');
+      if (pMod) pMod.value = sel.model || (state.model?.id || '');
+      if (tSel && d.lanToolsMode) tSel.value = d.lanToolsMode;
+    } catch {}
+  }
+
+  drawer.querySelector('#lcSaveLanPwdBtn')?.addEventListener('click', async () => {
+    const inp = drawer.querySelector('#lcSetLanPwdInput');
+    const pwd = (inp?.value || '').trim();
+    if (pwd.length < 4 || pwd.length > 12) {
+      setStatus('⚠️ Mật khẩu LAN phải có độ dài từ 4 đến 12 ký tự.', 'error');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/lan-settings', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd, lanLocked: true }),
+      });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setStatus(d.error || 'Failed to set password', 'error');
+        return;
+      }
+      if (inp) inp.value = '';
+      await loadLanSettingsUi();
+      setStatus('✓ Đã lưu mật khẩu LAN (4–12 ký tự) vào lan_drive_config.yaml và bật khóa LAN.', 'info');
+    } catch (err) {
+      setStatus(err.message || 'Failed to set password', 'error');
     }
   });
+
+  drawer.querySelector('#lcClearLanPwdBtn')?.addEventListener('click', async () => {
+    try {
+      const resp = await fetch('/api/lan-settings', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clearPassword: true, lanLocked: false }),
+      });
+      if (resp.ok) {
+        await loadLanSettingsUi();
+        setStatus('✓ Đã gỡ mật khẩu LAN trong lan_drive_config.yaml.', 'info');
+      }
+    } catch {}
+  });
+
+  drawer.querySelector('#lcSaveLanSettingsBtn')?.addEventListener('click', async () => {
+    const lanbotEnabled = Boolean(drawer.querySelector('#lcCfgLanbotEnabled')?.checked);
+    const terminalEnabled = Boolean(drawer.querySelector('#lcCfgTerminalEnabled')?.checked);
+    const lockModel = Boolean(drawer.querySelector('#lcCfgLockModelCheck')?.checked);
+    const provider = (drawer.querySelector('#lcCfgPinProvider')?.value || '').trim();
+    const model = (drawer.querySelector('#lcCfgPinModel')?.value || '').trim();
+    const lanToolsMode = drawer.querySelector('#lcCfgLanToolsMode')?.value || 'readonly';
+    const selObj = { provider, model, lockProvider: lockModel && Boolean(provider), lockModel: lockModel && Boolean(provider && model) };
+    try {
+      const resp = await fetch('/api/lan-settings', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lanbotEnabled,
+          terminalEnabled,
+          localSelection: { provider: '', model: '', lockProvider: false, lockModel: false },
+          lanSelection: selObj,
+          lanToolsMode,
+        }),
+      });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setStatus(d.error || 'Failed to save LAN settings', 'error');
+        return;
+      }
+      await loadLanSettingsUi();
+      setStatus('✓ Đã lưu cấu hình LAN & Workspace vào lan_drive_config.yaml.', 'info');
+    } catch (err) {
+      setStatus(err.message || 'Failed to save LAN settings', 'error');
+    }
+  });
+
+  els.settingsBtn.addEventListener('click', () => {
+    closeTodoPopover(false);
+    els.settingsModal.hidden = !els.settingsModal.hidden;
+    if (!els.settingsModal.hidden) {
+      if (restoreWorkerTabsFromStorage()) {
+    syncModelPillUi();
+    updateTokenBadgeDisplay();
+    renderWorkerTabs();
+    renderTranscript({ force: true, scrollToBottom: true });
+  }
+  void refreshSlashCommands(true);
+      void loadLanSettingsUi();
+    }
+  });
+  els.autoHideBtn?.addEventListener('click', () => {
+    prefs.autoHide = !prefs.autoHide;
+    if (prefs.autoHide) {
+      state.autoHideHovered = true;
+    }
+    applyLayout();
+  });
+  els.input?.addEventListener('focus', () => {
+    clearTimeout(autoHideCollapseTimer);
+    state.autoHideHovered = true;
+    syncAutoHideCollapseState();
+  });
+  els.input?.addEventListener('blur', () => {
+    if (prefs.autoHide && prefs.open && !drawer.matches(':hover')) {
+      clearTimeout(autoHideCollapseTimer);
+      autoHideCollapseTimer = setTimeout(() => {
+        if (isChatInputFocused()) return;
+        state.autoHideHovered = false;
+        syncAutoHideCollapseState();
+      }, 10000);
+    }
+  });
+  drawer.addEventListener('mouseenter', () => {
+    clearTimeout(autoHideCollapseTimer);
+    state.autoHideHovered = true;
+    syncAutoHideCollapseState();
+  });
+  drawer.addEventListener('mouseleave', ev => {
+    if (!prefs.autoHide || !prefs.open) return;
+    if (isChatInputFocused()) return;
+    const rel = ev.relatedTarget;
+    if (rel instanceof Node && (drawer.contains(rel) || fab.contains(rel))) return;
+    clearTimeout(autoHideCollapseTimer);
+    autoHideCollapseTimer = setTimeout(() => {
+      if (isChatInputFocused()) return;
+      state.autoHideHovered = false;
+      syncAutoHideCollapseState();
+    }, 10000);
+  });
+  drawer.addEventListener('dragover', () => {
+    if (prefs.autoHide && prefs.open && state.autoHideHovered) {
+      clearTimeout(autoHideCollapseTimer);
+    }
+  }, { passive: true });
+  document.addEventListener('click', ev => {
+    const t = ev.target;
+    if (!(t instanceof Node) || !document.body.contains(t)) return;
+    // Close Todo popover when clicking anywhere outside Todo popover and Todo button
+    if (els.todoPopover && !els.todoPopover.hidden && !els.todoPopover.contains(t) && !els.todoBtn?.contains(t)) {
+      closeTodoPopover(true);
+    }
+    if (!prefs.autoHide || !prefs.open || !state.autoHideHovered) return;
+    if (drawer.contains(t) || fab.contains(t)) return;
+    if (isChatInputFocused()) {
+      try { els.input.blur(); } catch (_) {}
+    }
+    clearTimeout(autoHideCollapseTimer);
+    state.autoHideHovered = false;
+    syncAutoHideCollapseState();
+  });
+  const unhideOnFabHoverOrDrag = () => {
+    if (!prefs.autoHide) return;
+    clearTimeout(autoHideCollapseTimer);
+    prefs.open = true;
+    state.autoHideHovered = true;
+    applyLayout();
+  };
+  fab.addEventListener('mouseenter', unhideOnFabHoverOrDrag);
+  fab.addEventListener('dragenter', unhideOnFabHoverOrDrag);
+  fab.addEventListener('dragover', unhideOnFabHoverOrDrag);
   els.dockBtn.addEventListener('click', () => {
     prefs.dock = prefs.dock === 'right' ? 'left' : 'right';
     applyLayout();
@@ -3613,6 +6147,11 @@
   });
 
   document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && els.sessionModal && !els.sessionModal.hidden && sessionDeleteSelectMode && selectedDeleteSessionIds.size > 0) {
+      e.preventDefault();
+      executeBulkSessionDelete();
+      return;
+    }
     if (e.altKey && e.key.toLowerCase() === 'l') {
       e.preventDefault();
       prefs.open = !prefs.open;
@@ -3745,25 +6284,41 @@
     const calls = streamTurn.toolCalls || [];
     const runningList = Array.from(activeToolRows.values());
     if (sum) {
-      if (runningList.length > 0) {
-        const latestName = runningList[runningList.length - 1].toolName;
-        sum.textContent = `⚡ Running ${latestName} (${calls.filter(c => c.result === undefined).length || runningList.length} tool call${calls.length > 1 ? 's' : ''})…`;
-      } else {
-        const names = Array.from(new Set(calls.map(c => c.name).filter(Boolean))).join(', ');
-        sum.textContent = `✓ ${calls.length} tool call(s) completed: ${names || 'done'}`;
-      }
+      const latestName = runningList.length > 0 ? runningList[runningList.length - 1].toolName : '';
+      sum.textContent = formatSingleLineToolSummary(calls, latestName);
     }
+    refreshTodoUi();
     if (pre) {
       const lines = [];
       calls.forEach(tc => {
         if (tc.result !== undefined) {
-          lines.push(`[${tc.isError ? '❌' : '✓'} ${tc.name}] -> ${safeText(tc.result).slice(0, 400)}`);
+          lines.push(`[${tc.isError ? '❌' : '✓'} ${tc.name}] -> ${formatCleanToolResult(tc.result).slice(0, 400)}`);
         } else {
           lines.push(`⚡ ${tc.name}(${safeText(tc.arguments).slice(0, 240)})`);
         }
       });
       pre.textContent = lines.join('\n\n');
     }
+    const card = streamingToolDetails.closest('.lc-msg.assistant');
+    if (card) {
+      const liveSkills = extractSkillsFromToolCalls(calls, streamTurn.subturnText || streamTurn.text);
+      let existingSkills = card.querySelector('.lc-pi-skill-list');
+      if (liveSkills.length) {
+        const nextSkills = createSkillBannerList(liveSkills);
+        if (existingSkills) existingSkills.replaceWith(nextSkills);
+        else card.insertBefore(nextSkills, streamingToolDetails);
+      }
+      const liveSubs = extractSubagentsFromToolCalls(calls, true);
+      let existingGrid = card.querySelector('.lc-subagent-grid');
+      if (liveSubs.length) {
+        const nextGrid = createSubagentGrid(liveSubs);
+        if (existingGrid) existingGrid.replaceWith(nextGrid);
+        else card.appendChild(nextGrid);
+      } else if (existingGrid) {
+        existingGrid.remove();
+      }
+    }
+    refreshActiveAgentsBar();
   }
 
   function ensureStreamingAssistantNode() {
@@ -3775,20 +6330,202 @@
     return streamingNode;
   }
 
+  let streamDomRafId = 0;
+  function flushStreamingDomUpdate() {
+    if (streamDomRafId) {
+      cancelAnimationFrame(streamDomRafId);
+      streamDomRafId = 0;
+    }
+    hydrateActiveStreamTurnIntoDom();
+    scrollTranscriptToBottom(false);
+  }
+
+  function scheduleStreamingDomUpdate() {
+    if (streamDomRafId) return;
+    streamDomRafId = requestAnimationFrame(() => {
+      streamDomRafId = 0;
+      flushStreamingDomUpdate();
+    });
+  }
+
+  function upsertSubagentTab(entry) {
+    if (!entry || typeof entry !== 'object') return;
+    const key = String(entry.taskId || entry.toolUseId || entry.id || entry.summary || '').trim();
+    if (!key) return;
+    state.subagentTabs = Array.isArray(state.subagentTabs) ? state.subagentTabs : [];
+    const existing = state.subagentTabs.find(s => (s.taskId || s.id) === key);
+    if (existing) {
+      Object.assign(existing, entry);
+    } else {
+      state.subagentTabs.push({ id: key, taskId: key, ...entry });
+    }
+    renderWorkerTabs();
+  }
+
+  function handleBackgroundWorkerStreamEvent(bgWorker, ev, incomingSessionId = '') {
+    if (!bgWorker || !ev || typeof ev !== 'object') return;
+    if (incomingSessionId && (!bgWorker.snapshot?.sessionId || bgWorker.snapshot.sessionId.startsWith('newchat-'))) {
+      bgWorker.snapshot.sessionId = incomingSessionId;
+    }
+    if (!bgWorker.streamTurn) bgWorker.streamTurn = cloneStreamTurnState(null);
+    const st = bgWorker.streamTurn;
+    const typ = String(ev.type || '');
+    if (typ === 'agent_start' || (typ === 'turn_start' && !bgWorker.busy)) {
+      bgWorker.busy = true;
+      bgWorker.streamTurn = cloneStreamTurnState(null);
+      renderWorkerTabs();
+      return;
+    }
+    if (typ === 'turn_start') {
+      bgWorker.busy = true;
+      st.hadToolCall = false;
+      st.lastStopReason = '';
+      st.subturnText = '';
+      st.subturnThinking = '';
+      renderWorkerTabs();
+      return;
+    }
+    const thkD = extractThinkingDelta(ev);
+    if (thkD) {
+      bgWorker.busy = true;
+      st.subturnThinking += safeText(thkD);
+    }
+    const txtD = extractAssistantTextDelta(ev);
+    if (txtD) {
+      bgWorker.busy = true;
+      st.subturnText += safeText(txtD);
+      return;
+    }
+    if (typ === 'tool_execution_start') {
+      bgWorker.busy = true;
+      st.hadToolCall = true;
+      const tcObj = {
+        id: String(ev.toolCallId || ev.id || Math.random()),
+        name: String(ev.toolName || ev.name || 'tool'),
+        arguments: ev.args || ev.arguments || {},
+        startedAt: Date.now(),
+      };
+      st.toolCalls.push(tcObj);
+      if (!Array.isArray(st.subturnToolCalls)) st.subturnToolCalls = [];
+      st.subturnToolCalls.push({ ...tcObj });
+      renderWorkerTabs();
+      return;
+    }
+    if (typ === 'tool_execution_end') {
+      st.hadToolCall = true;
+      const tid = String(ev.toolCallId || ev.id || '');
+      const resStr = typeof ev.result === 'object' ? JSON.stringify(ev.result) : safeText(ev.result);
+      const failed = Boolean(ev.isError || ev.error);
+      const matchCall = st.toolCalls.find(t => t.id === tid && t.result === undefined);
+      if (matchCall) {
+        matchCall.result = resStr;
+        matchCall.isError = failed;
+      } else {
+        st.toolCalls.push({ id: tid, name: String(ev.toolName || ev.name || 'result'), result: resStr, isError: failed });
+      }
+      if (!Array.isArray(st.subturnToolCalls)) st.subturnToolCalls = [];
+      const matchSub = st.subturnToolCalls.find(t => t.id === tid && t.result === undefined);
+      if (matchSub) {
+        matchSub.result = resStr;
+        matchSub.isError = failed;
+      } else {
+        st.subturnToolCalls.push({ id: tid, name: String(ev.toolName || ev.name || 'result'), result: resStr, isError: failed });
+      }
+      return;
+    }
+    if (typ === 'message_end' && ev.message?.role === 'assistant') {
+      const parsed = normalizeRawMessage(ev.message);
+      const subText = (parsed.text || st.subturnText || '').trim();
+      const subThinking = (parsed.thinking || st.subturnThinking || '').trim();
+      st.subturnText = '';
+      st.subturnThinking = '';
+      if (subThinking && !st.thinking.includes(subThinking)) {
+        st.thinking = st.thinking ? `${st.thinking}\n${subThinking}` : subThinking;
+      }
+      if (subText && !st.text.includes(subText)) {
+        st.text = st.text ? `${st.text}\n\n${subText}` : subText;
+      }
+      const finalTools = (parsed.toolCalls && parsed.toolCalls.length) ? parsed.toolCalls : [...st.toolCalls];
+      const finalSubs = (parsed.subagents && parsed.subagents.length) ? parsed.subagents : [...st.subagents];
+      bgWorker.snapshot.messages = Array.isArray(bgWorker.snapshot.messages) ? bgWorker.snapshot.messages : [];
+      bgWorker.snapshot.messages.push({
+        role: 'assistant',
+        text: subText || st.text,
+        thinking: subThinking || st.thinking,
+        toolCalls: finalTools,
+        subagents: finalSubs,
+        timestamp: ev.message?.timestamp || Date.now(),
+      });
+      st.saved = true;
+      const stopReason = String(ev.message?.stopReason || '').toLowerCase();
+      st.lastStopReason = stopReason;
+      if (stopReason && stopReason !== 'tooluse' && stopReason !== 'tool_use') {
+        bgWorker.busy = false;
+        bgWorker.streamTurn = cloneStreamTurnState(null);
+        renderWorkerTabs();
+      }
+      return;
+    }
+    if (typ === 'agent_settled' || typ === 'agent_end' || typ === 'turn_end') {
+      if (typ === 'turn_end' && (st.hadToolCall || st.lastStopReason === 'tooluse' || st.lastStopReason === 'tool_use')) {
+        st.hadToolCall = false;
+        return;
+      }
+      if (!st.saved && (st.text || st.subturnText || st.thinking || st.subturnThinking || st.toolCalls.length)) {
+        bgWorker.snapshot.messages = Array.isArray(bgWorker.snapshot.messages) ? bgWorker.snapshot.messages : [];
+        bgWorker.snapshot.messages.push({
+          role: 'assistant',
+          text: [st.text, st.subturnText].filter(Boolean).join('\n\n').trim(),
+          thinking: [st.thinking, st.subturnThinking].filter(Boolean).join('\n').trim(),
+          toolCalls: [...st.toolCalls],
+          subagents: [...st.subagents],
+          timestamp: Date.now(),
+        });
+      }
+      bgWorker.busy = false;
+      bgWorker.streamTurn = cloneStreamTurnState(null);
+      renderWorkerTabs();
+    }
+  }
+
   function handleStreamEvent(ev) {
     if (!ev || typeof ev !== 'object') return;
     if (window.__lanternMdVisual?.touchBotTurn) window.__lanternMdVisual.touchBotTurn();
     const typ = String(ev.type || '');
 
+    // v9.0/v9.1: Handle subagent completion notifications (<task-notification>) without wiping active stream DOM
+    if (Array.isArray(ev.subagentNotifications) && ev.subagentNotifications.length) {
+      ev.subagentNotifications.forEach(notif => {
+        const tid = String(notif.taskId || notif.toolUseId || '');
+        if (tid) {
+          state.completedSubagentMap.set(tid, { ...notif, status: 'Done' });
+          state.activeBackgroundSubagents.delete(tid);
+        }
+        upsertSubagentTab({ ...notif, status: 'Done' });
+      });
+      refreshActiveAgentsBar();
+      if (state.busy && hasActiveStreamTurn()) {
+        hydrateActiveStreamTurnIntoDom();
+      } else {
+        renderTranscript({ force: true });
+      }
+    }
+
     if (typ === 'agent_start') {
+      state.todoDismissedForTurn = false;
+      state.subagentDismissedForTurn = false;
       resetStreamTurn();
       setStreaming(true);
       setActivityTicker('⚡ Lanbot started turn…');
       setStatus('Lanbot is working…', 'info');
+      refreshActiveAgentsBar();
       return;
     }
 
     if (typ === 'turn_start') {
+      if (!state.busy) {
+        resetStreamTurn();
+      }
       streamTurn.hadToolCall = false;
       streamTurn.lastStopReason = '';
       streamTurn.subturnText = '';
@@ -3796,6 +6533,16 @@
       setStreaming(true);
       setActivityTicker('⚡ Lanbot is working…');
       setStatus('Lanbot is working…', 'info');
+      refreshActiveAgentsBar();
+      return;
+    }
+
+    if (typ === 'message_start' && ev.message?.role === 'assistant' && !state.busy) {
+      resetStreamTurn();
+      setStreaming(true);
+      setActivityTicker('⚡ Lanbot is responding…');
+      setStatus('Lanbot is working…', 'info');
+      refreshActiveAgentsBar();
       return;
     }
 
@@ -3820,9 +6567,7 @@
         // Already accumulated via deltas
       } else {
         streamTurn.subturnThinking += chunk;
-        const tNode = ensureStreamingThinkingNode();
-        tNode.textContent = streamTurn.subturnThinking;
-        scrollTranscriptToBottom(false);
+        scheduleStreamingDomUpdate();
       }
     }
 
@@ -3831,32 +6576,53 @@
       setStreaming(true);
       setActivityTicker('✍️ Writing response…');
       streamTurn.subturnText += safeText(txtDelta);
-      const node = ensureStreamingAssistantNode();
-      const card = node.closest('.lc-msg');
-      const head = card?.querySelector('.lc-msg-head');
-      if (card && head) {
-        populateMessageBodyAndActions(card, head, node, streamTurn.subturnText);
-      } else {
-        node.innerHTML = renderChatMarkdownHtml(streamTurn.subturnText);
-      }
-      scrollTranscriptToBottom(false);
+      scheduleStreamingDomUpdate();
       return;
     }
 
     if (typ === 'tool_execution_start') {
       streamTurn.hadToolCall = true;
       setStreaming(true);
+      const nowMs = Date.now();
       const id = String(ev.toolCallId || ev.id || Math.random());
       const toolName = String(ev.toolName || ev.name || 'tool');
       const toolArgs = ev.args || ev.arguments || {};
-      streamTurn.toolCalls.push({ id, name: toolName, arguments: toolArgs });
-      const isSub = /subagent|task/i.test(toolName);
+      streamTurn.toolCalls.push({ id, name: toolName, arguments: toolArgs, startedAt: nowMs });
+      const lastCompletedStep = Array.isArray(streamTurn.steps) && streamTurn.steps.length
+        ? streamTurn.steps[streamTurn.steps.length - 1]
+        : null;
+      const existingInLastStep = lastCompletedStep && Array.isArray(lastCompletedStep.toolCalls)
+        ? lastCompletedStep.toolCalls.find(tc => tc && tc.id === id)
+        : null;
+      if (existingInLastStep) {
+        existingInLastStep.startedAt = existingInLastStep.startedAt || nowMs;
+        if (!existingInLastStep.arguments || Object.keys(existingInLastStep.arguments).length === 0) {
+          existingInLastStep.arguments = toolArgs;
+        }
+      } else {
+        if (!Array.isArray(streamTurn.subturnToolCalls)) streamTurn.subturnToolCalls = [];
+        const existingSub = streamTurn.subturnToolCalls.find(tc => tc && tc.id === id);
+        if (existingSub) {
+          existingSub.startedAt = existingSub.startedAt || nowMs;
+        } else {
+          streamTurn.subturnToolCalls.push({ id, name: toolName, arguments: toolArgs, startedAt: nowMs });
+        }
+      }
+      const isSub = /subagent|task|rpiv|todo|mcp/i.test(toolName);
+      if (isSub) {
+        upsertSubagentTab({
+          id,
+          taskId: id,
+          toolName,
+          summary: (toolArgs && (toolArgs.description || toolArgs.prompt || toolArgs.task || toolArgs.name)) || toolName,
+          status: 'Running',
+        });
+      }
       setActivityTicker(isSub ? `🤖 Running subagent (${toolName})…` : `⚡ Running tool: ${toolName}…`);
-      const details = ensureStreamingToolCard();
-      const sum = details.querySelector('summary');
-      const pre = details.querySelector('pre');
-      activeToolRows.set(id, { details, sum, pre, toolName });
-      updateStreamingToolCardSummary();
+      activeToolRows.set(id, { toolName, startedAt: nowMs });
+      refreshTodoUi();
+      refreshActiveAgentsBar();
+      hydrateActiveStreamTurnIntoDom();
       scrollTranscriptToBottom(false);
       return;
     }
@@ -3864,83 +6630,167 @@
     if (typ === 'tool_execution_end') {
       const id = String(ev.toolCallId || ev.id || '');
       const row = activeToolRows.get(id);
+      const elapsedMs = Math.max(50, Date.now() - (row?.startedAt || Date.now()));
       const failed = Boolean(ev.isError || ev.error);
       if (ev.result !== undefined) {
+        const rawRes = ev.result;
+        const details = (rawRes && typeof rawRes === 'object' && rawRes.details) ? rawRes.details : undefined;
+        const resStr = typeof rawRes === 'object' ? JSON.stringify(rawRes) : safeText(rawRes);
+        const toolNameResolved = row?.toolName || String(ev.toolName || ev.name || 'result');
         streamTurn.toolCalls.push({
           id,
-          name: row?.toolName || String(ev.toolName || ev.name || 'result'),
-          result: safeText(ev.result),
+          name: toolNameResolved,
+          result: resStr,
+          details,
           isError: failed,
+          durationMs: elapsedMs,
         });
+        const lastCompletedStep = Array.isArray(streamTurn.steps) && streamTurn.steps.length
+          ? streamTurn.steps[streamTurn.steps.length - 1]
+          : null;
+        const existingInLastStep = lastCompletedStep && Array.isArray(lastCompletedStep.toolCalls)
+          ? lastCompletedStep.toolCalls.find(tc => tc && tc.id === id && tc.result === undefined)
+          : null;
+        if (existingInLastStep) {
+          existingInLastStep.result = resStr;
+          existingInLastStep.details = details;
+          existingInLastStep.isError = failed;
+          existingInLastStep.durationMs = elapsedMs;
+          lastCompletedStep.subagents = extractSubagentsFromToolCalls(lastCompletedStep.toolCalls, false);
+        } else {
+          if (!Array.isArray(streamTurn.subturnToolCalls)) streamTurn.subturnToolCalls = [];
+          const matchSubCall = streamTurn.subturnToolCalls.find(tc => tc.id === id && tc.result === undefined);
+          if (matchSubCall) {
+            matchSubCall.result = resStr;
+            matchSubCall.details = details;
+            matchSubCall.isError = failed;
+            matchSubCall.durationMs = elapsedMs;
+          } else {
+            streamTurn.subturnToolCalls.push({
+              id,
+              name: toolNameResolved,
+              result: resStr,
+              details,
+              isError: failed,
+              durationMs: elapsedMs,
+            });
+          }
+        }
       }
       if (row) {
+        if (/subagent|task|rpiv|todo|mcp/i.test(row.toolName || '')) {
+          const resTxt = safeText(ev.result);
+          const isBg = /running|spawned|started|background|đang chạy|chạy nền/i.test(resTxt) && !/completed|finished|hoàn thành/i.test(resTxt);
+          upsertSubagentTab({
+            id,
+            taskId: id,
+            toolName: row.toolName,
+            status: failed ? 'Error' : (isBg ? 'Running' : 'Done'),
+            result: resTxt,
+          });
+        }
         activeToolRows.delete(id);
       }
-      updateStreamingToolCardSummary();
-      if (activeToolRows.size === 0 && streamingToolDetails) {
-        streamingToolDetails.open = false;
-      }
+      refreshTodoUi();
+      refreshActiveAgentsBar();
+      hydrateActiveStreamTurnIntoDom();
       return;
     }
 
     if (typ === 'message_end' && (!ev.message?.role || ev.message.role === 'assistant')) {
       const parsed = normalizeRawMessage(ev.message || {});
-      // Crucial fix (v7.3): ONLY use text/thinking from THIS sub-turn (parsed or subturn*),
-      // NEVER fall back to streamTurn.text from an earlier sub-turn!
-      const subText = (parsed.text || streamTurn.subturnText || '').trim();
-      const subThinking = (parsed.thinking || streamTurn.subturnThinking || '').trim();
+      const stopReason = String(ev.message?.stopReason || '').toLowerCase();
+      const isToolSubturn = stopReason === 'tooluse' || stopReason === 'tool_use' || (parsed.toolCalls && parsed.toolCalls.length && !parsed.text);
+      const subTextRaw = (streamTurn.subturnText || parsed.text || '').trim();
+      const isAlreadyFullTurnText = streamTurn.text && subTextRaw.includes(streamTurn.text) && subTextRaw !== streamTurn.text;
+      const subText = isAlreadyFullTurnText
+        ? (subTextRaw.slice(streamTurn.text.length).trim() || subTextRaw)
+        : subTextRaw;
+      const subThinking = (streamTurn.subturnThinking || parsed.thinking || '').trim();
+      const subTools = (Array.isArray(streamTurn.subturnToolCalls) && streamTurn.subturnToolCalls.length)
+        ? [...streamTurn.subturnToolCalls]
+        : (isToolSubturn && Array.isArray(parsed.toolCalls) ? [...parsed.toolCalls] : []);
 
-      if (subThinking) {
-        const tNode = ensureStreamingThinkingNode();
-        tNode.textContent = subThinking;
-        if (!streamTurn.thinking.includes(subThinking)) {
-          streamTurn.thinking = streamTurn.thinking ? `${streamTurn.thinking}\n${subThinking}` : subThinking;
-        }
+      if (subThinking && !streamTurn.thinking.includes(subThinking)) {
+        streamTurn.thinking = streamTurn.thinking ? `${streamTurn.thinking}\n${subThinking}` : subThinking;
       }
-
       if (subText) {
-        // Avoid duplicating if the server synthesized the full turn message at the final step
-        const isAlreadyFullTurnText = streamTurn.text && subText.includes(streamTurn.text) && subText !== streamTurn.text;
-        const displaySubText = isAlreadyFullTurnText
-          ? (subText.slice(streamTurn.text.length).trim() || subText)
-          : subText;
-        const node = ensureStreamingAssistantNode();
-        const card = node.closest('.lc-msg');
-        const head = card?.querySelector('.lc-msg-head');
-        if (card && head) {
-          populateMessageBodyAndActions(card, head, node, displaySubText);
-        } else {
-          node.innerHTML = renderChatMarkdownHtml(displaySubText);
-        }
         if (isAlreadyFullTurnText) {
-          streamTurn.text = subText;
+          streamTurn.text = subTextRaw;
         } else if (!streamTurn.text.includes(subText)) {
           streamTurn.text = streamTurn.text ? `${streamTurn.text}\n\n${subText}` : subText;
         }
       }
 
+      if (!Array.isArray(streamTurn.steps)) streamTurn.steps = [];
+      if (subText || subThinking || subTools.length) {
+        // Check if tool_execution_start/end already updated the last step or if we should push a new step
+        const lastSt = streamTurn.steps.length > 0 ? streamTurn.steps[streamTurn.steps.length - 1] : null;
+        const subCallIds = new Set(subTools.map(t => t?.id).filter(Boolean));
+        const lastCallIds = new Set((lastSt?.toolCalls || []).map(t => t?.id).filter(Boolean));
+        const sharesCalls = subCallIds.size > 0 && [...subCallIds].some(id => lastCallIds.has(id));
+        const canMergeConsecutiveTools = Boolean(
+          lastSt &&
+          Array.isArray(lastSt.toolCalls) &&
+          lastSt.toolCalls.length > 0 &&
+          !String(lastSt.textAfterBox || '').trim() &&
+          subTools.length > 0 &&
+          (!subText || !isToolSubturn)
+        );
+        if (lastSt && (sharesCalls || canMergeConsecutiveTools)) {
+          if (subThinking && !lastSt.thinking.includes(subThinking)) {
+            lastSt.thinking = lastSt.thinking ? `${lastSt.thinking}
+${subThinking}` : subThinking;
+          }
+          const combinedCalls = [...(lastSt.toolCalls || [])];
+          subTools.forEach(tc => {
+            const idx = combinedCalls.findIndex(c => c.id && c.id === tc.id);
+            if (idx >= 0) combinedCalls[idx] = { ...combinedCalls[idx], ...tc };
+            else combinedCalls.push(tc);
+          });
+          lastSt.toolCalls = combinedCalls;
+          lastSt.subagents = extractSubagentsFromToolCalls(combinedCalls, isToolSubturn);
+          if (subText) {
+            if (isToolSubturn && !lastSt.textBeforeBox) lastSt.textBeforeBox = subText;
+            else if (!lastSt.textAfterBox && subText !== lastSt.textBeforeBox) lastSt.textAfterBox = subText;
+          }
+        } else {
+          streamTurn.steps.push({
+            _turnUid: streamTurn.turnUid,
+            textBeforeBox: isToolSubturn ? subText : '',
+            thinking: subThinking,
+            toolCalls: subTools,
+            subagents: extractSubagentsFromToolCalls(subTools, isToolSubturn),
+            textAfterBox: isToolSubturn ? '' : subText,
+          });
+        }
+      } else if (streamTurn.steps.length === 0 && Array.isArray(parsed.steps) && parsed.steps.length > 0) {
+        streamTurn.steps = parsed.steps.map(s => ({ ...s, _turnUid: streamTurn.turnUid }));
+      }
+
       streamTurn.subturnText = '';
       streamTurn.subturnThinking = '';
+      streamTurn.subturnToolCalls = [];
 
       const finalTools = (parsed.toolCalls && parsed.toolCalls.length) ? parsed.toolCalls : [...streamTurn.toolCalls];
       const finalSubagents = (parsed.subagents && parsed.subagents.length) ? parsed.subagents : [...streamTurn.subagents];
 
       if (finalSubagents.length) {
-        els.transcript.append(createSubagentGrid(finalSubagents));
+        finalSubagents.forEach(sub => upsertSubagentTab(sub));
       }
-      // Step 3 (v7): Persist assistant message into state.messages so it never disappears on next send!
       recordAssistantTurnInState({
-        text: subText,
-        thinking: subThinking,
+        text: streamTurn.text || subText,
+        thinking: streamTurn.thinking || subThinking,
         toolCalls: finalTools,
         subagents: finalSubagents,
+        steps: [...streamTurn.steps],
         timestamp: ev.message?.timestamp,
         usage: ev.message?.usage || null,
       });
+      hydrateActiveStreamTurnIntoDom();
       if (ev.message?.errorMessage) {
         setStatus('Error: ' + ev.message.errorMessage, 'error');
       }
-      const stopReason = String(ev.message?.stopReason || '').toLowerCase();
       streamTurn.lastStopReason = stopReason;
       if (stopReason === 'tooluse' || stopReason === 'tool_use' || (parsed.toolCalls && parsed.toolCalls.length && !subText)) {
         streamTurn.hadToolCall = true;
@@ -3954,6 +6804,7 @@
             releaseMarkdownTurn();
             setStatus('Ready', 'info');
             renderTranscript({ force: true });
+            refreshTodoUi({ turnFinished: true });
           }
         }, 350);
       }
@@ -3983,6 +6834,7 @@
     }
 
     if (typ === 'agent_settled' || typ === 'agent_end' || typ === 'turn_end') {
+      flushStreamingDomUpdate();
       if (!streamTurn.saved && (streamTurn.text || streamTurn.thinking || streamTurn.toolCalls.length || streamTurn.subagents.length)) {
         recordAssistantTurnInState({
           text: streamTurn.text,
@@ -3991,11 +6843,14 @@
           subagents: [...streamTurn.subagents],
         });
       }
+      state.subagentTabs = [];
       resetStreamTurn();
       setStreaming(false);
       releaseMarkdownTurn();
       setStatus(ev.aborted ? 'Stopped' : 'Ready', 'info');
       renderTranscript({ force: true });
+      refreshTodoUi({ turnFinished: true });
+      refreshActiveAgentsBar();
       if (document.body?.dataset?.lanternChatKind === 'file' && document.body?.dataset?.lanternChatPath) {
         const relFile = document.body.dataset.lanternChatPath.replace(/^\/+/, '');
         const rawUrl = '/' + relFile.split('/').map(encodeURIComponent).join('/');
@@ -4032,6 +6887,17 @@
       reconnectAttempts = 0;
       sendWs({ type: 'terminal_client_v2' });
       sendSync();
+      // Background-hydrate any additional restored #bot worker tabs so they stay hot-loaded across F5 reloads
+      (state.workerTabs || []).forEach(w => {
+        if (w.cid && w.cid !== state.clientSessionId) {
+          const wSid = w.snapshot?.sessionId || '';
+          if (wSid) {
+            ws.send(JSON.stringify({ type: 'chat_switch_session', clientSessionId: w.cid, sessionId: wSid, limit: 36 }));
+          } else {
+            ws.send(JSON.stringify({ type: 'chat_sync', clientSessionId: w.cid, separateHistory: true, historyLimit: 24 }));
+          }
+        }
+      });
     });
     socket.addEventListener('message', event => {
       let msg;
@@ -4044,6 +6910,46 @@
         msg.clientSessionId !== state.clientSessionId &&
         !['chat_work_changed', 'chat_work_locked', 'chat_work_error', 'chat_real_file_touched', 'chat_sessions_changed', 'chat_commands_changed', 'chat_shared_refresh'].includes(msg.type)
       ) {
+        const bgW = (state.workerTabs || []).find(w => w.cid === msg.clientSessionId);
+        if (bgW) {
+          if (!bgW.snapshot) bgW.snapshot = { sessionId: '', sessionName: '', model: null, thinkingLevel: 'medium', messages: [] };
+          if (msg.type === 'chat_bot_event' || msg.type === 'chat_event') {
+            handleBackgroundWorkerStreamEvent(bgW, msg.event, msg.sessionId || '');
+          } else if (msg.type === 'chat_state' || msg.type === 'chat_snapshot') {
+            if (msg.state?.sessionId) bgW.snapshot.sessionId = msg.state.sessionId;
+            if (msg.summary?.sessionName) bgW.snapshot.sessionName = msg.summary.sessionName;
+            if (!bgW.userPinnedModel) {
+              if (msg.state?.model) bgW.snapshot.model = { ...msg.state.model };
+              if (msg.summary?.model) bgW.snapshot.model = { ...msg.summary.model };
+            }
+            if (msg.summary?.thinkingLevel) bgW.snapshot.thinkingLevel = msg.summary.thinkingLevel;
+            if (Array.isArray(msg.messages) && (!bgW.busy || msg.messages.length >= (bgW.snapshot.messages?.length || 0))) {
+              bgW.snapshot.messages = msg.messages;
+            }
+            bgW.busy = Boolean(msg.summary?.streaming ?? msg.busy);
+            renderWorkerTabs();
+          } else if (msg.type === 'chat_history_page') {
+            const pageMsgs = Array.isArray(msg.messages) ? msg.messages : [];
+            if (!bgW.busy || pageMsgs.length >= (bgW.snapshot.messages?.length || 0)) {
+              bgW.snapshot.messages = pageMsgs;
+            }
+            bgW.snapshot.hasMoreOlder = Boolean(msg.hasMoreOlder);
+            bgW.snapshot.oldestLoadedIndex = typeof msg.oldestIndex === 'number' ? msg.oldestIndex : 0;
+            if (typeof msg.totalMessages === 'number') bgW.snapshot.totalHistoryMessages = msg.totalMessages;
+            renderWorkerTabs();
+          } else if (msg.type === 'chat_model_changed') {
+            const m = msg.state?.model || msg.summary?.model;
+            if (m) bgW.snapshot.model = { ...m };
+            renderWorkerTabs();
+          } else if (msg.type === 'chat_session_changed') {
+            if (msg.state?.sessionId) bgW.snapshot.sessionId = msg.state.sessionId;
+            renderWorkerTabs();
+          } else if (msg.type === 'chat_aborted' || msg.type === 'chat_error') {
+            bgW.busy = false;
+            bgW.error = msg.type === 'chat_error';
+            renderWorkerTabs();
+          }
+        }
         return;
       }
 
@@ -4098,7 +7004,17 @@
             els.transcript.scrollTop = prevScrollTop + Math.max(0, newScrollHeight - prevScrollHeight);
           });
         } else {
-          state.messages = pageMsgs;
+          if (state.busy && Array.isArray(state.messages) && state.messages.length > 0) {
+            const localLast = state.messages[state.messages.length - 1];
+            const remoteLast = pageMsgs[pageMsgs.length - 1];
+            if (localLast && localLast.role === 'assistant' && (!remoteLast || remoteLast.role !== 'assistant')) {
+              state.messages = [...pageMsgs, localLast];
+            } else {
+              state.messages = pageMsgs;
+            }
+          } else {
+            state.messages = pageMsgs;
+          }
           renderTranscript({ force: true, scrollToBottom: true });
         }
         state.contextUsage = {
@@ -4111,8 +7027,22 @@
         setStatus(`⚠️ Không tải được lịch sử (${msg.error || 'quá lớn'}), nhưng Lanbot và Model vẫn sẵn sàng chat.`, 'warn');
         renderTranscript({ force: true });
       } else if (msg.type === 'chat_bot_event' || msg.type === 'chat_event') {
-        if (msg.sessionId && state.sessionId && msg.sessionId !== state.sessionId) {
-          return;
+        if (msg.clientSessionId && msg.clientSessionId !== state.clientSessionId) {
+          const bgW = (state.workerTabs || []).find(w => w.cid === msg.clientSessionId);
+          if (bgW) {
+            handleBackgroundWorkerStreamEvent(bgW, msg.event, msg.sessionId || '');
+            return;
+          }
+        }
+        if (msg.sessionId && msg.sessionId !== state.sessionId && state.sessionId && !state.sessionId.startsWith('newchat-')) {
+          const bgBySid = (state.workerTabs || []).find(w => w.id !== state.activeWorkerId && w.snapshot?.sessionId === msg.sessionId);
+          if (bgBySid) {
+            handleBackgroundWorkerStreamEvent(bgBySid, msg.event, msg.sessionId);
+            return;
+          }
+        }
+        if (msg.sessionId && (!state.sessionId || state.sessionId.startsWith('newchat-') || !msg.clientSessionId || msg.clientSessionId === state.clientSessionId)) {
+          state.sessionId = msg.sessionId;
         }
         handleStreamEvent(msg.event);
       } else if (msg.type === 'chat_prompt_accepted') {
@@ -4153,6 +7083,11 @@
           if (!msg.senderClientSessionId || msg.senderClientSessionId !== state.clientSessionId) {
             sendWs({ type: 'chat_load_history', limit: 24 });
           }
+        }
+      } else if (msg.type === 'chat_fork_checkpoints') {
+        if (Array.isArray(msg.checkpoints)) {
+          forkCheckpointsCache = msg.checkpoints;
+          renderForkCheckpointsList();
         }
       } else if (msg.type === 'chat_sessions_list') {
         if (Array.isArray(msg.sessions)) state.sessions = msg.sessions;
@@ -4223,6 +7158,8 @@
       } else if (msg.type === 'chat_aborted') {
         releaseMarkdownTurn();
         setStreaming(false);
+        refreshTodoUi({ turnFinished: true });
+        drawer.querySelectorAll('.lc-subagent-group[open]').forEach(el => { el.open = false; });
         setStatus('Stopped.', 'warn');
       } else if (msg.type === 'chat_process_exit') {
         releaseMarkdownTurn();
@@ -4234,6 +7171,8 @@
         state.loadingOlderHistory = false;
         releaseMarkdownTurn();
         setStreaming(false);
+        refreshTodoUi({ turnFinished: true });
+        drawer.querySelectorAll('.lc-subagent-group[open]').forEach(el => { el.open = false; });
         setActivityTicker('');
         setStatus(msg.error || 'Chatbot error', 'error');
       }
@@ -4271,6 +7210,9 @@
   globalThis.LanternChat = {
     open: () => { prefs.open = true; applyLayout(); renderContextBar(); },
     close: () => { prefs.open = false; applyLayout(); },
+    attachTerminalTab,
+    detachTerminalTab,
+    updateTerminalTabLabel,
     captureContext,
     prepareMarkdownTurn,
     refreshContext: renderContextBar,

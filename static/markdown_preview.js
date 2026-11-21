@@ -21,6 +21,63 @@
   let pendingRenders = Promise.resolve();
   const yieldUi = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+  function slugifyHeadingText(rawText) {
+    return String(rawText || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function stripVietnameseDiacritics(str) {
+    return String(str || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .replace(/Đ/g, "D");
+  }
+
+  function ensureHeadingIds(root = document) {
+    const scope = root instanceof Element || root instanceof Document ? root : document;
+    const article = scope.matches?.("article.md-preview") ? scope : (scope.querySelector?.("article.md-preview") || scope);
+    const headings = Array.from(article.querySelectorAll("h1, h2, h3, h4, h5, h6"));
+    const used = new Map();
+    for (const h of headings) {
+      const text = h.textContent || "";
+      const baseSlug = slugifyHeadingText(text) || "section";
+      const asciiSlug = slugifyHeadingText(stripVietnameseDiacritics(text)) || baseSlug;
+      const count = used.get(baseSlug) || 0;
+      used.set(baseSlug, count + 1);
+      const finalId = count === 0 ? baseSlug : `${baseSlug}-${count}`;
+      if (!h.id) h.id = finalId;
+      h.setAttribute("data-slug", finalId);
+      h.setAttribute("data-slug-ascii", count === 0 ? asciiSlug : `${asciiSlug}-${count}`);
+    }
+  }
+
+  function findAnchorTarget(hash) {
+    const raw = String(hash || "").replace(/^#/, "");
+    if (!raw) return null;
+    let decoded = raw;
+    try { decoded = decodeURIComponent(raw); } catch (_) {}
+    const direct = document.getElementById(decoded) || document.getElementById(raw);
+    if (direct) return direct;
+    ensureHeadingIds(document);
+    const byId = document.getElementById(decoded) || document.getElementById(raw);
+    if (byId) return byId;
+    const norm = slugifyHeadingText(decoded);
+    const normAscii = slugifyHeadingText(stripVietnameseDiacritics(decoded));
+    const headings = Array.from(document.querySelectorAll("article.md-preview h1, article.md-preview h2, article.md-preview h3, article.md-preview h4, article.md-preview h5, article.md-preview h6"));
+    return headings.find(h =>
+      h.getAttribute("data-slug") === norm ||
+      h.getAttribute("data-slug-ascii") === normAscii ||
+      slugifyHeadingText(h.textContent) === norm ||
+      slugifyHeadingText(stripVietnameseDiacritics(h.textContent)) === normAscii
+    ) || null;
+  }
+
   function loadMermaid(diagrams) {
     if (!diagrams.length) return Promise.resolve(null);
     if (window.mermaid) return Promise.resolve(window.mermaid);
@@ -88,6 +145,7 @@
   }
 
   async function renderAll(root = document) {
+    ensureHeadingIds(root);
     const diagrams = diagramList(root);
     if (!diagrams.length) return;
     const runtime = await loadMermaid(diagrams);
@@ -150,6 +208,7 @@
   }
 
   const queueRender = (root = document) => {
+    ensureHeadingIds(root);
     pendingRenders = pendingRenders.then(() => renderAll(root)).catch((error) => {
       for (const wrapper of diagramList(root)) {
         const output = wrapper.querySelector(".mermaid-output");
@@ -167,13 +226,73 @@
     }
   });
 
+  function navigateLogicalParent() {
+    const chatPath = document.body?.getAttribute("data-lantern-chat-path") || "";
+    if (chatPath) {
+      const parts = chatPath.replace(/\\/g, "/").split("/").filter(Boolean);
+      parts.pop();
+      const parentUrl = parts.length ? "/" + parts.map(encodeURIComponent).join("/") + "/" : "/";
+      location.href = parentUrl;
+      return;
+    }
+    try {
+      const ref = document.referrer ? new URL(document.referrer) : null;
+      if (ref && ref.origin === location.origin) {
+        history.back();
+        return;
+      }
+    } catch (_) {}
+    location.href = "/";
+  }
+
   document.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+
+    // Issue 0: TOC / Anchor & Local Markdown Hyperlinks must NOT open a duplicate tab!
+    const link = target.closest("article.md-preview a[href]");
+    if (link) {
+      const rawHref = (link.getAttribute("href") || "").trim();
+      if (rawHref.startsWith("#")) {
+        event.preventDefault();
+        link.removeAttribute("target");
+        const anchorEl = findAnchorTarget(rawHref);
+        if (anchorEl) {
+          const barH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--md-bar-height")) || 54;
+          const startY = window.scrollY;
+          const targetY = Math.max(0, anchorEl.getBoundingClientRect().top + startY - barH - 12);
+          const dist = targetY - startY;
+          if (Math.abs(dist) < 4) {
+            window.scrollTo(0, targetY);
+          } else {
+            const dur = Math.min(160, Math.max(80, Math.abs(dist) * 0.08));
+            const t0 = performance.now();
+            const step = (now) => {
+              const p = Math.min(1, (now - t0) / dur);
+              const ease = 1 - Math.pow(1 - p, 3);
+              window.scrollTo(0, Math.round(startY + dist * ease));
+              if (p < 1) requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+          }
+          history.replaceState(null, "", rawHref);
+        } else {
+          location.hash = rawHref;
+        }
+        return;
+      }
+      if (rawHref.startsWith("/") && !rawHref.startsWith("//")) {
+        // Same-origin local file/markdown link: open in current tab unless Ctrl/Meta/Middle-clicked
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) {
+          link.removeAttribute("target");
+        }
+      }
+    }
+
     const button = target.closest("[data-action]");
     if (!button) return;
     const action = button.getAttribute("data-action");
-    if (action === "back") { history.back(); return; }
+    if (action === "back") { navigateLogicalParent(); return; }
     if (action === "print") { await pendingRenders; window.print(); return; }
     if (action === "png") {
       const index = Number(button.getAttribute("data-diagram-index"));
@@ -189,5 +308,6 @@
     get pendingRenders() { return pendingRenders; },
     exportPng,
     refresh: queueRender,
+    ensureHeadingIds,
   };
 })();

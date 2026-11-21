@@ -39,7 +39,28 @@ upload_auto_start: false
 upload_parallel: 3
 upload_conflict: "ask"
 # Lanbot uses Pi's native provider/model on localhost in Full / YOLO mode ("*") by default.
-# All tool, extension, and MCP policies for localhost and LAN are configured strictly here in YAML.
+# All tool, extension, MCP, model whitelist/blacklist, and thinking level policies for
+# localhost and LAN are configured strictly here in YAML.
+#
+# ---------------------------------------------------------------------------
+# MODEL WHITELIST / BLACKLIST & THINKING LEVEL GUIDE (cho localhost & lan):
+# ---------------------------------------------------------------------------
+# 1. Giới hạn theo danh sách cho phép (Whitelist) hoặc chặn (Blacklist):
+#    - Đặt `model_mode: "whitelist"` (chỉ cho phép các model trong `models`)
+#      hoặc `model_mode: "blacklist"` (chặn các model trong `models`, cho phép phần còn lại).
+#    - Hỗ trợ glob pattern theo tên model (`gpt-6-*`) hoặc `provider/model` (`openai/gpt-6-luna`).
+#
+# 2. Giới hạn cả mức độ Thinking (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`):
+#    - Cách A (Giới hạn theo từng model trong `models`):
+#        model_mode: "whitelist"
+#        models:
+#          - model: "gpt-6-luna"
+#            thinking: ["low", "high"]
+#          # Hoặc viết gọn trên 1 dòng:
+#          - "gpt-6-luna thinking:[low, high]"
+#    - Cách B (Giới hạn chung cho toàn bộ scope `lan` hoặc `localhost`):
+#        thinking: ["low", "high"]
+# ---------------------------------------------------------------------------
 lantern_bot:
   enabled: true
   access:
@@ -53,6 +74,11 @@ lantern_bot:
       providers: []
       model_mode: "all"          # all | whitelist | blacklist
       models: []
+      # Example model whitelist/blacklist + thinking restriction for localhost:
+      # model_mode: "blacklist"
+      # models:
+      #   - "expensive-provider/*"
+      # thinking: ["off", "low", "medium", "high", "xhigh"]
       bypass_models: []
       selection:
         provider: null
@@ -65,10 +91,18 @@ lantern_bot:
       tools: [read, grep, find, ls]
       extensions: false         # extension tool calls denied unless listed above
       mcp: false
-      provider_mode: "all"       # switch to whitelist/blacklist as needed
+      provider_mode: "all"       # all | whitelist | blacklist
       providers: []
-      model_mode: "all"
+      model_mode: "all"          # all | whitelist | blacklist
       models: []
+      # Ví dụ: Chỉ cho phép LAN user dùng model `gpt-6-luna` với thinking `low` hoặc `high`:
+      # model_mode: "whitelist"
+      # models:
+      #   - model: "gpt-6-luna"
+      #     thinking: ["low", "high"]
+      # (Hoặc viết gọn: `models: ["gpt-6-luna thinking:[low, high]"]`)
+      # Có thể đặt `thinking: ["low", "high"]` ở cấp `lan:` để áp dụng cho mọi model của LAN.
+      #
       # Fully-qualified provider/model globs here bypass both lists.
       bypass_models: []
       selection:

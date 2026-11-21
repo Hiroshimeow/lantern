@@ -38,8 +38,8 @@ from xml.parsers import expat
 VERSION = "0.1.0"
 MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 600_000
-MAX_TABLE_ROWS = 160
-MAX_TABLE_COLS = 32
+MAX_TABLE_ROWS = 10000
+MAX_TABLE_COLS = 64
 MAX_OFFICE_XML_BYTES = 16 * 1024 * 1024
 MAX_OFFICE_META_BYTES = 512 * 1024
 MAX_CELL_CHARS = 2048
@@ -330,6 +330,8 @@ def _md_inline(text: str, source_path: Path, root: Path) -> str:
         target = _safe_markdown_target(match.group(2), source_path, root, image=False)
         if target is None:
             return label
+        if target.startswith("#") or (target.startswith("/") and not target.startswith("//")):
+            return keep(f'<a href="{h(target)}">{h(label)}</a>')
         return keep(
             f'<a href="{h(target)}" target="_blank" rel="noopener noreferrer">{h(label)}</a>'
         )
@@ -582,7 +584,7 @@ def _render_markdown_text(
                         ) + "</tr>"
                     )
                 out.append(
-                    f'<div class="table-wrap"{marker(rows[0][0] if rows and rows[0][0] != table_header_line + 2 else table_header_line)}><table><thead><tr>'
+                    f'<div class="table-wrap"{marker(rows[0][0] if rows and rows[0][0] != table_header_line + 2 else table_header_line)}><table{marker(table_header_line)}><thead><tr>'
                     + head
                     + "</tr></thead><tbody>"
                     + "".join(body_rows)
@@ -663,9 +665,7 @@ def _render_markdown_text(
     flush()
     close_list()
     close_quote()
-    note = "<div class='note'>Markdown preview uses a bounded parser; raw HTML is escaped.</div>"
-    if truncated:
-        note += "<div class='note'>Preview truncated to keep the UI bounded.</div>"
+    note = "<div class='note'>Preview truncated to keep the UI bounded.</div>" if truncated else ""
     return "Markdown preview", note + "<article class='md-preview'>" + "\n".join(out) + "</article>"
 
 
@@ -1278,8 +1278,8 @@ def render_preview_page(path: Path | str, root: Path | str, config_path: Optiona
     )
     css = """
 :root{color-scheme:dark;--bg:#080a0f;--panel:#10151e;--line:#283343;--text:#f8fafc;--muted:#b9c4d0;--accent:#68e37a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750;cursor:pointer}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.md-modes{display:inline-flex;gap:3px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:3px;background:#0a101b}.md-modes>.btn{border:0;height:30px;background:transparent}.md-modes>.btn[aria-pressed="true"]{background:#263957;color:#eaf7ff}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.md-preview{max-width:980px;margin:0 auto;padding:18px 22px;border:1px solid var(--line);border-radius:16px;background:#0b1018;color:#edf5ff;font-size:15px;line-height:1.72}.md-preview h1,.md-preview h2,.md-preview h3{line-height:1.25;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:.28em}.md-preview a{color:#8db4ff}.md-preview img{max-width:min(100%,760px);max-height:70vh;width:auto;height:auto;object-fit:contain;vertical-align:middle}.md-preview code{background:#18202c;border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:.1em .35em}.md-code{padding:12px 14px;border:1px solid #263142;border-radius:13px;background:#05070b;overflow:auto}.md-preview blockquote{margin:10px 0;padding:4px 12px;border-left:4px solid var(--accent);background:rgba(104,227,122,.06);color:var(--muted)}.md-preview hr{border:0;border-top:1px solid var(--line);margin:18px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}.table-wrap table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.table-wrap td,.table-wrap th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}.table-wrap th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}.task-item{list-style:none}.task-item input{margin-right:.5em}.mermaid-diagram{margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:14px;background:#fff;color:#111}.mermaid-output svg{max-width:100%;height:auto}.pdf-viewer{height:calc(100dvh - 126px);min-height:330px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#20242d}.pdf-native{display:block;width:100%;height:100%;border:0}.pdf-fallback{font-size:12px;margin-top:8px;padding:7px 9px}.pdf-fallback a{color:#8db4ff}
-body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fixed;top:0;left:0;right:0;z-index:50;display:block;padding:5px 10px;box-shadow:0 6px 16px rgba(0,0,0,.25)}.md-bar .bar-top{display:flex;align-items:center;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:thin}.md-bar .bar-bottom{display:flex;align-items:center;gap:8px;min-height:34px;padding-top:4px;border-top:1px solid rgba(255,255,255,.07);margin-top:4px}.md-bar .title{max-width:min(30vw,360px);font-size:12px}.md-bar .btn{height:28px;padding:0 8px;font-size:12px;border-radius:8px;white-space:nowrap;flex-shrink:0}.md-bar .md-modes{padding:2px;border-radius:9px}.md-bar .md-modes>.btn{height:27px}.md-bar .md-edit-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}.md-bar .md-edit-actions[hidden],.md-bar .md-global-status[hidden]{display:none!important}.md-bar .md-global-status{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a9c2d3;font-size:11px}.md-bar .md-global-status[data-kind=error]{color:#ff9b9b}.md-bar .md-global-status[data-kind=warn]{color:#e9cb85}body:has(.md-bar) .content{padding:8px 12px}body:has(.md-bar) .content.md-editing>.note,body:has(.md-bar) .content.md-editing>.muted{display:none}body:has(.md-bar) .md-preview{max-width:1360px}html:has(.md-bar){scroll-padding-top:calc(var(--md-bar-height,82px) + 10px)}@media(max-width:760px){.md-bar .title{max-width:24vw}.md-bar .bar-top{gap:4px}.md-bar .bar-bottom{overflow-x:auto;scrollbar-width:thin}body:has(.md-bar) .content{padding:6px}body:has(.md-bar) .md-preview{padding:12px}}\n@media print{body:has(.md-bar){padding-top:0!important}}\n@media print{:root{color-scheme:light}body,.md-preview{background:#fff!important;color:#111!important}.bar,.muted,.note,.mermaid-diagram>.btn{display:none!important}.content{padding:0}.md-preview{max-width:none;border:0;padding:0}.table-wrap,.md-code{overflow:visible!important}th{position:static!important}pre{white-space:pre-wrap!important;overflow:visible!important}.mermaid-output svg{width:auto!important;max-width:100%!important;max-height:85vh!important;height:auto!important}.mermaid-output svg[aria-roledescription="gantt"] text{font-size:20px!important}.mermaid-output svg[aria-roledescription="gantt"] .titleText{font-size:24px!important}.md-preview h1,.md-preview h2,.md-preview h3{break-after:avoid-page}.mermaid-diagram{border:0;padding:0;break-inside:avoid-page;page-break-inside:avoid}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.bar{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;background:rgba(16,21,30,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.title{font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.grow{flex:1}.btn{height:34px;padding:0 11px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:#151d29;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;font-weight:750;cursor:pointer}.btn.primary{background:linear-gradient(135deg,#54ee69,#7eaaff);color:#061007;border:0}.md-modes{display:inline-flex;gap:3px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:3px;background:#0a101b}.md-modes>.btn{border:0;height:30px;background:transparent}.md-modes>.btn[aria-pressed="true"]{background:#263957;color:#eaf7ff}.content{padding:14px}.note{padding:8px 10px;margin:0 0 10px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.04);color:var(--muted)}.text-preview{margin:0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#05070b;color:#eef7ef;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.md-preview{max-width:none;width:100%;margin:0;padding:18px 22px;border:1px solid var(--line);border-radius:16px;background:#0b1018;color:#edf5ff;font-size:15px;line-height:1.72}.md-preview h1,.md-preview h2,.md-preview h3{line-height:1.25;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:.28em}.md-preview a{color:#8db4ff}.md-preview img{max-width:min(100%,760px);max-height:70vh;width:auto;height:auto;object-fit:contain;vertical-align:middle}.md-preview code{background:#18202c;border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:.1em .35em}.md-code{padding:12px 14px;border:1px solid #263142;border-radius:13px;background:#05070b;overflow:auto}.md-preview blockquote{margin:10px 0;padding:4px 12px;border-left:4px solid var(--accent);background:rgba(104,227,122,.06);color:var(--muted)}.md-preview hr{border:0;border-top:1px solid var(--line);margin:18px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:#070a10;margin:10px 0}.table-wrap table{border-collapse:collapse;min-width:100%;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.table-wrap td,.table-wrap th{border:1px solid #263142;padding:6px 8px;vertical-align:top;max-width:360px;white-space:pre-wrap}.table-wrap th{background:#111827;position:sticky;top:0}h2{margin:18px 0 8px;font-size:16px}.muted{color:var(--muted)}.task-item{list-style:none}.task-item input{margin-right:.5em}.mermaid-diagram{margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:14px;background:#fff;color:#111}.mermaid-output svg{max-width:100%;height:auto}.pdf-viewer{height:calc(100dvh - 126px);min-height:330px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#20242d}.pdf-native{display:block;width:100%;height:100%;border:0}.pdf-fallback{font-size:12px;margin-top:8px;padding:7px 9px}.pdf-fallback a{color:#8db4ff}
+body:has(.md-bar){padding-top:var(--md-bar-height,46px)}.bar.md-bar{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 10px;box-shadow:0 4px 14px rgba(0,0,0,.25)}.md-bar .bar-top{display:inline-flex;align-items:center;gap:6px;min-width:0;flex-shrink:0}.md-bar .bar-bottom{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding-top:0;border-top:0;margin-top:0;flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:thin}.md-bar .title{max-width:min(24vw,280px);font-size:12.5px;color:#dbeafe}.md-bar .btn{height:27px;padding:0 8px;font-size:12px;border-radius:8px;white-space:nowrap;flex-shrink:0}.md-bar .md-modes{padding:2px;border-radius:9px}.md-bar .md-modes>.btn{height:25px}.md-bar .md-edit-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}.md-bar .md-edit-actions[hidden],.md-bar .md-global-status[hidden]{display:none!important}.md-bar .md-global-status{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a9c2d3;font-size:11px}.md-bar .md-global-status[data-kind=error]{color:#ff9b9b}.md-bar .md-global-status[data-kind=warn]{color:#e9cb85}body:has(.md-bar) .content{padding:8px 12px}body:has(.md-bar) .content.md-editing>.note,body:has(.md-bar) .content.md-editing>.muted{display:none}body:has(.md-bar) .md-preview{max-width:none;width:100%;margin:0}html:has(.md-bar){scroll-padding-top:calc(var(--md-bar-height,82px) + 10px)}@media(max-width:760px){.md-bar .title{max-width:24vw}.md-bar .bar-top{gap:4px}.md-bar .bar-bottom{overflow-x:auto;scrollbar-width:thin}body:has(.md-bar) .content{padding:6px}body:has(.md-bar) .md-preview{padding:12px}}\n@media print{body:has(.md-bar){padding-top:0!important}}\n@media print{:root{color-scheme:light}body,.md-preview{background:#fff!important;color:#111!important}.bar,.muted,.note,.mermaid-diagram>.btn{display:none!important}.content{padding:0}.md-preview{max-width:none;border:0;padding:0}.table-wrap,.md-code{overflow:visible!important}th{position:static!important}pre{white-space:pre-wrap!important;overflow:visible!important}.mermaid-output svg{width:auto!important;max-width:100%!important;max-height:85vh!important;height:auto!important}.mermaid-output svg[aria-roledescription="gantt"] text{font-size:20px!important}.mermaid-output svg[aria-roledescription="gantt"] .titleText{font-size:24px!important}.md-preview h1,.md-preview h2,.md-preview h3{break-after:avoid-page}.mermaid-diagram{border:0;padding:0;break-inside:avoid-page;page-break-inside:avoid}}
 """
     mermaid_script = (
         f'<script nonce="{h(nonce)}" src="/static/vendor/mermaid-11.17.2.min.js" defer></script>\n'
@@ -1296,14 +1296,10 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
         f'<script nonce="{h(nonce)}" src="/static/markdown_visual_shell.js" defer></script>'
         if visual_markdown else ""
     )
-    visual_button = (
-        f'<button class="btn" type="button" data-action="visual-edit" aria-pressed="false" data-path="{h(rel)}">Edit visually</button>'
-        if visual_markdown else ""
-    )
     mode_controls = (
         '<div class="md-modes" role="group" aria-label="Markdown mode">'
-        '<button class="btn" type="button" data-action="mode-preview" aria-pressed="true">Preview</button>'
-        + visual_button
+        f'<button class="btn" type="button" data-action="mode-preview" aria-pressed="true" data-path="{h(rel)}">Preview</button>'
+        + f'<button class="btn" type="button" data-action="visual-edit" aria-pressed="false" data-path="{h(rel)}">Edit visually</button>'
         + f'<button class="btn" type="button" data-action="mode-source" aria-pressed="false" data-path="{h(rel)}">Source</button>'
         + '</div>'
         if visual_markdown else f'<a class="btn" href="{h(preview_url)}">Preview</a>'
@@ -1314,7 +1310,7 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
         f'<a class="btn" href="{h(preview_url)}">View PDF pages</a>'
         if is_pdf else ""
     )
-    print_button = '' if is_pdf and not pdf_text else (
+    print_button = '' if (visual_markdown or (is_pdf and not pdf_text)) else (
         '<button class="btn" type="button" data-action="print">Print / Save as PDF</button>'
     )
     table_style = ('<link rel="stylesheet" href="/static/markdown_table_interactions.css">'
@@ -1323,17 +1319,20 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
     edit_actions = (
         '<div class="md-edit-actions" data-md-edit-actions hidden>'
         '<button class="btn primary" type="button" data-action="md-save">Save</button>'
-        '<button class="btn" type="button" data-action="md-download-draft">Download draft</button>'
-        '<button class="btn" type="button" data-action="md-back-preview">Back to preview</button>'
         '</div>' if visual_markdown else ''
     )
     top_controls = (
         f'<button class="btn" type="button" data-action="back">↩ Back</button>'
-        f'<div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div>'
-        f'{print_button}{edit_actions}{pdf_action}'
-        + ('' if visual_markdown else f'<a class="btn" href="{h(raw_url)}?edit=1">Edit</a>')
-        + f'<a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a>'
-        + f'<a class="btn primary" href="{h(raw_url)}?download=1">Download</a>'
+        f'<div class="title">{h(rel)}</div>'
+        f'{edit_actions}'
+        if visual_markdown else (
+            f'<button class="btn" type="button" data-action="back">↩ Back</button>'
+            f'<div class="title">{h(title)} · {h(rel)}</div><div class="grow"></div>'
+            f'{print_button}{pdf_action}'
+            + f'<a class="btn" href="{h(raw_url)}?edit=1">Edit</a>'
+            + f'<a class="btn" href="{h(raw_url)}" target="_blank" rel="noopener noreferrer">Open raw</a>'
+            + f'<a class="btn primary" href="{h(raw_url)}?download=1">Download</a>'
+        )
     )
     header = (
         f'<div class="bar-top">{top_controls}</div>'
@@ -1341,13 +1340,14 @@ body:has(.md-bar){padding-top:var(--md-bar-height,82px)}.bar.md-bar{position:fix
         '<span class="md-global-status" data-md-status role="status" aria-live="polite" hidden></span>'
         '</div>' if visual_markdown else top_controls + mode_controls
     )
+    sub_banner = '' if visual_markdown else f'<div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>'
     body_attrs = f' data-lantern-chat-kind="{"markdown" if visual_markdown else "file"}" data-lantern-chat-path="{h(rel)}"'
     page = f"""<!doctype html>
-<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(title)} - {h(rel)}</title><style>{css}</style>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{h(csp)}"><title>{h(rel) if visual_markdown else f"{h(title)} - {h(rel)}"}</title><style>{css}</style>
 {mermaid_script}{table_style}{chat_style}{helper_script}{visual_script}</head>
 <body{body_attrs}>
 <div class="bar{' md-bar' if visual_markdown else ''}">{header}</div>
-<div class="content" data-doc-name="{h(p.stem)}"><div class="muted">{h(app_title)} plugin preview · {h(p.name)}</div>{body}</div>
+<div class="content" data-doc-name="{h(p.stem)}">{sub_banner}{body}</div>
 </body></html>"""
     return page.encode("utf-8", "surrogateescape")
 

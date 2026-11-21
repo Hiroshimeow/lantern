@@ -137,6 +137,8 @@ class Handler(
                 return self.api_sysstats()
             if parsed.path == "/api/config":
                 return self.api_config_get()
+            if parsed.path == "/api/lan-settings":
+                return self.api_lan_settings_get()
             if parsed.path == "/api/list":
                 return self.api_list(parsed.query)
             if parsed.path == "/api/upload/check":
@@ -219,6 +221,7 @@ class Handler(
             if route == "/api/md/render": return self.api_md_render()
             if route == "/api/md/save": return self.api_md_save()
             if route == "/api/md/versions/restore": return self.api_md_version_restore()
+            if route == "/api/md/image-audit/move-to-old": return self.api_md_image_move_to_old()
             if route == "/api/mkdir": return self.api_mkdir()
             if route == "/api/newfile": return self.api_newfile()
             if route == "/api/rename": return self.api_rename()
@@ -231,6 +234,7 @@ class Handler(
             if route == "/api/archive": return self.api_archive()
             if route == "/api/zip": return self.api_zip()
             if route == "/api/config": return self.api_config_post()
+            if route == "/api/lan-settings": return self.api_lan_settings_post()
             if route == "/api/plugin/extensions": return self.api_plugin_extensions()
             if route in ("/api/chatbot/prefs", "/api/chatbot/settings"): return self.api_chatbot_prefs_post()
             if route == "/api/chatbot/upload": return self.api_chatbot_upload()

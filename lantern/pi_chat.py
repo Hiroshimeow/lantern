@@ -65,14 +65,22 @@ def extract_message_structured(msg: dict[str, Any]) -> dict[str, Any]:
                             str(p.get("text") or "") if isinstance(p, dict) else str(p)
                             for p in inner
                         )
+                    elif isinstance(inner, dict):
+                        try:
+                            inner_txt = json.dumps(inner, ensure_ascii=False)
+                        except Exception:
+                            inner_txt = str(inner)
                     else:
                         inner_txt = str(inner or item.get("text") or "")
-                    tools.append({
+                    tr_entry: dict[str, Any] = {
                         "id": str(item.get("toolUseId") or item.get("toolCallId") or ""),
                         "name": str(item.get("toolName") or "result"),
                         "result": inner_txt,
                         "isError": bool(item.get("isError")),
-                    })
+                    }
+                    if isinstance(item.get("details"), dict):
+                        tr_entry["details"] = item["details"]
+                    tools.append(tr_entry)
                 elif isinstance(item.get("text"), str):
                     text_parts.append(item["text"])
                 elif isinstance(item.get("content"), str):
@@ -102,6 +110,91 @@ def extract_message_structured(msg: dict[str, Any]) -> dict[str, Any]:
 
     full_text = "\n".join(p for p in text_parts if p is not None)
     subagents = parse_task_notifications(full_text)
+
+    # Build chronological steps from content blocks so UI renders [text -> box(thinking,skill,tools) -> subagent -> text]
+    steps: list[dict[str, Any]] = []
+    if isinstance(msg.get("steps"), list) and msg["steps"]:
+        steps = [dict(s) for s in msg["steps"] if isinstance(s, dict)]
+    elif role == "assistant" and isinstance(content, list):
+        cur_step: dict[str, Any] = {"textBeforeBox": "", "thinking": "", "toolCalls": [], "subagents": [], "textAfterBox": ""}
+        saw_tool_result_in_step = False
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            btype = str(item.get("type") or "")
+            if btype in ("thinking", "reasoning"):
+                thk_str = str(item.get("thinking") or item.get("text") or "").strip()
+                if not thk_str:
+                    continue
+                if cur_step["toolCalls"] and saw_tool_result_in_step and cur_step["textAfterBox"]:
+                    steps.append(cur_step)
+                    cur_step = {"textBeforeBox": "", "thinking": thk_str, "toolCalls": [], "subagents": [], "textAfterBox": ""}
+                    saw_tool_result_in_step = False
+                else:
+                    cur_step["thinking"] = f"{cur_step['thinking']}\n{thk_str}".strip() if cur_step["thinking"] else thk_str
+            elif btype == "text":
+                txt_str = str(item.get("text") or item.get("content") or "").strip()
+                if not txt_str:
+                    continue
+                if cur_step["toolCalls"]:
+                    if saw_tool_result_in_step:
+                        steps.append(cur_step)
+                        cur_step = {"textBeforeBox": txt_str, "thinking": "", "toolCalls": [], "subagents": [], "textAfterBox": ""}
+                        saw_tool_result_in_step = False
+                    else:
+                        cur_step["textAfterBox"] = f"{cur_step['textAfterBox']}\n\n{txt_str}".strip() if cur_step["textAfterBox"] else txt_str
+                else:
+                    cur_step["textBeforeBox"] = f"{cur_step['textBeforeBox']}\n\n{txt_str}".strip() if cur_step["textBeforeBox"] else txt_str
+            elif btype in ("toolCall", "tool_use", "tool_call"):
+                if saw_tool_result_in_step and (cur_step["textAfterBox"]):
+                    steps.append(cur_step)
+                    cur_step = {"textBeforeBox": "", "thinking": "", "toolCalls": [], "subagents": [], "textAfterBox": ""}
+                    saw_tool_result_in_step = False
+                cur_step["toolCalls"].append({
+                    "id": str(item.get("id") or item.get("toolCallId") or ""),
+                    "name": str(item.get("name") or item.get("toolName") or "tool"),
+                    "arguments": item.get("arguments") or item.get("input") or item.get("args") or {},
+                })
+            elif btype in ("toolResult", "tool_result"):
+                saw_tool_result_in_step = True
+                inner = item.get("content")
+                if isinstance(inner, list):
+                    inner_txt = "\n".join(str(p.get("text") or "") if isinstance(p, dict) else str(p) for p in inner)
+                elif isinstance(inner, dict):
+                    try:
+                        inner_txt = json.dumps(inner, ensure_ascii=False)
+                    except Exception:
+                        inner_txt = str(inner)
+                else:
+                    inner_txt = str(inner or item.get("text") or "")
+                tr_id = str(item.get("toolUseId") or item.get("toolCallId") or "")
+                tr_name = str(item.get("toolName") or "result")
+                matched = False
+                for tc in cur_step["toolCalls"]:
+                    if tr_id and tc.get("id") == tr_id and "result" not in tc:
+                        tc["result"] = inner_txt
+                        tc["isError"] = bool(item.get("isError"))
+                        if isinstance(item.get("details"), dict):
+                            tc["details"] = item["details"]
+                        matched = True
+                        break
+                if not matched:
+                    tr_entry: dict[str, Any] = {
+                        "id": tr_id,
+                        "name": tr_name,
+                        "result": inner_txt,
+                        "isError": bool(item.get("isError")),
+                    }
+                    if isinstance(item.get("details"), dict):
+                        tr_entry["details"] = item["details"]
+                    cur_step["toolCalls"].append(tr_entry)
+        if cur_step["textBeforeBox"] or cur_step["thinking"] or cur_step["toolCalls"] or cur_step["textAfterBox"]:
+            # If the final step has NO toolCalls, move textBeforeBox to textAfterBox so any final thinking box sits above the final response
+            if not cur_step["toolCalls"] and cur_step["textBeforeBox"] and not cur_step["textAfterBox"]:
+                cur_step["textAfterBox"] = cur_step["textBeforeBox"]
+                cur_step["textBeforeBox"] = ""
+            steps.append(cur_step)
+
     return {
         "id": str(msg.get("id") or ""),
         "role": role,
@@ -109,6 +202,7 @@ def extract_message_structured(msg: dict[str, Any]) -> dict[str, Any]:
         "thinking": "\n".join(t for t in thinking_parts if t),
         "tools": tools,
         "subagents": subagents,
+        "steps": steps,
         "timestamp": msg.get("timestamp") or msg.get("createdAt"),
         "usage": msg.get("usage") if isinstance(msg.get("usage"), dict) else None,
     }
@@ -207,6 +301,7 @@ class LanternBotManager:
         self._private_clients: set[str] = set()
         self._cached_models: dict[str, list[dict[str, Any]]] = {}
         self._session_file_cache: dict[tuple[str, float, int], dict[str, Any]] = {}
+        self._session_messages_cache: dict[tuple[str, float, int], list[dict[str, Any]]] = {}
         self._turn_attached_md_rels: list[str] = []
         raw_sdir = (Path(session_dir) if session_dir else
                     Path.home() / ".lantern" / "pi-sessions").resolve()
@@ -263,6 +358,7 @@ class LanternBotManager:
         self._subturn_stream_text: list[str] = []
         self._subturn_stream_thinking: list[str] = []
         self._turn_stream_tools: list[dict[str, Any]] = []
+        self._turn_stream_blocks: list[dict[str, Any]] = []
         self._turn_assistant_saved: bool = False
         self._active_turn_scope: str = self.access_scope
         self._active_turn_session_id: str = ""
@@ -271,8 +367,24 @@ class LanternBotManager:
         self._last_stop_reason: str = ""
         self._switched_session_override: Optional[dict[str, str]] = None
         self._needs_history_hydration: bool = False
+        self._last_sent_context_sig: str = ""
+        self._ephemeral_new_chat: bool = False
+        self._pinned_model: Optional[dict[str, Any]] = None
         if self.client_session_id and not self.state_path.is_file():
-            self._inherit_latest_session_on_init()
+            # v8.0: New tabs and fresh bots open with a stable 12-char hex session ID and
+            # _switched_session_override pinned so get_state() never overwrites sessionId on first prompt.
+            self._ephemeral_new_chat = True
+            ephemeral_sid = uuid4().hex[:12]
+            sdir = self._scope_session_dir(self.access_scope)
+            ephemeral_file = str((sdir / f"{ephemeral_sid}.jsonl").resolve())
+            self._switched_session_override = {
+                "sessionId": ephemeral_sid,
+                "sessionFile": ephemeral_file,
+            }
+            self.last_state["sessionId"] = ephemeral_sid
+            self.last_state["sessionFile"] = ""
+            if parent_bot is not None and parent_bot.last_state.get("model"):
+                self.last_state["model"] = dict(parent_bot.last_state["model"])
 
     @staticmethod
     def _atomic_write_text(target: Path, content: str) -> None:
@@ -393,10 +505,20 @@ class LanternBotManager:
         self._save_prefs({"favorites": favs})
         return {"ok": True, "key": key, "favorite": is_fav, "favorites": favs}
 
-    def set_thinking_level(self, level: str) -> dict[str, Any]:
+    def set_thinking_level(self, level: str, scope: Optional[str] = None) -> dict[str, Any]:
+        eff_scope = str(scope or self.access_scope or "local").strip().lower()
         clean = str(level or "medium").strip().lower()
         if clean not in {"off", "minimal", "low", "medium", "high", "xhigh"}:
             clean = "medium"
+        policy = self.bot_config.access_policy(eff_scope)
+        cur_model = self.last_state.get("model") if isinstance(self.last_state.get("model"), dict) else {}
+        cur_prov = str(cur_model.get("provider") or "")
+        cur_mid = str(cur_model.get("id") or "")
+        allowed = policy.allowed_thinking_levels(cur_prov, cur_mid)
+        if allowed and clean not in allowed:
+            raise PermissionError(
+                f"Thinking level '{clean}' is not allowed by configuration (allowed: {', '.join(allowed)})"
+            )
         self.thinking_level = clean
         self._save_prefs({"thinkingLevel": clean})
         try:
@@ -406,7 +528,7 @@ class LanternBotManager:
                 self.send_fire_and_forget({"type": "set_thinking_level", "level": clean})
         except Exception:
             pass
-        return {"ok": True, "thinkingLevel": clean}
+        return {"ok": True, "thinkingLevel": clean, "allowedThinking": list(allowed)}
 
     def set_tool_preset(self, preset: str) -> dict[str, Any]:
         clean = str(preset or "full").strip().lower()
@@ -490,6 +612,8 @@ class LanternBotManager:
         if use_global:
             candidate_roots.append(("global", (Path.home() / ".pi" / "agent" / "skills").resolve()))
             candidate_roots.append(("global", (Path.home() / ".pi" / "skills").resolve()))
+            candidate_roots.append(("global", (Path.home() / ".agents" / "skills").resolve()))
+            candidate_roots.append(("global", (Path.home() / ".claude" / "skills").resolve()))
         for raw_p in custom_paths:
             expanded = os.path.expandvars(str(raw_p or "").strip())
             if not expanded:
@@ -533,6 +657,18 @@ class LanternBotManager:
                                 "path": str(sub_md),
                                 "description": self._extract_skill_description(sub_md, item.name),
                             })
+                        else:
+                            for nested in sorted(item.iterdir()) if item.is_dir() else []:
+                                if nested.is_dir() and (nested / "SKILL.md").is_file() and nested.name not in seen_names:
+                                    seen_names.add(nested.name)
+                                    skills.append({
+                                        "name": nested.name,
+                                        "command": f"/{nested.name}",
+                                        "category": "skill",
+                                        "scope": scope_label,
+                                        "path": str(nested / "SKILL.md"),
+                                        "description": self._extract_skill_description(nested / "SKILL.md", nested.name),
+                                    })
                     elif (
                         item.is_file()
                         and item.suffix.lower() == ".md"
@@ -1259,8 +1395,11 @@ class LanternBotManager:
         session_path: str = "",
         scope: Optional[str] = None,
         viewer_scope: Optional[str] = None,
+        delete_children: bool = False,
     ) -> dict[str, Any]:
-        """Delete a saved session JSONL file (and its custom name) from session_dir."""
+        """Delete a saved session JSONL file (and its custom name) from session_dir.
+        If delete_children is True, also delete forked descendant sessions; otherwise
+        promote direct children to root sessions without modifying their mtime."""
         root_bot = self._parent_bot or self
         clean_id = str(session_id or "").strip()
         target_scope = str(scope or "").strip().lower()
@@ -1276,9 +1415,58 @@ class LanternBotManager:
         sdir = root_bot._scope_session_dir(target_scope)
         names_file = sdir / "lantern-session-names.json"
         cur_sid = self.current_session_id()
-        was_current = bool(clean_id and cur_sid and clean_id == cur_sid)
+        deleted_ids: set[str] = {clean_id} if clean_id else set()
         deleted_files: list[str] = []
         with root_bot.lock:
+            # Scan all jsonl files in sdir to map parentSessionId relationships
+            file_meta: list[tuple[Path, str, str]] = []
+            if sdir.is_dir():
+                for fp in sdir.glob("*.jsonl"):
+                    if ".corrupted-" in fp.name:
+                        continue
+                    try:
+                        with fp.open("r", encoding="utf-8", errors="replace") as fh:
+                            first_line = fh.readline().strip()
+                        f_sid = fp.stem
+                        f_pid = ""
+                        if first_line:
+                            hdr = json.loads(first_line)
+                            if isinstance(hdr, dict):
+                                if hdr.get("id"):
+                                    f_sid = str(hdr["id"]).strip()
+                                if hdr.get("parentSessionId"):
+                                    f_pid = str(hdr["parentSessionId"]).strip()
+                        file_meta.append((fp.resolve(), f_sid, f_pid))
+                    except Exception:
+                        continue
+
+            if delete_children and clean_id:
+                added = True
+                while added:
+                    added = False
+                    for _fp, f_sid, f_pid in file_meta:
+                        if f_pid and f_pid in deleted_ids and f_sid not in deleted_ids:
+                            deleted_ids.add(f_sid)
+                            added = True
+            elif clean_id:
+                # Promote direct children of clean_id to normal root sessions while preserving mtime
+                for fp, _f_sid, f_pid in file_meta:
+                    if f_pid == clean_id and fp.is_file():
+                        try:
+                            orig_stat = fp.stat()
+                            raw_lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                            if raw_lines:
+                                hdr = json.loads(raw_lines[0])
+                                if isinstance(hdr, dict) and hdr.get("parentSessionId"):
+                                    hdr.pop("parentSessionId", None)
+                                    hdr.pop("forkTurn", None)
+                                    raw_lines[0] = json.dumps(hdr, ensure_ascii=False, separators=(",", ":"))
+                                    self._atomic_write_text(fp, "\n".join(raw_lines) + "\n")
+                                    os.utime(fp, (orig_stat.st_atime, orig_stat.st_mtime))
+                        except Exception:
+                            pass
+                root_bot._session_file_cache.clear()
+
             candidates: set[Path] = set()
             if session_path:
                 try:
@@ -1288,13 +1476,17 @@ class LanternBotManager:
                         candidates.add(cp)
                 except Exception:
                     pass
-            if clean_id and sdir.is_dir():
-                found_fp = root_bot._find_session_file_in_dir(sdir, clean_id, session_path)
-                if found_fp and found_fp.is_file():
-                    candidates.add(found_fp)
-                for fp in sdir.glob("*.jsonl"):
-                    if fp.stem == clean_id or fp.stem.endswith(f"_{clean_id}"):
-                        candidates.add(fp.resolve())
+            for del_sid in list(deleted_ids):
+                if del_sid and sdir.is_dir():
+                    found_fp = root_bot._find_session_file_in_dir(sdir, del_sid, session_path if del_sid == clean_id else "")
+                    if found_fp and found_fp.is_file():
+                        candidates.add(found_fp)
+                    for fp in sdir.glob("*.jsonl"):
+                        if fp.stem == del_sid or fp.stem.endswith(f"_{del_sid}"):
+                            candidates.add(fp.resolve())
+            for fp, f_sid, _f_pid in file_meta:
+                if f_sid in deleted_ids:
+                    candidates.add(fp)
             for fp in candidates:
                 try:
                     if fp.is_file():
@@ -1305,7 +1497,7 @@ class LanternBotManager:
             names = root_bot._load_session_names(target_scope)
             changed_names = False
             for k in list(names.keys()):
-                if k == clean_id or (session_path and k == Path(session_path).stem):
+                if k in deleted_ids or (session_path and k == Path(session_path).stem):
                     names.pop(k, None)
                     changed_names = True
             if changed_names:
@@ -1313,15 +1505,19 @@ class LanternBotManager:
                     self._atomic_write_text(names_file, json.dumps(names, ensure_ascii=False, indent=2) + "\n")
                 except Exception:
                     pass
-            # Also unshare if it was shared
             reg = root_bot.shared_sessions()
-            if clean_id in reg:
-                reg.pop(clean_id, None)
+            reg_changed = False
+            for del_sid in deleted_ids:
+                if del_sid in reg:
+                    reg.pop(del_sid, None)
+                    reg_changed = True
+                for bkey, bsid in list(root_bot._shared_bindings.items()):
+                    if bsid == del_sid:
+                        root_bot._shared_bindings.pop(bkey, None)
+                root_bot._shared_bots.pop(del_sid, None)
+            if reg_changed:
                 root_bot._save_shared_sessions(reg)
-            for bkey, bsid in list(root_bot._shared_bindings.items()):
-                if bsid == clean_id:
-                    root_bot._shared_bindings.pop(bkey, None)
-            root_bot._shared_bots.pop(clean_id, None)
+        was_current = bool(cur_sid and cur_sid in deleted_ids)
 
         new_state = None
         if was_current:
@@ -1338,6 +1534,130 @@ class LanternBotManager:
             "wasCurrent": was_current,
             "state": new_state,
             "sessions": root_bot.list_sessions(scope=list_sc, current_bot=self),
+        }
+
+    def delete_sessions(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        scope: Optional[str] = None,
+        viewer_scope: Optional[str] = None,
+        delete_children: bool = False,
+    ) -> dict[str, Any]:
+        root_bot = self._parent_bot or self
+        deleted_all: list[str] = []
+        any_was_current = False
+        last_res: dict[str, Any] = {}
+        for it in (items or []):
+            sid = str(it.get("sessionId") or it.get("id") or "").strip() if isinstance(it, dict) else str(it or "").strip()
+            spath = str(it.get("sessionPath") or it.get("path") or "").strip() if isinstance(it, dict) else ""
+            sc = (str(it.get("sessionScope") or "").strip().lower() or scope) if isinstance(it, dict) else scope
+            if not sid and not spath:
+                continue
+            res = self.delete_session(
+                sid,
+                session_path=spath,
+                scope=sc,
+                viewer_scope=viewer_scope,
+                delete_children=delete_children,
+            )
+            last_res = res
+            if sid:
+                deleted_all.append(sid)
+            if res.get("wasCurrent"):
+                any_was_current = True
+            # Also reset any other worker bot that was holding this deleted session
+            for b_inst in root_bot._all_bot_instances():
+                if b_inst is not self and b_inst.current_session_id() == sid:
+                    try:
+                        b_inst.new_session(b_inst.access_scope, skip_if_empty=False)
+                    except Exception:
+                        pass
+        list_sc = str(viewer_scope or scope or self.access_scope or "local").strip().lower()
+        return {
+            "ok": True,
+            "deletedSessionIds": deleted_all,
+            "wasCurrent": any_was_current,
+            "state": last_res.get("state") if any_was_current else None,
+            "sessions": root_bot.list_sessions(scope=list_sc, current_bot=self),
+        }
+
+    def get_fork_checkpoints(
+        self,
+        *,
+        session_id: str = "",
+        session_path: str = "",
+        scope: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Return all conversation turns (0..N-1) for a session so the Fork Checkpoint modal
+        shows 100% of user and assistant turns even when a session has hundreds of messages."""
+        root_bot = self._parent_bot or self
+        eff_scope = str(scope or self.access_scope or "local").strip().lower()
+        sdir = root_bot._scope_session_dir(eff_scope)
+        clean_id = str(session_id or "").strip()
+        target_fp: Optional[Path] = None
+
+        if session_path:
+            cand = Path(session_path).expanduser().resolve()
+            if cand.is_file():
+                target_fp = cand
+            else:
+                cand2 = (sdir / Path(session_path).name).resolve()
+                if cand2.is_file():
+                    target_fp = cand2
+        if target_fp is None and clean_id:
+            target_fp = root_bot._find_session_file_in_dir(sdir, clean_id, session_path)
+        if target_fp is None:
+            cur_file = str(self.last_state.get("sessionFile") or "").strip()
+            if cur_file and Path(cur_file).is_file():
+                target_fp = Path(cur_file).resolve()
+            elif self.current_session_id():
+                target_fp = root_bot._find_session_file_in_dir(sdir, self.current_session_id(), "")
+
+        disk_msgs: list[dict[str, Any]] = []
+        if target_fp and target_fp.is_file():
+            try:
+                raw_disk = self._load_messages_from_jsonl(target_fp)
+                disk_msgs = self._coalesce_transcript_list(raw_disk)
+            except Exception:
+                disk_msgs = []
+
+        mem_msgs: list[dict[str, Any]] = []
+        if not clean_id or clean_id == self.current_session_id():
+            try:
+                mem_msgs = self.get_messages() or list(self._session_messages)
+            except Exception:
+                mem_msgs = list(self._session_messages)
+
+        all_msgs = disk_msgs if len(disk_msgs) >= len(mem_msgs) else mem_msgs
+        checkpoints: list[dict[str, Any]] = []
+        for idx, raw_m in enumerate(all_msgs):
+            if not isinstance(raw_m, dict):
+                continue
+            parsed = extract_message_structured(raw_m)
+            role = str(parsed.get("role") or raw_m.get("role") or "assistant")
+            raw_text = str(parsed.get("text") or raw_m.get("text") or raw_m.get("content") or "")
+            if role == "user":
+                snip = self._clean_user_preview_text(raw_text)
+            else:
+                lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+                snip = " ".join(lines)[:140] if lines else ""
+            tools = parsed.get("tools") or []
+            if not snip and tools:
+                snip = f"[{len(tools)} tool call(s)]"
+            checkpoints.append({
+                "index": idx,
+                "turn": idx + 1,
+                "role": role,
+                "snippet": snip or "(turn)",
+                "toolCount": len(tools),
+            })
+        return {
+            "ok": True,
+            "sessionId": clean_id or self.current_session_id(),
+            "sessionPath": str(target_fp) if target_fp else session_path,
+            "totalTurns": len(checkpoints),
+            "checkpoints": checkpoints,
         }
 
     @staticmethod
@@ -1381,12 +1701,14 @@ class LanternBotManager:
 
         busy_session_ids: set[str] = set()
         active_session_ids: set[str] = set()
+        holder_counts: dict[str, int] = {}
         for bot_inst in root_bot._all_bot_instances():
             if bot_inst.access_scope != eff:
                 continue
             bsid = bot_inst.current_session_id()
             if bsid:
                 active_session_ids.add(bsid)
+                holder_counts[bsid] = holder_counts.get(bsid, 0) + 1
                 if bot_inst.streaming or bot_inst._turn_in_progress:
                     busy_session_ids.add(bsid)
 
@@ -1416,12 +1738,16 @@ class LanternBotManager:
                         is_native_pi = cached_data["is_native_pi"]
                         msg_count = cached_data["msg_count"]
                         header_cwd = cached_data["header_cwd"]
+                        parent_session_id = cached_data.get("parent_session_id", "")
+                        fork_turn = cached_data.get("fork_turn")
                     else:
                         preview = ""
                         session_id = fpath.stem
                         is_native_pi = False
                         msg_count = 0
                         header_cwd = ""
+                        parent_session_id = ""
+                        fork_turn = None
                         with fpath.open("r", encoding="utf-8", errors="replace") as fh:
                             for idx, line in enumerate(fh):
                                 line = line.strip()
@@ -1435,6 +1761,10 @@ class LanternBotManager:
                                                 session_id = str(obj["id"])
                                             if obj.get("cwd"):
                                                 header_cwd = os.path.normcase(str(obj["cwd"]))
+                                            if obj.get("parentSessionId"):
+                                                parent_session_id = str(obj["parentSessionId"]).strip()
+                                            if obj.get("forkTurn") is not None:
+                                                fork_turn = obj.get("forkTurn")
                                             if not obj.get("lantern"):
                                                 is_native_pi = True
                                         if obj.get("sessionId"):
@@ -1454,7 +1784,11 @@ class LanternBotManager:
                             "is_native_pi": is_native_pi,
                             "msg_count": msg_count,
                             "header_cwd": header_cwd,
+                            "parent_session_id": parent_session_id,
+                            "fork_turn": fork_turn,
                         }
+                    if msg_count == 0 and session_id not in shared_map and not custom_names.get(session_id):
+                        continue
                     # Prevent LAN workspace sessions from leaking into local directory scan
                     if eff == "local" and header_cwd and header_cwd == lan_cwd_norm:
                         continue
@@ -1465,8 +1799,10 @@ class LanternBotManager:
                     custom_title = custom_names.get(session_id) or custom_names.get(fpath.stem) or ""
                     display_title = custom_title or preview or fpath.stem
                     is_shared = bool(eff == "local" and session_id in shared_map)
+                    clean_short = re.sub(r"^(?:newchat-|fork-|session-)", "", session_id)[:3] or session_id[:3]
                     entry = {
                         "id": session_id,
+                        "shortId": f"#{clean_short}",
                         "name": display_title,
                         "label": display_title,
                         "customName": bool(custom_title),
@@ -1476,9 +1812,14 @@ class LanternBotManager:
                         "current": is_cur,
                         "busy": session_id in busy_session_ids,
                         "activeInTab": session_id in active_session_ids,
+                        "inUse": session_id in active_session_ids,
+                        "holderCount": holder_counts.get(session_id, 0),
                         "messageCount": msg_count,
                         "sessionScope": eff,
                         "shared": is_shared,
+                        "parentSessionId": parent_session_id,
+                        "forkTurn": fork_turn,
+                        "treeDepth": 0,
                         "_isNative": is_native_pi,
                     }
                     if session_id in seen_ids:
@@ -1508,6 +1849,43 @@ class LanternBotManager:
                     continue
             for item in results:
                 item.pop("_isNative", None)
+            # v7.92: Order forked sessions as a 2-level tree underneath their parent session (max depth = 2)
+            by_id = {it["id"]: it for it in results}
+            children_map: dict[str, list[dict[str, Any]]] = {}
+            roots: list[dict[str, Any]] = []
+            for it in results:
+                pid = str(it.get("parentSessionId") or "").strip()
+                if pid and pid in by_id and pid != it["id"]:
+                    children_map.setdefault(pid, []).append(it)
+                else:
+                    if pid and pid not in by_id:
+                        it["parentSessionId"] = ""
+                        it["forkTurn"] = None
+                        it["treeDepth"] = 0
+                    roots.append(it)
+            for it in results:
+                it["hasChildren"] = bool(children_map.get(it["id"]))
+                it["childCount"] = len(children_map.get(it["id"], []))
+            if children_map:
+                ordered: list[dict[str, Any]] = []
+                visited: set[str] = set()
+                def _visit(node: dict[str, Any], depth: int) -> None:
+                    nid = node["id"]
+                    if nid in visited:
+                        return
+                    visited.add(nid)
+                    node["treeDepth"] = min(depth, 2)
+                    ordered.append(node)
+                    # Sort direct fork children oldest-to-newest (A1, A2...) under parent A
+                    kids = list(reversed(children_map.get(nid, [])))
+                    for child in kids:
+                        _visit(child, min(depth + 1, 2))
+                for r in roots:
+                    _visit(r, 0)
+                for it in results:
+                    if it["id"] not in visited:
+                        _visit(it, 0)
+                results = ordered
         except Exception:
             pass
         return results[:40]
@@ -1746,10 +2124,20 @@ class LanternBotManager:
         safe_sid = re.sub(r"[^A-Za-z0-9._-]+", "-", sid).strip("-") or "default-session"
         return (self.session_dir / f"{safe_sid}.jsonl").resolve()
 
+    _GLOBAL_JSONL_CACHE: dict[tuple[str, float, int], list[dict[str, Any]]] = {}
+
     @staticmethod
     def _load_messages_from_jsonl(jsonl_path: Optional[Path]) -> list[dict[str, Any]]:
         if not jsonl_path or not jsonl_path.is_file():
             return []
+        try:
+            st = jsonl_path.stat()
+            ckey = (str(jsonl_path.resolve()), st.st_mtime, st.st_size)
+            cached = LanternBotManager._GLOBAL_JSONL_CACHE.get(ckey)
+            if cached is not None:
+                return [dict(m) for m in cached]
+        except Exception:
+            ckey = None
         loaded: list[dict[str, Any]] = []
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -1765,10 +2153,14 @@ class LanternBotManager:
                         continue
                     msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
                     role = str(msg.get("role") or "")
-                    if role in ("user", "assistant"):
+                    if role in ("user", "assistant", "toolResult", "tool"):
                         loaded.append(dict(msg))
         except Exception:
             pass
+        if ckey is not None:
+            if len(LanternBotManager._GLOBAL_JSONL_CACHE) > 128:
+                LanternBotManager._GLOBAL_JSONL_CACHE.clear()
+            LanternBotManager._GLOBAL_JSONL_CACHE[ckey] = [dict(m) for m in loaded]
         return loaded
 
     def _append_message_to_session_jsonl(
@@ -1800,38 +2192,43 @@ class LanternBotManager:
                 ):
                     self._session_messages[-1] = dict(msg)
                 elif role == "assistant" and last_struct["role"] == "assistant":
-                    # Merge consecutive assistant sub-turns (e.g. tool call + final text) into one card
-                    merged_tools = list(last_struct["tools"])
-                    existing_ids = {t.get("id") for t in merged_tools if t.get("id") and "result" in t}
-                    for t in msg_struct["tools"]:
-                        if t.get("id") and "result" in t and t.get("id") in existing_ids:
+                    # Merge consecutive assistant sub-turns while strictly preserving chronological block order
+                    prev_blocks = self._message_to_chronological_blocks(self._session_messages[-1])
+                    new_blocks = self._message_to_chronological_blocks(msg)
+                    combined_blocks: list[dict[str, Any]] = list(prev_blocks)
+                    seen_tool_calls = {
+                        str(b.get("id") or "")
+                        for b in combined_blocks
+                        if isinstance(b, dict) and b.get("type") in ("toolCall", "tool_use", "tool_call") and b.get("id")
+                    }
+                    seen_tool_results = {
+                        str(b.get("toolCallId") or b.get("toolUseId") or "")
+                        for b in combined_blocks
+                        if isinstance(b, dict) and b.get("type") in ("toolResult", "tool_result") and (b.get("toolCallId") or b.get("toolUseId"))
+                    }
+                    for b in new_blocks:
+                        if not isinstance(b, dict):
                             continue
-                        merged_tools.append(t)
-                    merged_thinking = "\n".join(x for x in (last_struct["thinking"], msg_struct["thinking"]) if x).strip()
-                    merged_text = msg_struct["text"] if msg_struct["text"] == last_struct["text"] else "\n\n".join(x for x in (last_struct["text"], msg_struct["text"]) if x).strip()
-                    blocks: list[dict[str, Any]] = []
-                    if merged_thinking:
-                        blocks.append({"type": "thinking", "thinking": merged_thinking})
-                    for t in merged_tools:
-                        if "result" in t:
-                            blocks.append({
-                                "type": "toolResult",
-                                "toolCallId": t.get("id", ""),
-                                "toolName": t.get("name", "tool"),
-                                "content": t.get("result", ""),
-                                "isError": bool(t.get("isError")),
-                            })
-                        else:
-                            blocks.append({
-                                "type": "toolCall",
-                                "id": t.get("id", ""),
-                                "name": t.get("name", "tool"),
-                                "arguments": t.get("arguments") or {},
-                            })
-                    if merged_text:
-                        blocks.append({"type": "text", "text": merged_text})
+                        btype = str(b.get("type") or "")
+                        if btype in ("toolCall", "tool_use", "tool_call"):
+                            bid = str(b.get("id") or "")
+                            if bid and bid in seen_tool_calls:
+                                continue
+                            if bid:
+                                seen_tool_calls.add(bid)
+                        elif btype in ("toolResult", "tool_result"):
+                            rid = str(b.get("toolCallId") or b.get("toolUseId") or "")
+                            if rid and rid in seen_tool_results:
+                                continue
+                            if rid:
+                                seen_tool_results.add(rid)
+                        elif btype == "text" and combined_blocks and combined_blocks[-1].get("type") == "text":
+                            if str(combined_blocks[-1].get("text") or "").strip() == str(b.get("text") or "").strip():
+                                continue
+                        combined_blocks.append(b)
                     merged_msg = dict(self._session_messages[-1])
-                    merged_msg["content"] = blocks if (merged_thinking or merged_tools) else merged_text
+                    merged_msg["content"] = combined_blocks
+                    merged_msg.pop("steps", None)
                     if isinstance(msg.get("usage"), dict):
                         merged_msg["usage"] = msg["usage"]
                     if msg.get("errorMessage"):
@@ -1901,6 +2298,8 @@ class LanternBotManager:
     def _persist_state(self, state: dict[str, Any]) -> None:
         session_id = str(state.get("sessionId") or "")
         if not session_id:
+            return
+        if getattr(self, "_ephemeral_new_chat", False) and not self._session_messages:
             return
         with self.lock:
             self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -2150,7 +2549,10 @@ class LanternBotManager:
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
                 startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
-            child_env = dict(os.environ)
+            from .terminal import _strip_python_venv_env
+            child_env = _strip_python_venv_env(dict(os.environ))
+            child_env["PYTHONIOENCODING"] = "utf-8"
+            child_env["PYTHONUTF8"] = "1"
             child_env["LANTERN_PI_GUARD_STATE"] = str(self.work_store.guard_path)
             child_env["LANTERN_PI_PROCESS_SCOPE"] = self.access_scope
             child_env["LANTERN_PI_PROCESS_TOOLS"] = json.dumps(list(self.bot_config.access_policy(self.access_scope).tools))
@@ -2265,27 +2667,67 @@ class LanternBotManager:
         if not combined_text and not combined_thinking and not combined_tools and not base.get("errorMessage"):
             return None
 
-        content_blocks: list[dict[str, Any]] = []
-        if combined_thinking:
-            content_blocks.append({"type": "thinking", "thinking": combined_thinking})
-        for t in combined_tools:
-            if "result" in t:
-                content_blocks.append({
-                    "type": "toolResult",
-                    "toolCallId": t.get("id", ""),
-                    "toolName": t.get("name", "tool"),
-                    "content": t.get("result", ""),
-                    "isError": bool(t.get("isError")),
-                })
-            else:
-                content_blocks.append({
-                    "type": "toolCall",
-                    "id": t.get("id", ""),
-                    "name": t.get("name", "tool"),
-                    "arguments": t.get("arguments") or {},
-                })
-        if combined_text:
-            content_blocks.append({"type": "text", "text": combined_text})
+        content_blocks: list[dict[str, Any]] = [dict(b) for b in getattr(self, "_turn_stream_blocks", []) if isinstance(b, dict)]
+        if not content_blocks:
+            if combined_thinking:
+                content_blocks.append({"type": "thinking", "thinking": combined_thinking})
+            for t in combined_tools:
+                if "result" in t:
+                    tr_b: dict[str, Any] = {
+                        "type": "toolResult",
+                        "toolCallId": t.get("id", ""),
+                        "toolName": t.get("name", "tool"),
+                        "content": t.get("result", ""),
+                        "isError": bool(t.get("isError")),
+                    }
+                    if isinstance(t.get("details"), dict):
+                        tr_b["details"] = t["details"]
+                    content_blocks.append(tr_b)
+                else:
+                    content_blocks.append({
+                        "type": "toolCall",
+                        "id": t.get("id", ""),
+                        "name": t.get("name", "tool"),
+                        "arguments": t.get("arguments") or {},
+                    })
+            if combined_text:
+                content_blocks.append({"type": "text", "text": combined_text})
+        else:
+            # Ensure any trailing text or tool calls from raw_msg not yet in _turn_stream_blocks are appended chronologically
+            existing_call_ids = {str(b.get("id") or "") for b in content_blocks if b.get("type") == "toolCall" and b.get("id")}
+            existing_res_ids = {str(b.get("toolCallId") or "") for b in content_blocks if b.get("type") == "toolResult" and b.get("toolCallId")}
+            for t in combined_tools:
+                tid = str(t.get("id") or "")
+                if "result" in t:
+                    if not tid or tid not in existing_res_ids:
+                        tr_b = {
+                            "type": "toolResult",
+                            "toolCallId": tid,
+                            "toolName": t.get("name", "tool"),
+                            "content": t.get("result", ""),
+                            "isError": bool(t.get("isError")),
+                        }
+                        if isinstance(t.get("details"), dict):
+                            tr_b["details"] = t["details"]
+                        content_blocks.append(tr_b)
+                        if tid:
+                            existing_res_ids.add(tid)
+                else:
+                    if not tid or tid not in existing_call_ids:
+                        content_blocks.append({
+                            "type": "toolCall",
+                            "id": tid,
+                            "name": t.get("name", "tool"),
+                            "arguments": t.get("arguments") or {},
+                        })
+                        if tid:
+                            existing_call_ids.add(tid)
+            existing_texts = [str(b.get("text") or "").strip() for b in content_blocks if b.get("type") == "text"]
+            for tp in text_parts:
+                tp_clean = tp.strip()
+                if tp_clean and tp_clean not in existing_texts:
+                    content_blocks.append({"type": "text", "text": tp_clean})
+                    existing_texts.append(tp_clean)
 
         result_msg: dict[str, Any] = {
             "role": "assistant",
@@ -2325,6 +2767,10 @@ class LanternBotManager:
                         continue
                 typ = str(event.get("type") or "")
                 if typ == "agent_start":
+                    if not self._turn_assistant_saved and (self._turn_stream_text or self._turn_stream_tools or self._turn_stream_blocks):
+                        prior_built = self._build_turn_assistant_message(None)
+                        if prior_built is not None:
+                            self._append_message_to_session_jsonl(prior_built)
                     self.streaming = True
                     self._turn_had_tool_call = False
                     self._last_stop_reason = ""
@@ -2333,13 +2779,23 @@ class LanternBotManager:
                     self._subturn_stream_text.clear()
                     self._subturn_stream_thinking.clear()
                     self._turn_stream_tools.clear()
+                    self._turn_stream_blocks.clear()
                     self._turn_assistant_saved = False
                 elif typ == "turn_start":
+                    if not self.streaming:
+                        self._turn_stream_text.clear()
+                        self._turn_stream_thinking.clear()
+                        self._turn_stream_tools.clear()
+                        self._turn_stream_blocks.clear()
                     self.streaming = True
                     self._turn_had_tool_call = False
                     self._last_stop_reason = ""
+                    self._turn_assistant_saved = False
                     self._subturn_stream_text.clear()
                     self._subturn_stream_thinking.clear()
+                    if not self._active_turn_session_id:
+                        self._active_turn_session_id = self.current_session_id()
+                        self._active_turn_session_file = self._resolve_session_jsonl_path(session_id=self._active_turn_session_id)
                     # Re-assert active turn scope so multi-turn tool execution (read -> edit -> write)
                     # never loses its localhost/full tool permissions!
                     with self.turn_lock:
@@ -2351,8 +2807,29 @@ class LanternBotManager:
                                 setter(active_sc, self.bot_config.access_policy(active_sc).tools)
                             except Exception:
                                 pass
+                elif typ == "message_start":
+                    raw_start_msg = event.get("message") if isinstance(event.get("message"), dict) else {}
+                    start_role = str(raw_start_msg.get("role") or "assistant")
+                    if start_role == "assistant":
+                        if not self.streaming:
+                            self._turn_stream_text.clear()
+                            self._turn_stream_thinking.clear()
+                            self._turn_stream_tools.clear()
+                            self._turn_stream_blocks.clear()
+                        self.streaming = True
+                        self._turn_assistant_saved = False
+                        self._subturn_stream_text.clear()
+                        self._subturn_stream_thinking.clear()
+                        if not self._active_turn_session_id:
+                            self._active_turn_session_id = self.current_session_id()
+                            self._active_turn_session_file = self._resolve_session_jsonl_path(session_id=self._active_turn_session_id)
                 elif typ in ("message_update", "assistant_delta", "thinking_delta"):
-                    self.streaming = True
+                    if not self.streaming:
+                        self.streaming = True
+                        self._turn_assistant_saved = False
+                        if not self._active_turn_session_id:
+                            self._active_turn_session_id = self.current_session_id()
+                            self._active_turn_session_file = self._resolve_session_jsonl_path(session_id=self._active_turn_session_id)
                     txt_d, think_d = self._extract_stream_deltas(event)
                     if txt_d:
                         self._subturn_stream_text.append(txt_d)
@@ -2368,6 +2845,19 @@ class LanternBotManager:
                         raw_p = str(t_args.get("path") or t_args.get("file_path") or t_args.get("target") or "").strip()
                         if raw_p:
                             self._on_markdown_tool_target(raw_p, is_write=t_name in ("edit", "write"))
+                    # Flush any streamed thinking/text before this tool execution starts
+                    pre_thk = "".join(self._subturn_stream_thinking).strip()
+                    if pre_thk:
+                        self._subturn_stream_thinking.clear()
+                        if not self._turn_stream_thinking or self._turn_stream_thinking[-1] != pre_thk:
+                            self._turn_stream_thinking.append(pre_thk)
+                        self._turn_stream_blocks.append({"type": "thinking", "thinking": pre_thk})
+                    pre_txt = "".join(self._subturn_stream_text).strip()
+                    if pre_txt:
+                        self._subturn_stream_text.clear()
+                        if not self._turn_stream_text or self._turn_stream_text[-1] != pre_txt:
+                            self._turn_stream_text.append(pre_txt)
+                        self._turn_stream_blocks.append({"type": "text", "text": pre_txt})
                     existing_call_ids = {t.get("id") for t in self._turn_stream_tools if "result" not in t and t.get("id")}
                     if not tc_id or tc_id not in existing_call_ids:
                         self._turn_stream_tools.append({
@@ -2375,14 +2865,45 @@ class LanternBotManager:
                             "name": t_name,
                             "arguments": t_args,
                         })
+                    existing_block_call_ids = {str(b.get("id") or "") for b in self._turn_stream_blocks if b.get("type") == "toolCall" and b.get("id")}
+                    if not tc_id or tc_id not in existing_block_call_ids:
+                        self._turn_stream_blocks.append({
+                            "type": "toolCall",
+                            "id": tc_id,
+                            "name": t_name,
+                            "arguments": t_args,
+                        })
                 elif typ == "tool_execution_end":
                     self._turn_had_tool_call = True
-                    self._turn_stream_tools.append({
-                        "id": str(event.get("toolCallId") or event.get("id") or ""),
-                        "name": str(event.get("toolName") or event.get("name") or "result"),
-                        "result": str(event.get("result") or ""),
+                    raw_res = event.get("result")
+                    if isinstance(raw_res, (dict, list)):
+                        try:
+                            res_str = json.dumps(raw_res, ensure_ascii=False)
+                        except Exception:
+                            res_str = str(raw_res)
+                    else:
+                        res_str = str(raw_res or "")
+                    tc_end_id = str(event.get("toolCallId") or event.get("id") or "")
+                    tc_end_name = str(event.get("toolName") or event.get("name") or "result")
+                    tool_entry: dict[str, Any] = {
+                        "id": tc_end_id,
+                        "name": tc_end_name,
+                        "result": res_str,
                         "isError": bool(event.get("isError") or event.get("error")),
-                    })
+                    }
+                    if isinstance(raw_res, dict) and isinstance(raw_res.get("details"), dict):
+                        tool_entry["details"] = raw_res["details"]
+                    self._turn_stream_tools.append(tool_entry)
+                    tr_block_entry: dict[str, Any] = {
+                        "type": "toolResult",
+                        "toolCallId": tc_end_id,
+                        "toolName": tc_end_name,
+                        "content": res_str,
+                        "isError": bool(event.get("isError") or event.get("error")),
+                    }
+                    if isinstance(raw_res, dict) and isinstance(raw_res.get("details"), dict):
+                        tr_block_entry["details"] = raw_res["details"]
+                    self._turn_stream_blocks.append(tr_block_entry)
                     self._emit_work_update(final=False)
                 elif typ == "message_end":
                     self._record_event_usage(event)
@@ -2398,17 +2919,31 @@ class LanternBotManager:
                         self._subturn_stream_thinking.clear()
                         if sub_thk and (not self._turn_stream_thinking or self._turn_stream_thinking[-1] != sub_thk):
                             self._turn_stream_thinking.append(sub_thk)
+                            if not any(b.get("type") == "thinking" and b.get("thinking") == sub_thk for b in self._turn_stream_blocks):
+                                self._turn_stream_blocks.append({"type": "thinking", "thinking": sub_thk})
                         if sub_txt and (not self._turn_stream_text or self._turn_stream_text[-1] != sub_txt):
                             self._turn_stream_text.append(sub_txt)
+                            if not any(b.get("type") == "text" and b.get("text") == sub_txt for b in self._turn_stream_blocks):
+                                self._turn_stream_blocks.append({"type": "text", "text": sub_txt})
                         if parsed_m.get("tools"):
                             self._turn_had_tool_call = True
                             existing_call_ids = {t.get("id") for t in self._turn_stream_tools if "result" not in t and t.get("id")}
+                            existing_block_call_ids = {str(b.get("id") or "") for b in self._turn_stream_blocks if b.get("type") == "toolCall" and b.get("id")}
                             for t in parsed_m["tools"]:
                                 tid = t.get("id")
                                 if "result" in t or not tid or tid not in existing_call_ids:
                                     self._turn_stream_tools.append(t)
                                     if tid and "result" not in t:
                                         existing_call_ids.add(tid)
+                                if "result" not in t and (not tid or tid not in existing_block_call_ids):
+                                    self._turn_stream_blocks.append({
+                                        "type": "toolCall",
+                                        "id": str(tid or ""),
+                                        "name": str(t.get("name") or "tool"),
+                                        "arguments": t.get("arguments") or {},
+                                    })
+                                    if tid:
+                                        existing_block_call_ids.add(str(tid))
                         is_tool_subturn = stop_reason in ("tooluse", "tool_use") or (bool(parsed_m.get("tools")) and not parsed_m.get("text"))
                         if not is_tool_subturn:
                             built = self._build_turn_assistant_message(raw_msg)
@@ -2419,6 +2954,25 @@ class LanternBotManager:
                                 event["message"] = built
                             if stop_reason in ("stop", "end_turn", "length", "error", "aborted"):
                                 self.streaming = False
+                    elif raw_msg:
+                        # Autonomous subagent completion injects a <task-notification> message before waking Main agent
+                        parsed_notif = extract_message_structured(raw_msg)
+                        if parsed_notif.get("subagents"):
+                            if not self._turn_assistant_saved and (self._turn_stream_text or self._turn_stream_tools or self._turn_stream_blocks):
+                                prior_built = self._build_turn_assistant_message(None)
+                                if prior_built is not None:
+                                    self._append_message_to_session_jsonl(prior_built)
+                                    self._turn_assistant_saved = True
+                            event = dict(event)
+                            event["subagentNotifications"] = parsed_notif["subagents"]
+                            # Prepare state for the immediate autonomous assistant wake-up turn
+                            self._turn_assistant_saved = False
+                            self._turn_stream_text.clear()
+                            self._turn_stream_thinking.clear()
+                            self._subturn_stream_text.clear()
+                            self._subturn_stream_thinking.clear()
+                            self._turn_stream_tools.clear()
+                            self._turn_stream_blocks.clear()
                 elif typ == "turn_end":
                     # If this turn executed tools or had stopReason=toolUse, Pi CLI is immediately
                     # starting the next sub-turn (e.g. edit after read). Keep turn scope & lock alive!
@@ -2435,6 +2989,7 @@ class LanternBotManager:
                         self._turn_stream_text.clear()
                         self._turn_stream_thinking.clear()
                         self._turn_stream_tools.clear()
+                        self._turn_stream_blocks.clear()
                         self._emit_work_update(final=True)
                         self._reset_tool_scope()
                         self._schedule_next_steer()
@@ -2450,14 +3005,12 @@ class LanternBotManager:
                     self._turn_stream_text.clear()
                     self._turn_stream_thinking.clear()
                     self._turn_stream_tools.clear()
+                    self._turn_stream_blocks.clear()
                     self._emit_work_update(final=True)
                     self._reset_tool_scope()
                     self._schedule_next_steer()
                 turn_sid_for_event = self._active_turn_session_id or self.current_session_id()
                 self.emit({"type": "chat_bot_event", "event": event, "sessionId": turn_sid_for_event})
-                if typ in ("agent_settled", "agent_end") or (typ == "turn_end" and not self.streaming):
-                    self._active_turn_session_id = ""
-                    self._active_turn_session_file = None
         except (ValueError, OSError):
             pass
         finally:
@@ -2497,10 +3050,13 @@ class LanternBotManager:
             if newly_unsupported:
                 setattr(error, "_retry_without_flags", True)
             with self.lock:
-                waiting = list(self.pending.values())
-                self.pending.clear()
-                if self.proc is proc:
+                is_current_proc = (self.proc is proc)
+                waiting = list(self.pending.values()) if is_current_proc else []
+                if is_current_proc:
+                    self.pending.clear()
                     self.proc = None
+            if not is_current_proc:
+                return
             for item in waiting:
                 item.error = error
                 item.event.set()
@@ -2760,11 +3316,26 @@ class LanternBotManager:
                 })
 
     def get_state(self) -> dict[str, Any]:
+        root_bot = self._parent_bot or self
+        with self.lock:
+            proc_running = self.proc is not None and self.proc.poll() is None
+            if not proc_running and (self._ephemeral_new_chat or self._switched_session_override) and (self.last_state.get("model") or root_bot.last_state.get("model")):
+                model_obj = dict(self.last_state.get("model") or root_bot.last_state.get("model") or {})
+                sid = (self._switched_session_override or {}).get("sessionId") or self.last_state.get("sessionId") or uuid4().hex[:12]
+                sdir = self._scope_session_dir(self.access_scope)
+                sfile = (self._switched_session_override or {}).get("sessionFile") or self.last_state.get("sessionFile") or str((sdir / f"{sid}.jsonl").resolve())
+                if not self.argv_override and not self._switched_session_override:
+                    self._switched_session_override = {"sessionId": sid, "sessionFile": sfile}
+                data = {"sessionId": sid, "sessionFile": sfile, "model": model_obj}
+                self.last_state = dict(data)
+                return data
         response = self.request({"type": "get_state"}, timeout=8.0)
         data = dict(response.get("data")) if isinstance(response.get("data"), dict) else {}
         if self._switched_session_override:
             data["sessionId"] = self._switched_session_override["sessionId"]
             data["sessionFile"] = self._switched_session_override["sessionFile"]
+        if self._pinned_model:
+            data["model"] = dict(self._pinned_model)
         prev_sid = str(self.last_state.get("sessionId") or "")
         new_sid = str(data.get("sessionId") or "")
         self.last_state = dict(data)
@@ -2780,10 +3351,40 @@ class LanternBotManager:
         return data
 
     @staticmethod
-    @staticmethod
-    def _coalesce_transcript_list(raw_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _message_to_chronological_blocks(item: dict[str, Any]) -> list[dict[str, Any]]:
+        content = item.get("content")
+        if isinstance(content, list):
+            return [dict(b) if isinstance(b, dict) else {"type": "text", "text": str(b)} for b in content]
+        struct = extract_message_structured(item)
+        blocks: list[dict[str, Any]] = []
+        if struct["thinking"]:
+            blocks.append({"type": "thinking", "thinking": struct["thinking"]})
+        if struct["text"] and struct["tools"]:
+            blocks.append({"type": "text", "text": struct["text"]})
+        for t in struct["tools"]:
+            if "result" in t:
+                blocks.append({
+                    "type": "toolResult",
+                    "toolCallId": t.get("id", ""),
+                    "toolName": t.get("name", "tool"),
+                    "content": t.get("result", ""),
+                    "isError": bool(t.get("isError")),
+                })
+            else:
+                blocks.append({
+                    "type": "toolCall",
+                    "id": t.get("id", ""),
+                    "name": t.get("name", "tool"),
+                    "arguments": t.get("arguments") or {},
+                })
+        if struct["text"] and not struct["tools"]:
+            blocks.append({"type": "text", "text": struct["text"]})
+        return blocks
+
+    @classmethod
+    def _coalesce_transcript_list(cls, raw_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Coalesce consecutive assistant / toolResult sub-turns into a single unified assistant
-        message per user prompt and drop empty assistant placeholders."""
+        message per user prompt while strictly preserving chronological block order."""
         out: list[dict[str, Any]] = []
         for item in raw_list:
             if not isinstance(item, dict):
@@ -2791,72 +3392,32 @@ class LanternBotManager:
             role = str(item.get("role") or "assistant")
             struct = extract_message_structured(item)
             if role in ("toolResult", "tool"):
-                tool_entry = {
-                    "id": str(item.get("toolCallId") or item.get("toolUseId") or ""),
-                    "name": str(item.get("toolName") or item.get("name") or "result"),
-                    "result": struct["text"],
+                tr_block: dict[str, Any] = {
+                    "type": "toolResult",
+                    "toolCallId": str(item.get("toolCallId") or item.get("toolUseId") or ""),
+                    "toolName": str(item.get("toolName") or item.get("name") or "result"),
+                    "content": struct["text"],
                     "isError": bool(item.get("isError")),
                 }
+                if isinstance(item.get("details"), dict):
+                    tr_block["details"] = item["details"]
                 if out and str(out[-1].get("role") or "") == "assistant":
-                    prev_s = extract_message_structured(out[-1])
-                    prev_tools = list(prev_s["tools"])
-                    prev_tools.append(tool_entry)
-                    blocks: list[dict[str, Any]] = []
-                    if prev_s["thinking"]:
-                        blocks.append({"type": "thinking", "thinking": prev_s["thinking"]})
-                    for t in prev_tools:
-                        if "result" in t:
-                            blocks.append({
-                                "type": "toolResult",
-                                "toolCallId": t.get("id", ""),
-                                "toolName": t.get("name", "tool"),
-                                "content": t.get("result", ""),
-                                "isError": bool(t.get("isError")),
-                            })
-                        else:
-                            blocks.append({
-                                "type": "toolCall",
-                                "id": t.get("id", ""),
-                                "name": t.get("name", "tool"),
-                                "arguments": t.get("arguments") or {},
-                            })
-                    if prev_s["text"]:
-                        blocks.append({"type": "text", "text": prev_s["text"]})
+                    prev_blocks = cls._message_to_chronological_blocks(out[-1])
+                    prev_blocks.append(tr_block)
                     updated = dict(out[-1])
-                    updated["content"] = blocks
+                    updated["content"] = prev_blocks
+                    updated.pop("steps", None)
                     out[-1] = updated
                 continue
             if role == "assistant":
                 if not struct["text"] and not struct["thinking"] and not struct["tools"] and not item.get("errorMessage"):
                     continue
                 if out and str(out[-1].get("role") or "") == "assistant":
-                    prev_s = extract_message_structured(out[-1])
-                    merged_tools = list(prev_s["tools"]) + list(struct["tools"])
-                    merged_thinking = "\n".join(x for x in (prev_s["thinking"], struct["thinking"]) if x).strip()
-                    merged_text = struct["text"] if struct["text"] == prev_s["text"] else "\n\n".join(x for x in (prev_s["text"], struct["text"]) if x).strip()
-                    blocks = []
-                    if merged_thinking:
-                        blocks.append({"type": "thinking", "thinking": merged_thinking})
-                    for t in merged_tools:
-                        if "result" in t:
-                            blocks.append({
-                                "type": "toolResult",
-                                "toolCallId": t.get("id", ""),
-                                "toolName": t.get("name", "tool"),
-                                "content": t.get("result", ""),
-                                "isError": bool(t.get("isError")),
-                            })
-                        else:
-                            blocks.append({
-                                "type": "toolCall",
-                                "id": t.get("id", ""),
-                                "name": t.get("name", "tool"),
-                                "arguments": t.get("arguments") or {},
-                            })
-                    if merged_text:
-                        blocks.append({"type": "text", "text": merged_text})
+                    prev_blocks = cls._message_to_chronological_blocks(out[-1])
+                    new_blocks = cls._message_to_chronological_blocks(item)
                     updated = dict(out[-1])
-                    updated["content"] = blocks if (merged_thinking or merged_tools) else merged_text
+                    updated["content"] = prev_blocks + new_blocks
+                    updated.pop("steps", None)
                     if isinstance(item.get("usage"), dict):
                         updated["usage"] = item["usage"]
                     out[-1] = updated
@@ -2884,7 +3445,9 @@ class LanternBotManager:
 
     def get_messages(self) -> list[dict[str, Any]]:
         with self.lock:
-            if self._switched_session_override and self._session_messages and not self.streaming:
+            if self._ephemeral_new_chat and not self._session_messages and not self.streaming:
+                return []
+            if self._switched_session_override and not self.streaming:
                 return self._coalesce_transcript_list(self._session_messages)
         rpc_msgs: list[dict[str, Any]] = []
         try:
@@ -2978,6 +3541,7 @@ class LanternBotManager:
                 "thinking": thinking_val,
                 "toolCalls": tools_out,
                 "subagents": parsed.get("subagents") or [],
+                "steps": parsed.get("steps") or [],
                 "_msgIndex": idx,
             }
             if text_truncated:
@@ -3161,6 +3725,7 @@ class LanternBotManager:
                 continue
             seen.add(key)
             pub = self._model_public(item)
+            pub["allowedThinking"] = list(policy.allowed_thinking_levels(provider, model_id))
             if f"{provider}/{model_id}" in fav_set:
                 pub["favorite"] = True
             selected.append(pub)
@@ -3272,10 +3837,30 @@ class LanternBotManager:
         }
         if (provider, model_id) not in allowed:
             raise PermissionError("LanternBot provider/model is not allowed by configuration")
-        response = self.request({"type": "set_model", "provider": provider, "modelId": model_id})
+        matched_item = next(
+            (item for item in self.available_models(scope) if item["provider"] == provider and item["id"] == model_id),
+            {"provider": provider, "id": model_id, "name": model_id},
+        )
+        self._pinned_model = dict(matched_item)
+        with self.lock:
+            self.last_state["model"] = dict(self._pinned_model)
+            cur_sid = str((self._switched_session_override or {}).get("sessionId") or self.last_state.get("sessionId") or "").strip()
+            proc_running = self.proc is not None and self.proc.poll() is None
+        response: dict[str, Any] = {"type": "response", "command": "set_model", "success": True, "data": {"model": dict(self._pinned_model)}}
+        if proc_running or self.argv_override:
+            try:
+                response = self.request({"type": "set_model", "provider": provider, "modelId": model_id})
+            except Exception:
+                pass
         if scope == "local":
-            self._save_prefs({"lastModel": {"provider": provider, "id": model_id}})
-        self.last_state = {}
+            prefs_now = self._load_prefs()
+            sess_models = dict(prefs_now.get("sessionModels") or {})
+            if cur_sid:
+                sess_models[cur_sid] = {"provider": provider, "id": model_id}
+            self._save_prefs({
+                "lastModel": {"provider": provider, "id": model_id},
+                "sessionModels": sess_models,
+            })
         self.get_state()
         self.selection_initialized.add(scope)
         return response
@@ -3302,20 +3887,38 @@ class LanternBotManager:
                     return state
             except Exception:
                 pass
+        new_sid = uuid4().hex[:12]
+        sdir = self._scope_session_dir(scope)
+        new_sfile = str((sdir / f"{new_sid}.jsonl").resolve())
         with self.lock:
-            self._switched_session_override = None
+            self._ephemeral_new_chat = True
+            self._last_sent_context_sig = ""
+            if not self.argv_override:
+                self._switched_session_override = {
+                    "sessionId": new_sid,
+                    "sessionFile": new_sfile,
+                }
+                self.last_state["sessionId"] = new_sid
+                self.last_state["sessionFile"] = new_sfile
+            else:
+                self._switched_session_override = None
             self._needs_history_hydration = False
             self._session_messages.clear()
             self._turn_stream_text.clear()
             self._turn_stream_thinking.clear()
             self._turn_stream_tools.clear()
             self._turn_assistant_saved = False
+            proc_running = self.proc is not None and self.proc.poll() is None
         try:
-            self.request({"type": "new_session"}, timeout=6.0)
+            if proc_running or self.argv_override:
+                self.request({"type": "new_session"}, timeout=6.0)
         except Exception:
             pass
         self.selection_initialized.clear()
         state = self.bootstrap_state(scope)
+        if self._switched_session_override:
+            state["sessionId"] = self._switched_session_override["sessionId"]
+            state["sessionFile"] = self._switched_session_override["sessionFile"]
         self.emit({"type": "chat_session_changed", "state": state})
         return state
 
@@ -3347,7 +3950,14 @@ class LanternBotManager:
             raw_msgs = self._load_messages_from_jsonl(cand) if cand.is_file() else []
             prior_messages = self._coalesce_transcript_list(raw_msgs)
         else:
-            prior_messages = self.get_messages() or list(self._session_messages)
+            mem_msgs = self.get_messages() or list(self._session_messages)
+            cur_fp_str = str(self.last_state.get("sessionFile") or "").strip()
+            cur_fp = Path(cur_fp_str) if cur_fp_str else root_bot._find_session_file_in_dir(sdir, self.current_session_id(), "") if hasattr(self, "_parent_bot") else None
+            if cur_fp and cur_fp.is_file():
+                disk_msgs = self._coalesce_transcript_list(self._load_messages_from_jsonl(cur_fp))
+                prior_messages = disk_msgs if len(disk_msgs) >= len(mem_msgs) else mem_msgs
+            else:
+                prior_messages = mem_msgs
 
         if upto_index is not None:
             try:
@@ -3357,6 +3967,14 @@ class LanternBotManager:
             except (TypeError, ValueError):
                 pass
 
+        parent_sid = ""
+        if source_session_path:
+            try:
+                parent_sid = self._extract_session_id_from_file(Path(source_session_path))
+            except Exception:
+                parent_sid = Path(source_session_path).stem
+        if not parent_sid:
+            parent_sid = self.current_session_id()
         fork_sid = f"fork-{int(time.time())}-{uuid4().hex[:6]}"
         fork_path = sdir / f"{fork_sid}.jsonl"
         used_custom_fork = True
@@ -3376,6 +3994,8 @@ class LanternBotManager:
                 "type": "session",
                 "version": 3,
                 "id": fork_sid,
+                "parentSessionId": parent_sid,
+                "forkTurn": (int(upto_index) + 1) if upto_index is not None else len(prior_messages),
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "cwd": str(self._scope_cwd(scope)),
                 "lantern": True,
@@ -3472,6 +4092,8 @@ class LanternBotManager:
                     if len(mirror_msgs) > len(loaded_msgs):
                         loaded_msgs = mirror_msgs
                 with self.lock:
+                    self._ephemeral_new_chat = False
+                    self._last_sent_context_sig = ""
                     self._session_messages = loaded_msgs
                     self._needs_history_hydration = bool(loaded_msgs)
                     self._turn_stream_text.clear()
@@ -3482,7 +4104,17 @@ class LanternBotManager:
                         "sessionId": target_sid,
                         "sessionFile": str(cand),
                     }
-                    if not self.last_state.get("model") and root_bot.last_state.get("model"):
+                    prefs_now = self._load_prefs()
+                    sess_models = prefs_now.get("sessionModels") if isinstance(prefs_now.get("sessionModels"), dict) else {}
+                    saved_m = sess_models.get(target_sid)
+                    if isinstance(saved_m, dict) and saved_m.get("provider") and saved_m.get("id"):
+                        self._pinned_model = {
+                            "provider": str(saved_m["provider"]),
+                            "id": str(saved_m["id"]),
+                            "name": str(saved_m.get("name") or saved_m["id"]),
+                        }
+                        self.last_state["model"] = dict(self._pinned_model)
+                    elif not self.last_state.get("model") and root_bot.last_state.get("model"):
                         self.last_state["model"] = dict(root_bot.last_state["model"])
                     self.last_state["sessionId"] = target_sid
                     self.last_state["sessionFile"] = str(cand)
@@ -4132,10 +4764,18 @@ class LanternBotManager:
             self.emit({"type": "chat_slash_message", "command": "/help", "text": "\n".join(lines)})
             return {"type": "response", "command": "/help", "success": True}
 
-        # Check if command matches any discovered skill (/<skill-name> [args])
+        # Check if command matches any discovered skill (/<skill-name> [args] or /skill:<skill-name> [args])
         skills = self.discover_skills()
+        clean_cmd_name = cmd.lstrip("/")
+        if clean_cmd_name.startswith("skill:"):
+            clean_cmd_name = clean_cmd_name[len("skill:"):].strip()
         matched_skill = next(
-            (s for s in skills if s.get("command", "").lower() == cmd or f"/{s.get('name', '').lower()}" == cmd),
+            (
+                s for s in skills
+                if s.get("command", "").lower() == cmd
+                or s.get("name", "").lower() == clean_cmd_name
+                or s.get("name", "").lower().replace("_", "-") == clean_cmd_name.replace("_", "-")
+            ),
             None,
         )
         if matched_skill:
@@ -4150,15 +4790,18 @@ class LanternBotManager:
         context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         skill_path = Path(str(skill.get("path") or ""))
+        skill_dir = skill_path.parent if skill_path.name.lower() == "skill.md" else skill_path
         skill_body = ""
         try:
             if skill_path.is_file():
-                skill_body = skill_path.read_text(encoding="utf-8", errors="replace")[:32000]
+                skill_body = skill_path.read_text(encoding="utf-8", errors="replace")[:48000]
         except Exception:
             skill_body = ""
-        req_text = user_arg.strip() or f"Apply the '{skill.get('name')}' skill to the current context."
+        req_text = user_arg.strip() or f"Thực hiện đúng theo hướng dẫn của skill '{skill.get('name')}' cho ngữ cảnh hiện tại."
         expanded = (
-            f"<skill_invocation name=\"{skill.get('name', '')}\" path=\"{skill_path}\">\n"
+            f"Trước khi thực hiện, hãy đọc skill liên quan trong: {skill_path}\n"
+            f"Thư mục gốc của skill (dùng để chạy script/reference nếu có): {skill_dir}\n\n"
+            f"<skill_invocation name=\"{skill.get('name', '')}\" path=\"{skill_path}\" dir=\"{skill_dir}\">\n"
             f"{skill_body}\n"
             f"</skill_invocation>\n\n"
             f"{req_text}"
@@ -4304,11 +4947,22 @@ class LanternBotManager:
         wrapped = self.build_prompt(raw_message, normalized)
         rpc_message = wrapped
         with self.lock:
+            self._ephemeral_new_chat = False
+            ctx_target_id = str(normalized.get("logicalPath") or normalized.get("path") or normalized.get("folder") or "")
+            ctx_sig = f"{normalized.get('kind', '')}:{ctx_target_id}"
+            has_turn_specific_ctx = bool(normalized.get("selectedText") or normalized.get("attachments") or normalized.get("line"))
             if not is_slash_cmd and self._needs_history_hydration and self._session_messages:
                 hist_block = self._build_history_hydration_block(self._session_messages)
                 if hist_block:
                     rpc_message = f"{hist_block}\n\n{wrapped}"
                 self._needs_history_hydration = False
+                self._last_sent_context_sig = ctx_sig
+            elif not is_slash_cmd and ctx_sig and ctx_sig == self._last_sent_context_sig and not has_turn_specific_ctx and self._session_messages:
+                # v7.92 Context Deduplication: when staying in the same file without new selection/attachments,
+                # avoid re-sending the full context envelope to save tokens!
+                rpc_message = f"<lantern_context>\nactiveFile: {ctx_target_id} (unchanged)\n</lantern_context>\n\n<user_request>\n{raw_message}\n</user_request>"
+            elif not is_slash_cmd and ctx_sig:
+                self._last_sent_context_sig = ctx_sig
         with self.turn_lock:
             if self._turn_in_progress:
                 raise RuntimeError("LanternBot is already completing a turn")
@@ -4457,14 +5111,31 @@ class LanternBotManager:
             running = self.proc is not None and self.proc.poll() is None
         cur_sid = str((self._switched_session_override or {}).get("sessionId") or state.get("sessionId") or "")
         custom_names = self._load_session_names(scope)
+        allowed_thk = list(policy.allowed_thinking_levels(str(model.get("provider") or ""), str(model.get("id") or "")))
+        cur_thk = str(prefs.get("thinkingLevel") or self.thinking_level)
+        if allowed_thk and cur_thk not in allowed_thk:
+            cur_thk = allowed_thk[0]
+        active_stream_turn = None
+        if self.streaming:
+            full_t = "\n\n".join(x for x in [*self._turn_stream_text, "".join(self._subturn_stream_text)] if x).strip()
+            full_thk = "\n".join(x for x in [*self._turn_stream_thinking, "".join(self._subturn_stream_thinking)] if x).strip()
+            active_stream_turn = {
+                "text": full_t,
+                "thinking": full_thk,
+                "toolCalls": list(self._turn_stream_tools),
+                "hadToolCall": bool(self._turn_had_tool_call),
+                "lastStopReason": str(self._last_stop_reason or ""),
+            }
         return {
             "running": running,
             "streaming": bool(self.streaming),
+            "activeStreamTurn": active_stream_turn,
             "sessionId": cur_sid,
             "sessionName": custom_names.get(cur_sid, ""),
             "model": self._model_public(model) if model else None,
             "favorites": list(prefs.get("favorites") or []),
-            "thinkingLevel": str(prefs.get("thinkingLevel") or self.thinking_level),
+            "thinkingLevel": cur_thk,
+            "allowedThinking": allowed_thk,
             "toolPreset": "full" if policy.is_full_tools else "restricted",
             "customSystemPrompt": str(prefs.get("customSystemPrompt") or ""),
             "useGlobalSkills": bool(prefs.get("useGlobalSkills", True)),

@@ -198,7 +198,7 @@
     }
     if (mode === 'visual' || mode === 'paged') {
       const paged = globalThis.__lanternMdPaged;
-      const host = document.querySelector('.md-visual-host .ProseMirror');
+      const host = document.querySelector('.md-visual-host .md-docx-surface, .md-visual-host .ProseMirror');
       return captureVisual(host, preview, mode === 'paged' ? paged : null);
     }
     return capturePreview(preview);
@@ -278,7 +278,7 @@
         const target = sourceOffsetToPage(paged.source, bookmark.line, paged.index);
         if (target >= 0 && target !== paged.pageNumber && !await paged.go(target)) return false;
       }
-      const host = document.querySelector('.md-visual-host .ProseMirror');
+      const host = document.querySelector('.md-visual-host .md-docx-surface, .md-visual-host .ProseMirror');
       if (!host) return false;
       const instance = mode === 'visual' && !paged?.active &&
         globalThis.__lanternMdVisual?.state?.instance;
@@ -303,30 +303,27 @@
     return false;
   }
   function installPreviewContextMenu() {
-    const preview = document.querySelector('article.md-preview');
-    if (!preview?.querySelector('[data-l]')) return;
-    let menu;
-    const cleanup = () => { menu?.remove(); menu = null; };
-    preview.addEventListener('contextmenu', event => {
+    // v9.24: In Preview mode, right-clicking images or text stays 100% normal (native browser context menu).
+    // Only in Edit visually mode (view.mode === 'visual') does right-clicking an image or text jump to Source!
+    document.addEventListener('contextmenu', event => {
+      const visualApi = globalThis.__lanternMdVisual;
+      const mode = visualApi?.state?.mode;
+      if (mode !== 'visual') return;
+      const targetOrigin = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
+      if (!targetOrigin) return;
+      const inVisualSurface = targetOrigin.closest('.md-docx-surface, .md-visual-host');
+      if (!inVisualSurface || targetOrigin.closest('.md-docx-bottom-dock, .md-docx-ribbon, .md-docx-table-bar, .md-hunk-actions, .md-hunk-floating-pill')) return;
       const selected = normalize(globalThis.getSelection?.()?.toString());
-      if (!selected) return;
-      const bookmark = capturePreview(preview);
-      if (!bookmark?.selectedText) return;
-      event.preventDefault();cleanup();
-      const button = document.createElement('button');
-      button.type = 'button';button.className = 'btn';
-      button.textContent = 'Edit selection in Visual';
-      button.style.cssText = 'position:fixed;z-index:99';
-      button.style.left = Math.max(4, Math.min(innerWidth - 220, event.clientX)) + 'px';
-      button.style.top = Math.max(4, Math.min(innerHeight - 40, event.clientY)) + 'px';
-      button.addEventListener('click', () => {
-        cleanup();void globalThis.__lanternMdVisual?.open('visual', {...bookmark,flash:true});
-      });
-      document.body.append(button);menu = button;
+      const lBlock = targetOrigin.closest('[data-l]');
+      const lineNo = Math.max(1, Number(lBlock?.getAttribute('data-l')) || Number(visualApi?.state?.lastActiveLine) || 1);
+      const bookmark = anchorFromElement(targetOrigin) || { line: lineNo, blockTag: lBlock?.tagName || 'P', text: normalize(lBlock?.textContent || '').slice(0, 512), ordinal: 0 };
+      if (selected && !bookmark.selectedText && selected.length <= 512) {
+        bookmark.selectedText = selected;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void visualApi.open('source', { ...bookmark, line: bookmark.line || lineNo, flash: true });
     });
-    document.addEventListener('click', e => {
-      if (menu && !menu.contains(e.target)) cleanup();
-    }, true);
   }
   const api = {offsetForLine, lineForOffset, closestLine, normalizedText:normalize,
     sourceSelection, selectLine, anchorFromElement, captureViewport, capture,

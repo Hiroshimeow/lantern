@@ -153,13 +153,36 @@ const diffGutter = gutter({
 });
 
 const sourceTheme = EditorView.theme({
-  '&': {height: '100%', minHeight: '78vh', display: 'flex', flexDirection: 'column', flex: '1'},
+  '&': {height: '100%', minHeight: '78vh', display: 'flex', flexDirection: 'column', flex: '1', color: '#f1f5f9', backgroundColor: '#0b121e'},
   '.cm-scroller': {overflow: 'auto', flex: '1', height: '100%', minHeight: '78vh'},
   '.cm-content': {
     fontFamily: 'ui-monospace,SFMono-Regular,Consolas,monospace',
-    fontSize: '13px',
-    lineHeight: '1.6',
-    caretColor: '#dce7f5',
+    fontSize: '13.5px',
+    lineHeight: '1.65',
+    color: '#f1f5f9',
+    caretColor: '#fbbf24',
+  },
+  '.cm-cursor, .cm-dropCursor': {
+    borderLeftColor: '#fbbf24 !important',
+    borderLeftWidth: '2.5px !important',
+  },
+  '.cm-activeLine': {
+    backgroundColor: 'rgba(56, 189, 248, 0.14) !important',
+    boxShadow: 'inset 3px 0 #38bdf8',
+  },
+  '.cm-activeLineGutter': {
+    backgroundColor: 'rgba(56, 189, 248, 0.22) !important',
+    color: '#bae6fd !important',
+    fontWeight: '700',
+  },
+  '.cm-selectionBackground, ::selection': {
+    backgroundColor: 'rgba(59, 130, 246, 0.42) !important',
+  },
+  '.cm-selectionMatch': {
+    backgroundColor: 'rgba(250, 204, 21, 0.24) !important',
+    outline: '1px solid rgba(250, 204, 21, 0.68)',
+    borderRadius: '3px',
+    color: '#fef9c3 !important',
   },
 });
 
@@ -265,9 +288,30 @@ function createSourceMarkdown(parent, content, onChange, onAction, options = {})
       view.destroy();
     },
     setHunks(hunks) {
+      const head = view.state.selection.main.head;
+      const scroller = view.scrollDOM;
+      const paneScroller = view.dom.closest('[data-pane-role]') || scroller;
+      let beforeTop = null;
+      try {
+        const c0 = view.coordsAtPos(head);
+        if (c0) beforeTop = c0.top;
+      } catch (_) {}
       view.dispatch({
         effects: setHunksEffect.of({hunks: Array.isArray(hunks) ? hunks : [], action: onAction}),
       });
+      if (beforeTop !== null) {
+        try {
+          const c1 = view.coordsAtPos(head);
+          if (c1) {
+            const dy = c1.top - beforeTop;
+            if (Math.abs(dy) > 1) {
+              if (scroller.scrollHeight > scroller.clientHeight + 2) scroller.scrollTop += dy;
+              else if (paneScroller && paneScroller.scrollHeight > paneScroller.clientHeight + 2) paneScroller.scrollTop += dy;
+              else window.scrollBy(0, dy);
+            }
+          }
+        } catch (_) {}
+      }
     },
     hasPendingPatches() {
       return !!inflight || !pendingChanges.empty;

@@ -369,7 +369,6 @@ class LanternV4UpgradesTests(unittest.TestCase):
         chat_js = (ROOT / "static" / "chatbot.js").read_text(encoding="utf-8")
         shell_js = (ROOT / "static" / "markdown_visual_shell.js").read_text(encoding="utf-8")
         shell_css = (ROOT / "static" / "markdown_visual_shell.css").read_text(encoding="utf-8")
-        crepe_vendor = (ROOT / "static" / "vendor" / "lantern-crepe.min.js").read_text(encoding="utf-8")
         yaml_copy = (ROOT / "lan_drive_config.yaml_copy").read_text(encoding="utf-8")
 
         # Pillar 1: YAML-based Backend Policy (no editable tool mode in UI Settings, default Localhost Full/YOLO '*')
@@ -387,7 +386,7 @@ class LanternV4UpgradesTests(unittest.TestCase):
         self.assertIn('tools: ["*"]', yaml_copy)
 
         # Pillar 2: Milkdown Raw Format Protection (AST/Block-level + Line-level reconciliation in Node)
-        self.assertIn("isCleanFromMount", crepe_vendor)
+        self.assertFalse((ROOT / "static" / "vendor" / "lantern-crepe.min.js").exists())
         self.assertIn("LanternReconcileMarkdown", shell_js)
         node_test = """
         global.window = {};
@@ -472,20 +471,18 @@ class LanternV4UpgradesTests(unittest.TestCase):
         shell_css = (ROOT / "static" / "markdown_visual_shell.css").read_text(encoding="utf-8")
         src_vendor = (ROOT / "static" / "vendor" / "lantern-source-editor.min.js").read_text(encoding="utf-8")
 
-        # Bug 1: Visual Edit bundle (lantern-crepe.min.js) loads and exports createVisualMarkdown without SyntaxError
-        crepe_check = """
+        # Bug 1 (Updated for v9.0 Zero-Milkdown): Source Edit bundle loads and exports createSourceMarkdown without SyntaxError
+        source_check = """
         const el = () => ({ style: {}, setAttribute: () => {}, appendChild: () => {}, innerHTML: "", textContent: "" });
         global.window = { customElements: { get: () => true, define: () => {} } };
         global.customElements = global.window.customElements;
         global.HTMLElement = class {};
         global.document = { documentElement: el(), createElement: el, head: el(), body: el() };
         global.navigator = { userAgent: "Mozilla/5.0" };
-        require("./static/vendor/lantern-crepe.min.js");
         require("./static/vendor/lantern-source-editor.min.js");
-        if (typeof global.window.LanternCrepe?.createVisualMarkdown !== "function") process.exit(1);
         if (typeof global.window.LanternSourceEditor?.createSourceMarkdown !== "function") process.exit(1);
         """
-        subprocess.run(["node", "-e", crepe_check], cwd=str(ROOT), check=True)
+        subprocess.run(["node", "-e", source_check], cwd=str(ROOT), check=True)
 
         # Bug 2: flashFocusSyncTarget never appends 📍 Line X DOM badges into CodeMirror / ProseMirror contenteditable
         self.assertNotIn("📍 Line", shell_js)

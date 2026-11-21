@@ -47,6 +47,7 @@ class WebSocketPeer:
                 pass
         self.closed = False
         self.subscriptions: set[str] = set()
+        self.chat_session_ids: set[str] = set()
         self.protocol = "pending"  # v2 opt-in; stale browser tabs get legacy fallback
         self._send_q: "queue.Queue[bytes | None]" = queue.Queue()
         self._queue_lock = threading.Lock()
@@ -642,18 +643,28 @@ class WebSocketHub:
                 msg_shared_sid = str(message.get("sharedSessionId") or "").strip()
                 msg_cid = str(message.get("clientSessionId") or "").strip()
                 peer_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
+                peer_cids = set(getattr(peer, "chat_session_ids", set()) or set())
+                if peer_cid:
+                    peer_cids.add(peer_cid)
                 peer_scope = _chat_scope(peer)
                 root_chat = getattr(self, "chat", None)
                 if root_chat is not None and hasattr(root_chat, "peek_session_bot") and (msg_runtime_id or msg_shared_sid):
-                    peer_bot = root_chat.peek_session_bot(peer_cid, scope=peer_scope)
-                    if peer_bot is not None:
-                        if msg_runtime_id and getattr(peer_bot, "runtime_id", "") != msg_runtime_id:
-                            continue
-                        if not msg_runtime_id and msg_shared_sid and peer_bot.current_session_id() != msg_shared_sid:
-                            continue
+                    matched_cid = ""
+                    cand_cids = [msg_cid] if (msg_cid and msg_cid in peer_cids) else list(peer_cids or [peer_cid])
+                    for c_cid in cand_cids:
+                        p_bot = root_chat.peek_session_bot(c_cid, scope=peer_scope)
+                        if p_bot is not None:
+                            if msg_runtime_id and getattr(p_bot, "runtime_id", "") != msg_runtime_id:
+                                continue
+                            if not msg_runtime_id and msg_shared_sid and p_bot.current_session_id() != msg_shared_sid:
+                                continue
+                            matched_cid = c_cid
+                            break
+                    if matched_cid or (not peer_cids and root_chat.peek_session_bot("", scope=peer_scope) is not None):
                         out_msg = dict(client_message)
-                        if peer_cid:
-                            out_msg["clientSessionId"] = peer_cid
+                        eff_out_cid = matched_cid or msg_cid or peer_cid
+                        if eff_out_cid:
+                            out_msg["clientSessionId"] = eff_out_cid
                         else:
                             out_msg.pop("clientSessionId", None)
                         try:
@@ -662,10 +673,11 @@ class WebSocketHub:
                             self.remove(peer)
                             peer.close()
                         continue
-                    elif msg_shared_sid:
-                        continue
+                    elif msg_runtime_id or msg_shared_sid:
+                        if not msg_cid or (peer_cid != msg_cid and msg_cid not in peer_cids):
+                            continue
                 if msg_cid:
-                    if peer_cid != msg_cid:
+                    if peer_cid != msg_cid and msg_cid not in peer_cids:
                         continue
                 else:
                     if peer_cid and peer_cid != "default":
@@ -925,6 +937,8 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         raw_cid = str(msg.get("clientSessionId") or "").strip()
         if raw_cid:
             setattr(peer, "chat_session_id", raw_cid)
+            if hasattr(peer, "chat_session_ids"):
+                peer.chat_session_ids.add(raw_cid)
         active_cid = str(getattr(peer, "chat_session_id", "") or "").strip()
         if hasattr(root_chat, "get_session_bot"):
             try:
@@ -1033,11 +1047,14 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             scope=scope,
         )
         is_sync_slash = bool(isinstance(prompt_res, dict) and prompt_res.get("slashHandled"))
-        peer.send({
+        accepted_pkt: Dict[str, Any] = {
             "type": "chat_prompt_accepted",
             "reqId": msg.get("reqId"),
-            "slashHandled": is_sync_slash,
-        })
+            "clientSessionId": active_cid,
+        }
+        if is_sync_slash:
+            accepted_pkt["slashHandled"] = True
+        peer.send(accepted_pkt)
         if is_shared_rt and hasattr(chat, "emit"):
             try:
                 chat.emit({
@@ -1077,7 +1094,7 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         return
     if typ == "chat_abort":
         chat.abort()
-        peer.send({"type": "chat_aborted"})
+        peer.send({"type": "chat_aborted", "clientSessionId": active_cid})
         return
     if typ == "chat_new":
         if hasattr(root_chat, "select_shared_session"):
@@ -1095,6 +1112,7 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             state = chat.new_session(scope)
         peer.send({
             "type": "chat_state",
+            "clientSessionId": active_cid,
             "isNew": True,
             "state": state,
             "summary": chat.summary(scope),
@@ -1111,6 +1129,7 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         )
         peer.send({
             "type": "chat_model_changed",
+            "clientSessionId": active_cid,
             "state": chat.get_state(),
             "summary": chat.summary(scope),
         })
@@ -1133,7 +1152,10 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         })
         return
     if typ == "chat_set_thinking":
-        res = chat.set_thinking_level(str(msg.get("level") or "medium")) if hasattr(chat, "set_thinking_level") else {"ok": True}
+        try:
+            res = chat.set_thinking_level(str(msg.get("level") or "medium"), scope=scope) if hasattr(chat, "set_thinking_level") else {"ok": True}
+        except TypeError:
+            res = chat.set_thinking_level(str(msg.get("level") or "medium"))
         peer.send({"type": "chat_prefs_changed", **res, "summary": chat.summary(scope)})
         return
     if typ == "chat_set_tool_mode":
@@ -1171,6 +1193,7 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
         )
         peer.send({
             "type": "chat_state",
+            "clientSessionId": active_cid,
             "state": state,
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),
@@ -1204,25 +1227,54 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             "sessionName": new_title,
         })
         return
-    if typ == "chat_delete_session":
+    if typ == "chat_get_fork_checkpoints":
         sid = str(msg.get("sessionId") or "").strip()
         spath = str(msg.get("sessionPath") or "").strip()
-        target_sc = str(msg.get("sessionScope") or "").strip().lower() or None
-        if hasattr(chat, "delete_session"):
-            try:
-                res = chat.delete_session(
-                    sid,
-                    session_path=spath,
-                    scope=target_sc or scope,
-                    viewer_scope=peer_scope,
-                )
-            except TypeError:
-                res = chat.delete_session(sid, session_path=spath, scope=scope)
+        target_sc = str(msg.get("sessionScope") or "").strip().lower() or scope
+        if hasattr(chat, "get_fork_checkpoints"):
+            res = chat.get_fork_checkpoints(session_id=sid, session_path=spath, scope=target_sc)
         else:
-            res = {"ok": False}
+            res = {"ok": True, "checkpoints": [], "totalTurns": 0}
+        peer.send({
+            "type": "chat_fork_checkpoints",
+            "clientSessionId": active_cid,
+            **res,
+        })
+        return
+    if typ in ("chat_delete_session", "chat_delete_sessions"):
+        items = msg.get("items") or msg.get("sessions")
+        sids = msg.get("sessionIds")
+        del_children = bool(msg.get("deleteChildren"))
+        target_sc = str(msg.get("sessionScope") or "").strip().lower() or None
+        if isinstance(items, list) and items and hasattr(chat, "delete_sessions"):
+            res = chat.delete_sessions(items, scope=target_sc or scope, viewer_scope=peer_scope, delete_children=del_children)
+            deleted_ids = res.get("deletedSessionIds") or []
+            sid = deleted_ids[0] if deleted_ids else ""
+        elif isinstance(sids, list) and sids and hasattr(chat, "delete_sessions"):
+            res = chat.delete_sessions([{"sessionId": x} for x in sids], scope=target_sc or scope, viewer_scope=peer_scope, delete_children=del_children)
+            deleted_ids = res.get("deletedSessionIds") or [str(x) for x in sids]
+            sid = deleted_ids[0] if deleted_ids else ""
+        else:
+            sid = str(msg.get("sessionId") or "").strip()
+            spath = str(msg.get("sessionPath") or "").strip()
+            deleted_ids = [sid] if sid else []
+            if hasattr(chat, "delete_session"):
+                try:
+                    res = chat.delete_session(
+                        sid,
+                        session_path=spath,
+                        scope=target_sc or scope,
+                        viewer_scope=peer_scope,
+                        delete_children=del_children,
+                    )
+                except TypeError:
+                    res = chat.delete_session(sid, session_path=spath, scope=scope)
+            else:
+                res = {"ok": False}
         if res.get("wasCurrent"):
             peer.send({
                 "type": "chat_state",
+                "clientSessionId": active_cid,
                 "isNew": True,
                 "state": res.get("state") or chat.bootstrap_state(scope),
                 "summary": chat.summary(scope),
@@ -1232,8 +1284,10 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
             })
         peer.send({
             "type": "chat_sessions_list",
+            "clientSessionId": active_cid,
             "sessions": _viewer_sessions(),
             "deletedSessionId": sid,
+            "deletedSessionIds": deleted_ids,
         })
         return
     if typ == "chat_switch_session":
@@ -1274,14 +1328,15 @@ def dispatch(peer, msg, terminal, scm, hub=None, chat=None, pi=None):
                     state.update(chat._switched_session_override)
             else:
                 state = chat.switch_session(target_arg, scope) if hasattr(chat, "switch_session") else chat.bootstrap_state(scope)
-        switch_limit = max(1, min(50, int(msg.get("limit") or 8)))
+        switch_limit = max(1, min(100, int(msg.get("limit") or 36)))
         page_data = (
-            chat.get_messages_page(limit_messages=switch_limit, max_bytes=128_000, tool_preview_chars=1200)
+            chat.get_messages_page(limit_messages=switch_limit, max_bytes=512_000, tool_preview_chars=1200)
             if hasattr(chat, "get_messages_page")
             else {"messages": chat.get_messages()}
         )
         peer.send({
             "type": "chat_state",
+            "clientSessionId": active_cid,
             "state": state,
             "summary": chat.summary(scope),
             "models": chat.available_models(scope),

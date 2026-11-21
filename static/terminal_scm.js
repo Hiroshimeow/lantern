@@ -8,7 +8,9 @@ const utf8Length=s=>new TextEncoder().encode(String(s??'')).length;
 const isReplayContinuous=(snapshotUtf8,startUtf8,endUtf8)=>Number.isSafeInteger(snapshotUtf8)&&Number.isSafeInteger(startUtf8)&&Number.isSafeInteger(endUtf8)&&startUtf8>=0&&endUtf8>=startUtf8&&snapshotUtf8>=startUtf8&&snapshotUtf8<=endUtf8;
 const isTouch=()=>!!(globalThis.matchMedia?.('(pointer: coarse)')?.matches||globalThis.navigator?.maxTouchPoints);
 const nextFrame=cb=>(globalThis.requestAnimationFrame||((fn)=>setTimeout(fn,0)))(cb);
-function replayWrite(t,out){const tok=t.replayTok=(t.replayTok||0)+1;t.term.reset();if(!out){t.replaying=false;return}t.replaying=true;try{t.term.write(out,()=>{if(t.replayTok===tok)t.replaying=false})}catch(_){if(t.replayTok===tok)t.replaying=false}}
+function appendTermHistory(t,chunk){if(!chunk)return;t.outputHistory=(t.outputHistory||"")+String(chunk);if(t.outputHistory.length>160000)t.outputHistory=t.outputHistory.slice(-120000)}
+function writeTermBoth(t,data){if(!data)return;appendTermHistory(t,data);try{t.term?.write(data)}catch(_){}try{t.mirror?.term?.write(data)}catch(_){}}
+function replayWrite(t,out){const tok=t.replayTok=(t.replayTok||0)+1;t.outputHistory=String(out||"");if(t.outputHistory.length>160000)t.outputHistory=t.outputHistory.slice(-120000);try{t.term?.reset()}catch(_){}try{t.mirror?.term?.reset()}catch(_){}if(!out){t.replaying=false;return}t.replaying=true;try{t.term?.write(out,()=>{if(t.replayTok===tok)t.replaying=false})}catch(_){if(t.replayTok===tok)t.replaying=false}try{t.mirror?.term?.write(out)}catch(_){}}
 function connect(){clearTimeout(S.retry);const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?v=2');S.ws=ws;ws.onopen=()=>{S.connected=true;S.termListReady=false;S.serverProtocol=null;S.subscribed=null;S.delay=300;status('online','Connected');if(S.view==='git')refreshScm(true,true)};ws.onclose=()=>{S.connected=false;S.termListReady=false;S.subscribed=null;for(const t of S.terms.values()){t.seq=null;t.replayStartUtf8=null;t.streamUtf8=null;t.pendingChunks?.clear();if(t.pending){t.pending=false;t.meta.running=false;t.meta.startInterrupted=true}}if(terminalShown()&&!activeLive())S.autoOpenPending=true;status('error','Reconnecting');const immediate=S.reconnectAfterLogin;S.reconnectAfterLogin=false;S.retry=setTimeout(connect,immediate?0:S.delay);if(!immediate)S.delay=Math.min(5000,Math.round(S.delay*1.6))};ws.onerror=()=>{try{ws.close()}catch(_){}};ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(_){return}onMessage(m)}}
 function onMessage(m){
  if(m.type==='terminal_auth'){
@@ -22,11 +24,11 @@ function onMessage(m){
    return;
  }
  if(m.type==='terminal_snapshot'){if(terminalLocked()){S.auth.authenticated=true;S.auth.required=false;updateAuthUI()}S.serverProtocol='legacy';S.termListReady=true;const seen=new Set();for(const meta of m.terminals||[]){seen.add(meta.id);const t=ensure(meta,false);t.meta={...t.meta,...meta};if(!t.term)mount(t);replayWrite(t,m.output?.[meta.id]||'')}for(const[id,t]of S.terms)if(!seen.has(id))dispose(id,false);choose();renderTabs();if(S.autoOpenPending){S.autoOpenPending=false;if(terminalShown()&&!activeLive())newTerminal()}return}
- if(m.type==='terminal_list'){if(terminalLocked()){S.auth.authenticated=true;S.auth.required=false;updateAuthUI()}if(!S.serverProtocol)S.serverProtocol='v2';const seen=new Set();for(const meta of m.terminals||[]){seen.add(meta.id);const old=S.terms.get(meta.id);const previousGeneration=old?.meta.generation;const t=ensure(meta,false);if(previousGeneration&&meta.generation!==previousGeneration){t.seq=null;t.replayStartUtf8=null;t.streamUtf8=null;t.pendingChunks.clear();if(S.subscribed===meta.id)S.subscribed=null}t.meta={...t.meta,...meta};t.pending=false}for(const[id,t]of S.terms)if(!seen.has(id)&&!t.pending)dispose(id,false);S.termListReady=true;choose();if(S.autoOpenPending){S.autoOpenPending=false;if(terminalShown()&&!activeLive())newTerminal()}return}
- if(m.type==='terminal_created'){const t=S.terms.get(m.terminalId);if(t){t.meta={...t.meta,...(m.meta||{})};t.pending=false;renderTabs();subscribeActive()}return}
+ if(m.type==='terminal_list'){if(terminalLocked()){S.auth.authenticated=true;S.auth.required=false;updateAuthUI()}if(!S.serverProtocol)S.serverProtocol='v2';const seen=new Set();for(const meta of m.terminals||[]){seen.add(meta.id);const old=S.terms.get(meta.id);const previousGeneration=old?.meta.generation;const t=ensure(meta,false);if(previousGeneration&&meta.generation!==previousGeneration){t.seq=null;t.replayStartUtf8=null;t.streamUtf8=null;t.pendingChunks.clear();if(S.subscribed===meta.id)S.subscribed=null}t.meta={...t.meta,...meta};t.pending=false;if(t.inLanbot&&globalThis.LanternChat?.updateTerminalTabLabel)globalThis.LanternChat.updateTerminalTabLabel(t.meta.id,t.meta.title||t.meta.id)}for(const[id,t]of S.terms)if(!seen.has(id)&&!t.pending)dispose(id,false);S.termListReady=true;choose();if(S.autoOpenPending){S.autoOpenPending=false;if(terminalShown()&&!activeLive())newTerminal()}return}
+ if(m.type==='terminal_created'){const t=S.terms.get(m.terminalId);if(t){t.meta={...t.meta,...(m.meta||{})};t.pending=false;if(t.inLanbot&&globalThis.LanternChat?.updateTerminalTabLabel)globalThis.LanternChat.updateTerminalTabLabel(t.meta.id,t.meta.title||t.meta.id);renderTabs();subscribeActive()}return}
  if(m.type==='terminal_replay'){const t=S.terms.get(m.terminalId);if(!t||S.subscribed!==m.terminalId||t.meta.generation!==m.meta?.generation)return;if(!t.term)mount(t);t.seq=m.seq;t.replayStartUtf8=Number.isSafeInteger(m.replayStartUtf8)?m.replayStartUtf8:null;t.streamUtf8=Number.isSafeInteger(m.replayEndUtf8)?m.replayEndUtf8:null;for(const seq of t.pendingChunks.keys())if(seq<=t.seq)t.pendingChunks.delete(seq);replayWrite(t,(m.truncated?'[Earlier terminal history omitted from display; preserved on server]\r\n':'')+String(m.output||''));flushChunks(t);return}
- if(m.type==='terminal_output'){const t=S.terms.get(m.terminalId);if(S.serverProtocol==='legacy'){if(t?.term)t.term.write(String(m.data||''));return}if(!t||S.subscribed!==m.terminalId||!t.term||t.meta.generation!==m.generation)return;if(!Number.isSafeInteger(m.seq)){const data=String(m.data||'');t.term.write(data);if(Number.isSafeInteger(t.streamUtf8))t.streamUtf8+=utf8Length(data);return}if(t.seq!==null&&m.seq<=t.seq)return;t.pendingChunks.set(m.seq,String(m.data||''));if(t.pendingChunks.size>256){t.pendingChunks.clear();t.seq=null;S.subscribed=null;subscribeActive();return}flushChunks(t);return}
- if(m.type==='terminal_exit'){const t=S.terms.get(m.terminalId);if(t){t.meta.running=false;t.meta.exitCode=m.exitCode;if(t.term)t.term.write('\r\n\x1b[90m[Process exited'+(m.exitCode==null?'':' with code '+m.exitCode)+']\x1b[0m\r\n');if((t.meta.command||'').trim().startsWith('git '))setTimeout(()=>refreshScm(true,true),120)}renderTabs();return}
+ if(m.type==='terminal_output'){const t=S.terms.get(m.terminalId);if(S.serverProtocol==='legacy'){if(t)writeTermBoth(t,String(m.data||''));return}if(!t||S.subscribed!==m.terminalId||!t.term||t.meta.generation!==m.generation)return;if(!Number.isSafeInteger(m.seq)){const data=String(m.data||'');writeTermBoth(t,data);if(Number.isSafeInteger(t.streamUtf8))t.streamUtf8+=utf8Length(data);return}if(t.seq!==null&&m.seq<=t.seq)return;t.pendingChunks.set(m.seq,String(m.data||''));if(t.pendingChunks.size>256){t.pendingChunks.clear();t.seq=null;S.subscribed=null;subscribeActive();return}flushChunks(t);return}
+ if(m.type==='terminal_exit'){const t=S.terms.get(m.terminalId);if(t){t.meta.running=false;t.meta.exitCode=m.exitCode;writeTermBoth(t,'\r\n\x1b[90m[Process exited'+(m.exitCode==null?'':' with code '+m.exitCode)+']\x1b[0m\r\n');if((t.meta.command||'').trim().startsWith('git '))setTimeout(()=>refreshScm(true,true),120)}renderTabs();return}
  if(m.type==='terminal_error'){
   if(m.code==='terminal_auth_required'){
     S.auth.required=true;S.auth.authenticated=false;
@@ -46,8 +48,8 @@ function onMessage(m){
  if(m.type==='scm_data'){const done=S.scm.pending.get(m.reqId);if(done){S.scm.pending.delete(m.reqId);done(m)}return}
  if(m.type==='scm_changed'){if(S.view==='git')refreshScm(true,true)}
 }
-function flushChunks(t){if(t.seq===null||!t.term)return;while(t.pendingChunks.has(t.seq+1)){const data=t.pendingChunks.get(t.seq+1);t.pendingChunks.delete(t.seq+1);t.seq++;t.term.write(data);if(Number.isSafeInteger(t.streamUtf8))t.streamUtf8+=utf8Length(data)}}
-function terminalShown(){return S.view==='terminal'&&q('#termDrawer')?.classList.contains('show')}
+function flushChunks(t){if(t.seq===null||!t.term)return;while(t.pendingChunks.has(t.seq+1)){const data=t.pendingChunks.get(t.seq+1);t.pendingChunks.delete(t.seq+1);t.seq++;writeTermBoth(t,data);if(Number.isSafeInteger(t.streamUtf8))t.streamUtf8+=utf8Length(data)}}
+function terminalShown(){const dShow=S.view==='terminal'&&q('#termDrawer')?.classList.contains('show');const lbShow=Boolean(S.active&&S.terms.get(S.active)?.inLanbot&&document.getElementById('lanternChatDrawer')?.classList.contains('open'));return Boolean(dShow||lbShow)}
 function unsubscribeActive(){if(S.serverProtocol==='legacy')return;const id=S.subscribed;if(!id)return;S.subscribed=null;send({type:'terminal_unsubscribe',terminalId:id});const t=S.terms.get(id);if(t){t.seq=null;t.replayStartUtf8=null;t.streamUtf8=null;t.pendingChunks.clear()}}
 function subscribeActive(){if(S.serverProtocol!=='v2')return;const id=S.active;if(!terminalShown()||!id||S.subscribed===id||!S.connected)return;const t=S.terms.get(id);if(!t||t.pending||!t.meta.generation)return;unsubscribeActive();t.seq=null;t.pendingChunks.clear();if(send({type:'terminal_subscribe',terminalId:id}))S.subscribed=id}
 
@@ -67,14 +69,14 @@ function updateAuthUI(){
     if(isLoc){
       lockBtn.classList.remove('hidden');
       if(S.auth.lanLocked){
-        lockBtn.textContent=S.auth.lanSessions>0?`🔓 Unlock LAN (${S.auth.lanSessions} active)`:'🔓 Unlock LAN';
-        lockBtn.title='LAN currently requires password. Click to unlock LAN (allow LAN access without password).';
+        lockBtn.textContent=S.auth.lanSessions>0?`🔒 LAN Lock (${S.auth.lanSessions} active)`:'🔒 LAN Lock';
+        lockBtn.title='Current state: LAN Lock (password required). Click to switch to LAN Unlocked.';
       }else if(S.auth.lanSessions>0){
-        lockBtn.textContent=`🔒 Lock LAN (${S.auth.lanSessions} active)`;
-        lockBtn.title='Revoke active LAN sessions and require password for LAN clients.';
+        lockBtn.textContent=`🔓 LAN Unlocked (${S.auth.lanSessions} active)`;
+        lockBtn.title='Current state: LAN Unlocked. Click to switch to LAN Lock and revoke active LAN sessions.';
       }else{
-        lockBtn.textContent='🔒 Lock LAN';
-        lockBtn.title='Require password for LAN clients and revoke previous LAN logins.';
+        lockBtn.textContent='🔓 LAN Unlocked';
+        lockBtn.title='Current state: LAN Unlocked. Click to switch to LAN Lock.';
       }
     }else{
       lockBtn.classList.toggle('hidden',!S.auth.required||locked);
@@ -156,11 +158,11 @@ async function lockTerminal(){
   if(S.ws&&S.ws.readyState!==WebSocket.CLOSED){S.reconnectAfterLogin=true;S.ws.close()}
 }
 function initDrawer(){const d=q('#termDrawer');if(!d)return;d.innerHTML=[
-'<div id="lxResize" class="term-resize-handle"></div><div class="lx-head"><div class="lx-view-tabs"><button id="lxViewTerm" class="lx-view-btn active">Terminal</button><button id="lxViewGit" class="lx-view-btn">Git</button></div><div id="lxTermTabs" class="lx-term-tabs"></div><div class="lx-head-actions"><button id="lxNewTerm" class="term-btn" aria-label="New terminal" title="New terminal">＋</button><button id="lxRenameTerm" class="term-btn" aria-label="Rename terminal" title="Rename terminal">Rename</button><button id="lxKillTerm" class="term-btn danger" aria-label="Close terminal" title="Close terminal">×</button><button id="lxFull" class="term-btn" aria-label="Toggle fullscreen" title="Toggle fullscreen">⛶</button><button id="lxHide" class="term-btn" aria-label="Hide terminal" title="Hide terminal">—</button></div></div>',
+'<div id="lxResize" class="term-resize-handle"></div><div class="lx-head"><div class="lx-view-tabs"><button id="lxViewTerm" class="lx-view-btn active">Terminal</button><button id="lxViewGit" class="lx-view-btn">Git</button></div><div id="lxTermTabs" class="lx-term-tabs"></div><div class="lx-head-actions"><button id="lxMoveToLanbot" class="term-btn" aria-label="Move this terminal to Lanbot" title="Move this terminal to Lanbot (Ter1, Ter2…)">↗ Move to Lanbot</button><button id="lxNewTerm" class="term-btn" aria-label="New terminal" title="New terminal">＋</button><button id="lxRenameTerm" class="term-btn" aria-label="Rename terminal" title="Rename terminal">Rename</button><button id="lxKillTerm" class="term-btn danger" aria-label="Close terminal" title="Close terminal">×</button><button id="lxFull" class="term-btn" aria-label="Toggle fullscreen" title="Toggle fullscreen">⛶</button><button id="lxHide" class="term-btn" aria-label="Hide terminal" title="Hide terminal">—</button></div></div>',
 '<div id="lxTerminalView" class="lx-terminal-view"><form id="lxTermAuth" class="lx-auth hidden"><strong>Terminal locked</strong><p id="lxTermAuthHint">Enter the password created on the Lantern host.</p><label for="lxTermPassword">Terminal password</label><input id="lxTermPassword" type="password" autocomplete="current-password" required><button id="lxTermAuthSubmit" type="submit">Unlock Terminal</button><div id="lxTermAuthMessage" role="status" aria-live="polite"></div></form><div id="lxTermStack" class="lx-term-stack"></div><div id="lxMobileKeys" class="lx-mobile-keys" aria-label="Terminal keys"><button data-mod="ctrl">Ctrl</button><button data-mod="alt">Alt</button><button data-key="Escape">Esc</button><button data-key="Tab">Tab</button><button data-key="ArrowLeft">←</button><button data-key="ArrowUp">↑</button><button data-key="ArrowDown">↓</button><button data-key="ArrowRight">→</button><button data-key="Backspace">⌫</button></div></div>',
 '<div id="lxScmView" class="lx-scm-view hidden"><div class="lx-scm-toolbar"><strong>Source Control</strong><span id="lxBranchChip" class="lx-branch-chip">—</span><select id="lxBranchSelect" class="select"></select><button id="lxSwitchBranch" class="btn small">Switch</button><button id="lxPull" class="btn small">Pull</button><button id="lxPush" class="btn small">Push</button><button id="lxScmRefresh" class="btn small">↻</button></div><div class="lx-scm-body" id="lxScmBody"><aside class="lx-scm-sidebar" id="lxScmSidebar"><div class="lx-scm-tabs"><button data-scm-tab="changes" class="active">Changes</button><button data-scm-tab="history">History</button></div><div id="lxScmList" class="lx-scm-list"></div><div class="lx-commit"><textarea id="lxCommitMsg" rows="2" placeholder="Commit message"></textarea><div><button id="lxCommit" class="btn small">Commit</button><button id="lxCommitAll" class="btn small primary">Commit All</button></div></div></aside><div id="lxScmDivider" class="lx-scm-divider"></div><section id="lxScmDetail" class="lx-scm-detail"><div class="lx-empty">Select a file or commit</div></section></div></div>',
 '<div class="lx-footer"><button id="lxTermLock" class="lx-logout hidden" type="button">Lock Terminal</button><span id="lxConn" data-state="idle">Disconnected</span><span id="lxDims"></span></div>'].join('');
- q('#lxViewTerm').onclick=()=>setView('terminal');q('#lxViewGit').onclick=()=>setView('git');q('#lxNewTerm').onclick=newTerminal;q('#lxKillTerm').onclick=()=>S.active&&closeTerm(S.active);q('#lxRenameTerm').onclick=renameActive;q('#lxFull').onclick=()=>{d.classList.toggle('full');fitActive(false)};q('#lxHide').onclick=hide;q('#lxScmRefresh').onclick=()=>refreshScm(false,true);q('#lxPull').onclick=()=>runGit('git pull','git pull');q('#lxPush').onclick=()=>runGit('git push','git push');q('#lxSwitchBranch').onclick=switchBranch;q('#lxCommit').onclick=()=>commit(false);q('#lxCommitAll').onclick=()=>commit(true);q('#lxScmView').addEventListener('click',scmClick);initResize();initDivider();initMobileKeys();initVisualViewport();
+ q('#lxViewTerm').onclick=()=>setView('terminal');q('#lxViewGit').onclick=()=>setView('git');if(q('#lxMoveToLanbot'))q('#lxMoveToLanbot').onclick=()=>S.active&&moveTerminalToLanbot(S.active);q('#lxNewTerm').onclick=newTerminal;q('#lxKillTerm').onclick=()=>S.active&&closeTerm(S.active);q('#lxRenameTerm').onclick=renameActive;q('#lxFull').onclick=()=>{d.classList.toggle('full');fitActive(false)};q('#lxHide').onclick=hide;q('#lxScmRefresh').onclick=()=>refreshScm(false,true);q('#lxPull').onclick=()=>runGit('git pull','git pull');q('#lxPush').onclick=()=>runGit('git push','git push');q('#lxSwitchBranch').onclick=switchBranch;q('#lxCommit').onclick=()=>commit(false);q('#lxCommitAll').onclick=()=>commit(true);q('#lxScmView').addEventListener('click',scmClick);initResize();initDivider();initMobileKeys();initVisualViewport();
  q('#lxTermAuth')?.addEventListener('submit',unlockTerminal);
  q('#lxTermLock')?.addEventListener('click',lockTerminal);
  updateAuthUI();
@@ -171,13 +173,13 @@ function show(v='terminal'){const d=q('#termDrawer');if(!d)return;d.classList.ad
 function activeLive(){const t=S.active?S.terms.get(S.active):null;return !!(t&&t.meta.running!==false)}
 function toggleTerminal(){const d=q('#termDrawer');if(!d)return;if(d.classList.contains('show')&&S.view==='terminal')hide();else openTerminal()}
 function openTerminal(){show('terminal');if(terminalLocked())return;if(!S.termListReady){S.autoOpenPending=true;return}if(!activeLive())newTerminal()}function toggleGit(){show('git')}function hide(){S.autoOpenPending=false;unsubscribeActive();q('#termDrawer')?.classList.remove('show')}
-function makeX(meta){if(!globalThis.Terminal||!globalThis.FitAddon?.FitAddon)throw new Error('xterm assets failed to load');const host=document.createElement('div');host.className='lx-xterm-host hidden';host.dataset.termId=meta.id;q('#lxTermStack').appendChild(host);const term=new Terminal({cursorBlink:true,scrollback:8000,fontSize:13,fontFamily:'"Cascadia Mono","JetBrains Mono",Consolas,ui-monospace,monospace',theme:{background:'#050709',foreground:'#e6edf3',cursor:'#73d18a',selectionBackground:'#315c44'}});const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(host);const state={meta:{...meta},term,fit,host,ro:null,pending:false,replaying:false,replayTok:0,lastCols:0,lastRows:0,fitQueued:false,resizeTimer:null,replayStartUtf8:null,streamUtf8:null};term.attachCustomKeyEventHandler(ev=>{if(ev.type!=='keydown')return true;const current=S.terms.get(meta.id);if(!current||current.pending||current.meta.running===false){ev.preventDefault?.();return false}const k=(ev.key||'').toLowerCase();if(S.mobileMods.ctrl||S.mobileMods.alt){send({type:'terminal_key',terminalId:meta.id,key:ev.key,modifiers:{ctrl:S.mobileMods.ctrl,alt:S.mobileMods.alt,shift:ev.shiftKey}});clearMobileMods();ev.preventDefault?.();return false}if((ev.ctrlKey||ev.metaKey)&&k==='v')return false;if(ev.ctrlKey&&!ev.shiftKey&&!ev.altKey&&k==='c'&&term.hasSelection()){const ta=term.textarea;if(ta){ta.value=term.getSelection();ta.select();setTimeout(()=>{ta.value='';if(!isTouch())term.focus()},0)}return false}return true});term.onData(data=>{const current=S.terms.get(meta.id);if(!current||current.replaying||current.pending||current.meta.running===false)return;if(document.hidden&&data!=='\x1b[O')return;send({type:'terminal_input',terminalId:meta.id,data})});const ro=new ResizeObserver(()=>{if(!host.classList.contains('hidden')&&host.offsetWidth>0&&host.offsetHeight>0)scheduleFit(state,false)});state.ro=ro;ro.observe(host);return state}
+function makeX(meta){if(!globalThis.Terminal||!globalThis.FitAddon?.FitAddon)throw new Error('xterm assets failed to load');const host=document.createElement('div');host.className='lx-xterm-host hidden';host.dataset.termId=meta.id;q('#lxTermStack').appendChild(host);const term=new Terminal({cursorBlink:true,scrollback:8000,fontSize:13,fontFamily:'"Cascadia Mono","JetBrains Mono",Consolas,ui-monospace,monospace',theme:{background:'#050709',foreground:'#e6edf3',cursor:'#73d18a',selectionBackground:'#315c44'}});const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(host);const state={meta:{...meta},term,fit,host,ro:null,pending:false,replaying:false,replayTok:0,lastCols:0,lastRows:0,fitQueued:false,resizeTimer:null,replayStartUtf8:null,streamUtf8:null};term.attachCustomKeyEventHandler(ev=>{if(ev.type!=='keydown')return true;const current=S.terms.get(meta.id);if(!current||current.pending||current.meta.running===false){ev.preventDefault?.();return false}const k=(ev.key||'').toLowerCase();if(S.mobileMods.ctrl||S.mobileMods.alt){if(S.mobileMods.ctrl&&k==='backspace'){send({type:'terminal_input',terminalId:meta.id,data:'\x17'});clearMobileMods();ev.preventDefault?.();return false}send({type:'terminal_key',terminalId:meta.id,key:ev.key,modifiers:{ctrl:S.mobileMods.ctrl,alt:S.mobileMods.alt,shift:ev.shiftKey}});clearMobileMods();ev.preventDefault?.();return false}if(ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&k==='backspace'){ev.preventDefault?.();send({type:'terminal_input',terminalId:meta.id,data:'\x17'});return false}if(ev.altKey&&!ev.ctrlKey&&!ev.metaKey&&k==='backspace'){ev.preventDefault?.();send({type:'terminal_input',terminalId:meta.id,data:'\x1b\x7f'});return false}if(ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&k==='delete'){ev.preventDefault?.();send({type:'terminal_input',terminalId:meta.id,data:'\x1bd'});return false}if(ev.shiftKey&&!ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&k==='enter'){ev.preventDefault?.();send({type:'terminal_input',terminalId:meta.id,data:'\x1b\r'});return false}if((ev.ctrlKey||ev.metaKey)&&k==='v')return false;if(ev.ctrlKey&&!ev.shiftKey&&!ev.altKey&&k==='c'&&term.hasSelection()){const ta=term.textarea;if(ta){ta.value=term.getSelection();ta.select();setTimeout(()=>{ta.value='';if(!isTouch())term.focus()},0)}return false}return true});host.addEventListener?.('paste',ev=>{const current=S.terms.get(meta.id);if(!current||current.replaying||current.pending||current.meta.running===false)return;const raw=ev.clipboardData?.getData('text/plain');if(!raw)return;if(/[\r\n]/.test(raw)){ev.preventDefault();ev.stopPropagation();const normalized=raw.replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/\n+$/,'');if(!normalized)return;const hasBracketed=Boolean(term.modes?.bracketedPasteMode||term._core?.coreService?.decPrivateModes?.bracketedPasteMode);const payload=normalized.includes('\n')?(hasBracketed?('\x1b[200~'+normalized.replace(/\n/g,'\r')+'\x1b[201~'):normalized.replace(/\n/g,'\x1b\r')):normalized;send({type:'terminal_input',terminalId:meta.id,data:payload});setTimeout(()=>{try{term.scrollToBottom()}catch(_){}},25);}},true);term.onData(data=>{const current=S.terms.get(meta.id);if(!current||current.replaying||current.pending||current.meta.running===false)return;if(document.hidden&&data!=='\x1b[O')return;send({type:'terminal_input',terminalId:meta.id,data})});const ro=new ResizeObserver(()=>{if(!host.classList.contains('hidden')&&host.offsetWidth>0&&host.offsetHeight>0)scheduleFit(state,false)});state.ro=ro;ro.observe(host);return state}
 function ensure(meta,pending=false){let t=S.terms.get(meta.id);if(!t){t={meta:{...meta},term:null,fit:null,host:null,ro:null,pending,seq:null,pendingChunks:new Map(),replaying:false,replayTok:0,replayStartUtf8:null,streamUtf8:null};S.terms.set(meta.id,t)}else{t.meta={...t.meta,...meta};if(!pending)t.pending=false}return t}
 function mount(t){if(t.term)return;const pending=t.pending;const fresh=makeX(t.meta);Object.assign(t,fresh);t.pending=pending;t.pendingChunks=t.pendingChunks||new Map();t.seq=null;t.replayStartUtf8=null;t.streamUtf8=null}
-function dispose(id,kill=false){const t=S.terms.get(id);if(!t)return;if(S.subscribed===id)unsubscribeActive();if(kill)send({type:'terminal_kill',terminalId:id});try{t.ro?.disconnect();t.term?.dispose();t.host?.remove()}catch(_){}S.terms.delete(id);if(S.active===id)S.active=null}
+function dispose(id,kill=false){const t=S.terms.get(id);if(!t)return;if(S.subscribed===id)unsubscribeActive();if(kill)send({type:'terminal_kill',terminalId:id});try{t.ro?.disconnect();t.term?.dispose();t.host?.remove()}catch(_){}try{t.mirror?.ro?.disconnect();t.mirror?.term?.dispose();t.mirror?.host?.remove();t.mirror=null}catch(_){}if(t.inLanbot){t.inLanbot=false;try{globalThis.LanternChat?.detachTerminalTab?.(id,true)}catch(_){}}S.terms.delete(id);if(S.active===id)S.active=null}
 function choose(){if(S.active&&S.terms.has(S.active)){if(terminalShown())activate(S.active);else renderTabs();return}const ids=[...S.terms.keys()];S.active=ids.length?ids[ids.length-1]:null;if(S.active&&terminalShown())activate(S.active);else renderTabs()}
 function activate(id){const t=S.terms.get(id);if(!t)return;S.active=id;if(terminalShown()&&!t.term)mount(t);for(const[tid,x]of S.terms)if(x.host)x.host.classList.toggle('hidden',tid!==id);renderTabs();if(terminalShown()){if(t.term)scheduleFit(t,!isTouch());subscribeActive()}}
-function renderTabs(){const r=q('#lxTermTabs');if(!r)return;r.innerHTML='';for(const[id,t]of S.terms){const b=document.createElement('button');b.className='lx-term-tab'+(id===S.active?' active':'');b.innerHTML='<span class="'+(t.meta.running===false?'exit':'run')+'">'+(t.meta.running===false?'○':'●')+'</span> '+esc(t.meta.title||id);b.onclick=()=>{setView('terminal');activate(id)};r.appendChild(b)}}
+function renderTabs(){const r=q('#lxTermTabs');if(!r)return;r.innerHTML='';for(const[id,t]of S.terms){const b=document.createElement('button');b.className='lx-term-tab'+(id===S.active?' active':'');b.innerHTML='<span class="'+(t.meta.running===false?'exit':'run')+'">'+(t.meta.running===false?'○':'●')+'</span> '+esc(t.meta.title||id)+(t.inLanbot?' <small style="opacity:.75" title="Mirrored in Lanbot">⇄</small>':'');b.onclick=()=>{setView('terminal');activate(id)};r.appendChild(b)}}
 function newTerminal(){show('terminal');if(terminalLocked())return;const id=uid(),meta={id,title:'Terminal '+([...S.terms.values()].filter(t=>!t.meta.command).length+1),cwd:cwd(),running:true,exitCode:null},t=ensure(meta,true);S.active=id;activate(id);setTimeout(()=>{try{t.fit.fit();dims(t.term)}catch(_){}if(!send({type:'terminal_create',terminalId:id,title:meta.title,cwd:cwd(),cols:t.term.cols||80,rows:t.term.rows||24})){dispose(id);toast?.('WebSocket is not connected')}},20)}
 function closeTerm(id){send({type:'terminal_kill',terminalId:id});dispose(id);choose();renderTabs()}function renameActive(){const t=S.active?S.terms.get(S.active):null;if(!t)return;const n=prompt('Terminal name',t.meta.title||'');if(n?.trim())send({type:'terminal_rename',terminalId:t.meta.id,title:n.trim()})}
 function scheduleFit(t,focus=false){if(!t?.term||t.fitQueued)return;t.fitQueued=true;nextFrame(()=>{t.fitQueued=false;if(!t.host||t.host.classList.contains('hidden')||t.host.offsetWidth<=0||t.host.offsetHeight<=0)return;try{t.fit.fit();dims(t.term);if(focus&&!isTouch())t.term.focus();if(t.pending)return;const cols=t.term.cols,rows=t.term.rows;if(t.lastCols===cols&&t.lastRows===rows)return;t.lastCols=cols;t.lastRows=rows;clearTimeout(t.resizeTimer);t.resizeTimer=setTimeout(()=>send({type:'terminal_resize',terminalId:t.meta.id,cols,rows}),60)}catch(_){}})}
@@ -201,6 +203,140 @@ function runGit(title,command){if(terminalLocked()){show('terminal');toast?.('Un
 function commit(all){const box=q('#lxCommitMsg'),msg=box?.value.trim();if(!msg)return;runGit('git commit',gitCmd(all?'commit_all':'commit',{message:msg}));box.value=''}function switchBranch(){const sel=q('#lxBranchSelect');if(!sel?.value)return;const opt=sel.selectedOptions[0],remote=opt?.dataset.remote;runGit('git checkout',gitCmd(remote?'checkout_remote':'checkout',{branch:sel.value,remote}))}
 function initDivider(){const div=q('#lxScmDivider'),body=q('#lxScmBody');if(!div||!body)return;const KEY='lantern:scm-sidebar-width',clamp=n=>Math.max(220,Math.min(Number(n)||300,Math.max(220,body.clientWidth-260)));body.style.setProperty('--scm-sidebar-w',clamp(Number(localStorage.getItem(KEY)||300))+'px');let x=0,w=0;const move=e=>{if(w)body.style.setProperty('--scm-sidebar-w',clamp(w+e.clientX-x)+'px')},up=()=>{if(!w)return;const n=Math.round(q('#lxScmSidebar').getBoundingClientRect().width);localStorage.setItem(KEY,String(n));w=0;removeEventListener('pointermove',move);removeEventListener('pointerup',up)};div.addEventListener('pointerdown',e=>{x=e.clientX;w=q('#lxScmSidebar').getBoundingClientRect().width;e.preventDefault();addEventListener('pointermove',move);addEventListener('pointerup',up)});div.addEventListener('dblclick',()=>{body.style.setProperty('--scm-sidebar-w','300px');localStorage.setItem(KEY,'300')})}
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.code==='Backquote'){e.preventDefault();toggleTerminal()}if(e.altKey&&e.key==='Enter'&&q('#termDrawer')?.classList.contains('show')){e.preventDefault();q('#termDrawer').classList.toggle('full');setTimeout(fitActive,30)}});setInterval(()=>{if(S.view==='git'&&!document.hidden&&q('#termDrawer')?.classList.contains('show'))refreshScm(true,false)},60000);addEventListener('beforeunload',()=>{try{S.ws?.close()}catch(_){}});
-globalThis.toggleTerminal=toggleTerminal;globalThis.openTerminal=openTerminal;globalThis.newTerminalSession=newTerminal;globalThis.termHide=hide;globalThis.toggleGit=toggleGit;globalThis.__lanternTerminalScm={state:S,buildGitCommand:gitCmd,shellQuote:quote,refreshScm,loadHistory,handleMessage:onMessage,utf8Length,isReplayContinuous};
+function makeMirrorX(t){
+  if(t.mirror&&t.mirror.term&&t.mirror.host)return t.mirror;
+  if(!globalThis.Terminal||!globalThis.FitAddon?.FitAddon)return null;
+  const host=document.createElement("div");
+  host.className="lx-xterm-host lx-mirror-host hidden";
+  host.dataset.termId=t.meta.id;
+  const term=new Terminal({cursorBlink:true,scrollback:8000,fontSize:13,fontFamily:'"Cascadia Mono","JetBrains Mono",Consolas,ui-monospace,monospace',theme:{background:"#050709",foreground:"#e6edf3",cursor:"#73d18a",selectionBackground:"#315c44"}});
+  const fit=new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  if(t.outputHistory){
+    try{term.write(t.outputHistory)}catch(_){}
+  }
+  term.attachCustomKeyEventHandler(ev=>{
+    if(ev.type!=="keydown")return true;
+    const current=S.terms.get(t.meta.id);
+    if(!current||current.pending||current.meta.running===false){ev.preventDefault?.();return false}
+    const k=(ev.key||"").toLowerCase();
+    if(ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&k==="backspace"){ev.preventDefault?.();send({type:"terminal_input",terminalId:t.meta.id,data:"\x17"});return false}
+    if(ev.altKey&&!ev.ctrlKey&&!ev.metaKey&&k==="backspace"){ev.preventDefault?.();send({type:"terminal_input",terminalId:t.meta.id,data:"\x1b\x7f"});return false}
+    if(ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&k==="delete"){ev.preventDefault?.();send({type:"terminal_input",terminalId:t.meta.id,data:"\x1bd"});return false}
+    if(ev.shiftKey&&!ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&k==="enter"){ev.preventDefault?.();send({type:"terminal_input",terminalId:t.meta.id,data:"\x1b\r"});return false}
+    if((ev.ctrlKey||ev.metaKey)&&k==="v")return false;
+    if(ev.ctrlKey&&!ev.shiftKey&&!ev.altKey&&k==="c"&&term.hasSelection()){
+      const ta=term.textarea;
+      if(ta){ta.value=term.getSelection();ta.select();setTimeout(()=>{ta.value="";if(!isTouch())term.focus()},0)}
+      return false;
+    }
+    return true;
+  });
+  host.addEventListener?.("paste",ev=>{
+    const current=S.terms.get(t.meta.id);
+    if(!current||current.replaying||current.pending||current.meta.running===false)return;
+    const raw=ev.clipboardData?.getData("text/plain");
+    if(!raw)return;
+    if(/[\r\n]/.test(raw)){
+      ev.preventDefault();ev.stopPropagation();
+      const normalized=raw.replace(/\r\n/g,"\n").replace(/\r/g,"\n").replace(/\n+$/,"");
+      if(!normalized)return;
+      const hasBracketed=Boolean(term.modes?.bracketedPasteMode||term._core?.coreService?.decPrivateModes?.bracketedPasteMode);
+      const payload=normalized.includes("\n")?(hasBracketed?("\x1b[200~"+normalized.replace(/\n/g,"\r")+"\x1b[201~"):normalized.replace(/\n/g,"\x1b\r")):normalized;
+      send({type:"terminal_input",terminalId:t.meta.id,data:payload});
+      setTimeout(()=>{try{term.scrollToBottom()}catch(_){}},25);
+    }
+  },true);
+  term.onData(data=>{
+    const current=S.terms.get(t.meta.id);
+    if(!current||current.replaying||current.pending||current.meta.running===false)return;
+    if(document.hidden&&data!=="\x1b[O")return;
+    send({type:"terminal_input",terminalId:t.meta.id,data});
+  });
+  const mirrorState={term,fit,host,ro:null,fitQueued:false};
+  const ro=new ResizeObserver(()=>{
+    if(!host.classList.contains("hidden")&&host.offsetWidth>0&&host.offsetHeight>0){
+      scheduleMirrorFit(t,false);
+    }
+  });
+  mirrorState.ro=ro;
+  ro.observe(host);
+  t.mirror=mirrorState;
+  return mirrorState;
+}
+function scheduleMirrorFit(t,focus=false){
+  const m=t?.mirror;
+  if(!m?.term||m.fitQueued)return;
+  m.fitQueued=true;
+  nextFrame(()=>{
+    m.fitQueued=false;
+    if(!m.host||m.host.classList.contains("hidden")||m.host.offsetWidth<=0||m.host.offsetHeight<=0)return;
+    try{
+      m.fit.fit();
+      if(focus&&!isTouch())m.term.focus();
+      if(!q("#termDrawer")?.classList.contains("show")&&!t.pending){
+        const cols=m.term.cols,rows=m.term.rows;
+        if(t.lastCols!==cols||t.lastRows!==rows){
+          t.lastCols=cols;t.lastRows=rows;
+          clearTimeout(t.resizeTimer);
+          t.resizeTimer=setTimeout(()=>send({type:"terminal_resize",terminalId:t.meta.id,cols,rows}),60);
+        }
+      }
+    }catch(_){}
+  });
+}
+function getLanbotTerminals(){return[...S.terms.values()].filter(t=>Boolean(t.inLanbot))}
+function moveTerminalToLanbot(id){
+  const t=S.terms.get(id||S.active);
+  if(!t)return null;
+  if(!t.term)mount(t);
+  const mirror=makeMirrorX(t);
+  if(!mirror)return null;
+  const label=t.meta.title||t.meta.id||"Terminal";
+  t.lanbotLabel=label;
+  t.inLanbot=true;
+  S.active=t.meta.id;
+  renderTabs();
+  if(globalThis.LanternChat?.attachTerminalTab){
+    globalThis.LanternChat.attachTerminalTab(t.meta.id,label,mirror.host,()=>{
+      scheduleMirrorFit(t,!isTouch());
+      scheduleFit(t,false);
+      subscribeActive();
+    });
+  }
+  return t.meta.id;
+}
+function returnTerminalFromLanbot(id){
+  const t=S.terms.get(id);
+  if(!t)return;
+  t.inLanbot=false;
+  try{
+    t.mirror?.ro?.disconnect();
+    t.mirror?.term?.dispose();
+    t.mirror?.host?.remove();
+    t.mirror=null;
+  }catch(_){}
+  renderTabs();
+  if(terminalShown()&&S.active===id){
+    scheduleFit(t,!isTouch());
+    subscribeActive();
+  }
+}
+function activateLanbotTerminal(id){
+  const t=S.terms.get(id);
+  if(!t)return;
+  if(!t.term)mount(t);
+  const mirror=makeMirrorX(t);
+  S.active=id;
+  mirror?.host?.classList.remove("hidden");
+  scheduleMirrorFit(t,!isTouch());
+  subscribeActive();
+}
+function openNewTerminalInLanbot(){
+  openTerminal();
+  setTimeout(()=>{if(S.active)moveTerminalToLanbot(S.active)},60);
+}
+globalThis.toggleTerminal=toggleTerminal;globalThis.openTerminal=openTerminal;globalThis.newTerminalSession=newTerminal;globalThis.termHide=hide;globalThis.toggleGit=toggleGit;globalThis.__lanternTerminalScm={state:S,buildGitCommand:gitCmd,shellQuote:quote,refreshScm,loadHistory,handleMessage:onMessage,utf8Length,isReplayContinuous,moveTerminalToLanbot,returnTerminalFromLanbot,activateLanbotTerminal,openNewTerminalInLanbot,getLanbotTerminals};
 initDrawer();connect();
 })();

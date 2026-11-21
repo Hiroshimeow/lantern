@@ -12,6 +12,37 @@ A local-first file manager for the browser: **files, Markdown visual editing, ac
 >
 > Naturally, it now has a Git panel, a Markdown editor, a PDF viewer and a terminal. Scope creep has excellent taste.
 
+## 🚀 Nâng cấp Toàn diện Lantern v9.24 — Hybrid DOCX Visual Studio & Core Pi Super Agent
+
+Phiên bản **Lantern v9.24** khôi phục đầy đủ **3 Mode Markdown (`Preview` · `Edit visually` · `Source`)** không dùng Milkdown và hoàn thiện kiến trúc **Core Pi + Lantern Display + Native Terminal**:
+
+- **Khôi phục 3 Mode Markdown (`Preview`, `Edit visually`, `Source`) — Bỏ hoàn toàn Milkdown**:
+  - **`Preview`**: Giữ nguyên tốc độ đọc/duyệt nhanh, In-Cell Table Diff và chỉnh sửa nhanh tại chỗ.
+  - **`Edit visually` (Phương án 1 kết hợp 3 — Trực quan như chỉnh sửa `.docx`)**: Thay thế hoàn toàn Milkdown bằng **DOCX-Style Visual Studio** (`createDocxHybridVisualEditor`) gồm thanh công cụ định dạng nổi kiểu Word/Docs (`Undo/Redo`, `P`, `H1..H3`, `Quote`, `Callout`, `Code`, `B/I/S`, `Highlight`, `Link`, `List/Task`, `+Table`, `+Block`), thanh **Table Studio** ngữ cảnh (`+Row ↑/↓`, `−Row`, `+Col ←/→`, `−Col`, căn lề cột `Left/Center/Right`), nút di chuyển/nhân bản/xóa khối (`↑`, `↓`, `⧉`, `🗑`) và nút **`⌨ Hybrid Syntax` (`Alt+M`)** kết hợp Phương án 1 + 3 để bung nhanh cú pháp Markdown gốc của từng khối ngay trên trang Visual.
+  - **`Source`**: Giữ nguyên trình soạn thảo CodeMirror 6 tốc độ cao cùng Parallel Split (`1 Pane`, `E ∥ P`, `S ∥ P`, `S ∥ E`).
+- **Tinh gọn Lanbot theo trục Core Pi + Hiển thị Lantern + Terminal Gốc**:
+  - **Loại bỏ hoàn toàn Mode Todo cũ** (`#lcTodoBtn` / `#lcTodoPopover`).
+  - **Hiển thị `[skill] <skill list>` chuẩn 1 dòng duy nhất**: Không còn xếp chồng nhiều hộp xanh bên dưới và không bắt nhầm danh sách file khi tool liệt kê thư mục.
+  - **Khắc phục triệt để lỗi các tab `#bot(session)` bị giữ chung 1 Model & lỗi khi chuyển tab liên tục**: Mỗi tab `#bot1`, `#bot2` (`clientSessionId` / `sessionId`) lưu giữ độc lập `provider / model` riêng trên cả Frontend Snapshot lẫn Backend (`_pinned_model` & `sessionModels`), đồng thời xử lý bất đồng bộ các gói tin nền khi người dùng chuyển đổi liên tục giữa các tab.
+
+## 🚀 Nâng cấp Toàn diện Lantern v9.0 — AI Editor & Super Agent Harness ("Harness Everything")
+
+Phiên bản **Lantern v9.0** định hình kiến trúc **AI Editor & Coding Assistant Super Agent Platform** với lõi Pi-native và hệ thống **Unified 3-Way State Harness**:
+
+- **Tinh giản Markdown về 2 Mode chuẩn xác (`Preview` & `Source`)**:
+  - **Mode 1 · `Preview` (kèm Live Preview Method 1 & In-Cell Table Diff)**: Hiển thị HTML hoàn chỉnh, Mermaid và **In-Cell Table Diff** trực tiếp trong từng ô `<td>`/`<th>`. Hỗ trợ **Method 1 Live Preview Unfolding**: nhấp đúp vào bất kỳ đoạn văn, tiêu đề, danh sách hoặc ô bảng nào ngay trên trang Preview để bung cú pháp Markdown tại chỗ và chỉnh sửa tức thì mà không cần chuyển mode.
+  - **Mode 2 · `Source` (Raw Markdown như VSCode)**: Giữ nguyên trình soạn thảo mã nguồn Markdown thuần túy trên CodeMirror 6 với đánh số dòng, highlight cú pháp và hiệu năng cao.
+  - **Zero-Lock `temp_user` Isolation**: Mọi thao tác gõ ở cả 2 mode đều chỉ ghi vào `.user_draft.md` (`userDraft: true`), tuyệt đối không ghi đè file thật trên đĩa trước khi bấm `Ctrl+S` hoặc `✓ Save`, loại bỏ hoàn toàn xung đột `409 Conflict` khi Lanbot đang chạy.
+- **Chuẩn hóa Diff 3 Trường hợp (Đúng màu ngữ nghĩa, Không nhãn chữ rườm rà)**:
+  - **Case 1 (Bot vs History — Diff A)**: Giữ nguyên màu **Xanh lá (`#22c55e`)** và **Đỏ (`#ef4444`)**.
+  - **Case 2 (User vs History — Diff B)**: Màu **Xanh dương (`#3b82f6`)** và **Đỏ (`#ef4444`)**, loại bỏ hoàn toàn thẻ chữ `👤 User` và màu hồng thừa.
+  - **Case 3 (Cả Bot và User cùng sửa 1 vùng — Diff 2 tầng)**: Chỉ hiển thị khi có đủ 3 phiên bản khác nhau tại cùng vị trí (Tầng trên = Xanh lá của Bot, Tầng dưới = Xanh dương của User, kèm nút `✓ Save` / `↶ Undo` gọn gàng, không gắn nhãn chữ tốn diện tích).
+- **Nâng cấp Lanbot theo chuẩn Pi-Native Super Agent**:
+  - **Thẻ `[skill] <skill-name> (ctrl+o to expand)`**: Hiển thị minh bạch mọi skill được gọi theo chuẩn giao diện terminal của Pi, hỗ trợ click hoặc nhấn `Ctrl+O` để mở rộng.
+  - **Thẻ Subagent dạng cây (`▸ Explore ... / └ Running in background`) & Thanh `● Agents` thời gian thực**: Hiển thị rõ tác nhân con nào đang chạy nền, model và bước xử lý hiện tại (`searching...`) ngay phía trên khung nhập lệnh.
+  - **Khắc phục triệt để lỗi Subagent Wake-up & Chuyển Tab (`#bot1`, `#bot2`)**: Tự động nhận `<task-notification>` khi subagent chạy nền hoàn tất để hiển thị trọn vẹn câu trả lời tiếp theo của Main agent; bảo toàn 100% nội dung đang stream (thinking, tools, subagents, text) khi chuyển đổi qua lại giữa các worker tab.
+  - **Bảng Todo nhỏ gọn & Tự ẩn thông minh**: Thu gọn diện tích, tự động ẩn khi Bot nghỉ (idle), tự hiện khi Bot đang phản hồi có Todo, và **tự động ẩn ngay khi người dùng cuộn chuột lên** trong khung chat.
+
 ## 🌟 Nâng cấp Toàn diện Lantern v2 (Tích hợp trực tiếp tại cổng `9999` — Modular Architecture)
 
 Phiên bản **Lantern v2 All-in-One** tích hợp trực tiếp **Lantern Chatbot**, **Live Markdown Diff Engine**, **Parallel Split View (`P ∥ E ∥ S`)**, và **GPU/VRAM Telemetry** ngay trên cổng `9999` của Lantern (không cần chạy proxy cổng `10000` rời), đồng thời tách biệt rõ ràng từng module để dễ bảo trì:

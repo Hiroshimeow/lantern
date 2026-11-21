@@ -83,6 +83,26 @@ body.thumb-cover .folder-mosaic img{object-fit:cover;background:#000}
 .download-choice-backdrop{position:fixed;inset:0;z-index:240;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}.download-choice-box{width:min(430px,94vw);background:#0d1118;border:1px solid rgba(255,255,255,.14);border-radius:20px;box-shadow:var(--shadow);padding:16px;display:flex;flex-direction:column;gap:12px}.download-choice-title{font-weight:850;font-size:16px}.download-choice-desc{color:var(--muted);line-height:1.45}.download-choice-actions{display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.side-video-fit{position:absolute!important;inset:0!important;display:grid!important;place-items:center!important;background:#000!important;overflow:hidden!important}.side-video-fit video,.side-video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important;display:block!important;background:#000!important}
 
 
+
+/* --- v7.92 Grid & List Readability & Back Button Polish --- */
+.crumbs .crumb-back{background:linear-gradient(135deg,rgba(104,227,122,.16),rgba(139,182,255,.14));border-color:rgba(104,227,122,.4);color:#eaffef;font-weight:800;margin-right:4px}
+.crumbs .crumb-back:hover{background:rgba(104,227,122,.26);border-color:var(--accent)}
+.grid:not(.list){grid-template-columns:repeat(auto-fill,minmax(164px,1fr))!important;gap:12px!important}
+.grid:not(.list) .card{border:1px solid rgba(148,163,184,.18)!important;border-radius:16px!important;background:linear-gradient(180deg,#131924 0%,#0e131c 100%)!important;box-shadow:0 6px 18px rgba(0,0,0,.24)!important;transition:transform .14s ease,border-color .14s ease,box-shadow .14s ease!important}
+.grid:not(.list) .card:hover{transform:translateY(-2px)!important;border-color:rgba(104,227,122,.48)!important;box-shadow:0 10px 26px rgba(0,0,0,.35)!important}
+.grid:not(.list) .thumbwrap{height:114px!important;flex:0 0 114px!important;max-height:114px!important;background:#070a10!important;border-bottom:1px solid rgba(255,255,255,.06)!important}
+.grid:not(.list) .meta{padding:10px 11px!important;background:transparent!important}
+.grid:not(.list) .name{font-size:13px!important;font-weight:700!important;color:#f1f5f9!important;line-height:1.34!important;max-height:2.68em!important}
+.grid:not(.list) .sub{margin-top:5px!important;font-size:11.5px!important;color:#94a3b8!important}
+.grid.list{gap:0!important;border:1px solid rgba(148,163,184,.2)!important;border-radius:14px!important;background:#0c1119!important;overflow:hidden!important}
+.grid.list .list-head{grid-template-columns:34px 42px minmax(200px,1fr) 154px 88px 102px!important;min-height:38px!important;padding:0 12px!important;background:#141d2b!important;color:#dbeafe!important;font-size:12.5px!important;font-weight:750!important;border-bottom:1px solid rgba(148,163,184,.22)!important}
+.grid.list .card{grid-template-columns:34px 42px minmax(200px,1fr) 154px 88px 102px!important;min-height:46px!important;padding:4px 12px!important;border-bottom:1px solid rgba(148,163,184,.08)!important;transition:background .1s ease!important}
+.grid.list .card:nth-child(even){background:rgba(255,255,255,.018)}
+.grid.list .card:hover{background:rgba(104,227,122,.085)!important}
+.grid.list .card.selected{background:rgba(104,227,122,.14)!important;box-shadow:inset 3px 0 0 var(--accent)!important}
+.grid.list .name{font-size:13.5px!important;font-weight:650!important;color:#f8fafc!important}
+.grid.list .list-mtime,.grid.list .list-kind,.grid.list .list-size{color:#cbd5e1!important;font-size:12px!important}
+.grid.list .list-kind{font-weight:700!important;color:#93c5fd!important}
 """
 
 JS = r"""
@@ -864,18 +884,58 @@ async function refreshSysTelemetry(){
     const r=await fetch('/api/sysstats',{cache:'no-store'});
     if(!r.ok)return;
     const d=await r.json();
-    const g=d.gpu||{}, ram=d.ram||{}, cpu=d.cpu||{};
+    const g=d.gpu||d.primaryGpu||{}, ram=d.ram||d.memory||{}, cpu=d.cpu||{};
+    const hasGpu=Boolean(g.available||d.hasGpu||Number(g.vramTotalMb||0)>0);
     const vramUsed=(Number(g.vramUsedMb||0)/1024).toFixed(1);
     const vramTot=(Number(g.vramTotalMb||0)/1024).toFixed(1);
-    const pct=Number(g.vramPercent||0);
-    const barCls=pct>=90?'sys-vram-fill danger':(pct>=72?'sys-vram-fill warn':'sys-vram-fill');
-    const gpuLabel=g.available
-      ? ('GPU '+(g.utilPercent||0)+'% · VRAM '+vramUsed+'/'+vramTot+'G')
-      : ('VRAM '+vramUsed+'/'+vramTot+'G · CPU '+(cpu.loadPercent||0)+'%');
-    pill.innerHTML='<span>🎮 '+gpuLabel+'</span><span class="sys-vram-bar"><span class="'+barCls+'" style="width:'+Math.min(100,Math.max(4,pct))+'%"></span></span><span>RAM '+(ram.percent||0)+'%</span>';
-    pill.title=(g.name||'System')+'\nVRAM: '+(g.vramUsedMb||0)+' / '+(g.vramTotalMb||0)+' MB ('+pct+'%)'+(g.tempC!=null?' · '+g.tempC+'°C':'')+'\nRAM: '+(ram.usedMb||0)+' / '+(ram.totalMb||0)+' MB ('+(ram.percent||0)+'%)';
+    const vramPct=Number(g.vramPercent||0);
+    const gpuUtil=Math.round(Number(g.utilPercent??g.gpuUtilPercent??0));
+    const cpuPct=Math.round(Number(cpu.loadPercent??(cpu.load1m&&cpu.cores?(cpu.load1m/cpu.cores*100):0)));
+    const ramPct=Math.round(Number(ram.percent??ram.ramPercent??0));
+    const tempVal=d.tempC??g.tempC??g.temperatureC??cpu.tempC;
+    const tempStr=(tempVal!==null&&tempVal!==undefined&&!Number.isNaN(Number(tempVal)))?(' · 🌡️ '+Math.round(Number(tempVal))+'°C'):'';
+    const barPct=hasGpu?vramPct:Math.max(cpuPct,ramPct);
+    const barCls=barPct>=90?'sys-vram-fill danger':(barPct>=72?'sys-vram-fill warn':'sys-vram-fill');
+    const mainLabel=hasGpu
+      ? ('🎮 VRAM '+vramUsed+'/'+vramTot+'G · GPU '+gpuUtil+'% · CPU '+cpuPct+'%'+tempStr)
+      : ('💻 CPU '+cpuPct+'%'+tempStr+' · VRAM '+vramUsed+'/'+vramTot+'G');
+    pill.innerHTML='<span>'+mainLabel+'</span><span class="sys-vram-bar"><span class="'+barCls+'" style="width:'+Math.min(100,Math.max(4,barPct))+'%"></span></span><span>RAM '+ramPct+'%</span>';
+    pill.title=(g.name||'System')+'\nCPU: '+cpuPct+'% ('+(cpu.cores||1)+' cores)'+(cpu.tempC!=null?' · CPU Temp: '+cpu.tempC+'°C':'')+'\nVRAM: '+(g.vramUsedMb||0)+' / '+(g.vramTotalMb||0)+' MB ('+vramPct+'%)'+(g.tempC!=null?' · GPU Temp: '+g.tempC+'°C':'')+'\nRAM: '+(ram.usedMb??ram.ramUsedMb??0)+' / '+(ram.totalMb??ram.ramTotalMb??0)+' MB ('+ramPct+'%)';
   }catch(_){}
 }
+function computeLogicalParentHref(relPath){
+  const clean=String(relPath!=null?relPath:currentPath()).replace(/^\/+|\/+$/g,'');
+  if(!clean)return '/';
+  const parts=clean.split('/').filter(Boolean);
+  parts.pop();
+  return parts.length?('/'+parts.map(encodeURIComponent).join('/')+'/'):'/';
+}
+function goParentFolder(ev,href){
+  if(ev){ev.preventDefault();ev.stopPropagation();}
+  location.href=href||computeLogicalParentHref();
+  return false;
+}
+(function setupLogicalBackGuard(){
+  try{
+    const cur=currentPath();
+    if(!cur)return;
+    const parentHref=computeLogicalParentHref(cur);
+    let sameOriginRef=false;
+    if(document.referrer){
+      try{sameOriginRef=(new URL(document.referrer).origin===location.origin);}catch(_){}
+    }
+    if(!sameOriginRef&&window.history&&typeof window.history.replaceState==='function'){
+      const currentUrl=location.pathname+location.search+location.hash;
+      window.history.replaceState({lanternLogicalParent:parentHref},document.title,parentHref);
+      window.history.pushState({lanternCurrentFolder:cur},document.title,currentUrl);
+      window.addEventListener('popstate',(ev)=>{
+        if(ev.state&&ev.state.lanternLogicalParent){
+          location.replace(ev.state.lanternLogicalParent);
+        }
+      });
+    }
+  }catch(_){}
+})();
 setTimeout(refreshSysTelemetry, 120);
 setInterval(refreshSysTelemetry, 5000);
 
@@ -888,7 +948,14 @@ setInterval(refreshSysTelemetry, 5000);
 def breadcrumb(rel_path: str, files: FileService) -> str:
     rel_path = rel_path.strip("/")
     parts = [] if not rel_path else rel_path.split("/")
-    out = [f'<a href="/">Root</a>']
+    out = []
+    if parts:
+        parent_rel = "/".join(parts[:-1])
+        parent_href = "/" if not parent_rel else f"/{files.quote_path(parent_rel)}/"
+        out.append(
+            f'<a class="crumb-back" data-action="back" href="{parent_href}" onclick="return goParentFolder(event, \'{parent_href}\')">↩ Back</a>'
+        )
+    out.append('<a href="/">Root</a>')
     acc = []
     for p in parts:
         acc.append(p)
