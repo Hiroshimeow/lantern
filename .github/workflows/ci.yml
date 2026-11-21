@@ -32,11 +32,11 @@ jobs:
           uv sync --locked --no-dev
           uv run --locked main.py --help
 
-      - name: Install Chromium for mandatory browser E2E gate (P1-06)
+      - name: Install Chromium and Edge channels for mandatory browser E2E gate (P1-06)
         run: |
-          uv run --locked --with playwright --with pillow python -m playwright install chromium --with-deps
+          uv run --locked --with playwright --with pillow python -m playwright install chromium msedge --with-deps
 
-      - name: Run focused Sol P0/P1 regressions & 20-case Chromium refresh suite
+      - name: Run focused Sol P0/P1 regressions & browser refresh suite
         env:
           LANTERN_E2E: "1"
           LANTERN_BROWSER_UNIT: "1"
