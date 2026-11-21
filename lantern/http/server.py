@@ -1,3 +1,4 @@
+import gzip
 import json
 import socketserver
 import sys
@@ -22,6 +23,7 @@ from lantern.http.routes.files import FilesRoutes
 class LanternHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    request_queue_size = 64
 
     def __init__(self, server_address, handler, app):
         self.app = app
@@ -48,7 +50,7 @@ class Handler(
     def app(self):
         return self.server.app
 
-    server_version = "LANDriveOneFile/2.0"
+    server_version = "Lantern/9.25"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write("[%s] %s - %s\n" % (time.strftime("%H:%M:%S"), self.address_string(), fmt % args))
@@ -58,16 +60,46 @@ class Handler(
         self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 
+    def _accepts_gzip(self) -> bool:
+        ae = (self.headers.get("Accept-Encoding") or "").lower()
+        return "gzip" in ae
+
+    def _is_compressible_ctype(self, ctype: str) -> bool:
+        low = (ctype or "").split(";", 1)[0].strip().lower()
+        return low.startswith("text/") or low in {
+            "application/json",
+            "application/javascript",
+            "application/x-javascript",
+            "image/svg+xml",
+        }
+
     def send_bytes(self, status: int, body: bytes, ctype: str = "text/html; charset=utf-8", extra: Optional[Dict[str, str]] = None) -> None:
+        payload = body
+        use_gzip = (
+            status == 200
+            and len(body) >= 1024
+            and self._accepts_gzip()
+            and self._is_compressible_ctype(ctype)
+            and not (extra and any(k.lower() == "content-encoding" for k in extra))
+        )
+        if use_gzip:
+            compressed = gzip.compress(body, compresslevel=5)
+            if len(compressed) < len(body):
+                payload = compressed
+            else:
+                use_gzip = False
         self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(payload)))
         if extra:
             for k, v in extra.items():
                 self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            self.wfile.write(payload)
 
     def send_json(self, status: int, data: Dict[str, Any]) -> None:
         self.send_bytes(status, self.app.files.json_dumps(data).encode("utf-8"), "application/json; charset=utf-8")
@@ -103,7 +135,7 @@ class Handler(
             raise BadRequest("JSON body must be an object")
         return data
 
-    def serve_app_asset(self, url_path: str) -> None:
+    def serve_app_asset(self, url_path: str, query: str = "") -> None:
         root = self.app.static_dir
         rel = url_path[len("/static/"):].replace("\\", "/")
         target = (root / rel).resolve()
@@ -113,7 +145,9 @@ class Handler(
             self.send_error(403, "invalid asset path"); return
         if not target.is_file():
             self.send_error(404, "asset not found"); return
-        return self.serve_static_file(target, cache_control="no-cache")
+        has_version = "v=" in (query or "")
+        cc = "public, max-age=31536000, immutable" if has_version else "no-cache"
+        return self.serve_static_file(target, cache_control=cc)
 
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -128,7 +162,7 @@ class Handler(
                     self.send_error(503, "runtime not initialized"); return
                 return upgrade_websocket(self, self.app.ws, self.app.terminal, self.app.scm, self.app.terminal_access, self.app.bot)
             if parsed.path.startswith("/static/"):
-                return self.serve_app_asset(parsed.path)
+                return self.serve_app_asset(parsed.path, parsed.query)
             if parsed.path == "/api/terminal/auth":
                 return self.api_terminal_auth()
             if parsed.path == "/api/info":
@@ -141,6 +175,10 @@ class Handler(
                 return self.api_lan_settings_get()
             if parsed.path == "/api/list":
                 return self.api_list(parsed.query)
+            if parsed.path == "/api/tree":
+                return self.api_tree(parsed.query)
+            if parsed.path == "/api/properties":
+                return self.api_properties(parsed.query)
             if parsed.path == "/api/upload/check":
                 return self.api_upload_check(parsed.query)
             if parsed.path == "/api/image/version":
@@ -210,6 +248,9 @@ class Handler(
             if route == "/api/terminal/login": return self.api_terminal_login()
             if route == "/api/terminal/logout": return self.api_terminal_logout()
             if route == "/api/upload": return self.api_upload(parsed.query)
+            if route == "/api/upload/chunk": return self.api_upload_chunk(parsed.query)
+            if route == "/api/upload/complete": return self.api_upload_complete()
+            if route == "/api/upload/abort": return self.api_upload_abort()
             if route == "/api/image/overwrite": return self.api_image_overwrite(parsed.query)
             if route == "/api/image/undo": return self.api_image_undo(parsed.query)
             if route == "/api/save": return self.api_save()

@@ -571,8 +571,11 @@ class FileService:
             rows.append((is_dir, key, name.lower(), name, st, p))
 
         if recursive_enabled:
+            skip_heavy_dirs = set() if self.cfg.show_hidden else {"node_modules", "__pycache__", ".git", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
+            scanned_total = 0
+            max_recursive_scan = 40000
             stack: List[Tuple[Path, int]] = [(path, 0)]
-            while stack:
+            while stack and scanned_total < max_recursive_scan:
                 folder, depth = stack.pop()
                 try:
                     with os.scandir(folder) as it:
@@ -581,7 +584,12 @@ class FileService:
                     errors += 1
                     continue
                 for de in entries:
+                    scanned_total += 1
+                    if scanned_total > max_recursive_scan:
+                        break
                     name = de.name
+                    if name in skip_heavy_dirs:
+                        continue
                     if self.should_hide_entry(folder, name):
                         continue
                     p = folder / name
@@ -646,3 +654,172 @@ class FileService:
             except OSError:
                 errors += 1
         return out, offset + len(out), has_more, errors, total
+
+    def _has_visible_subdir(self, folder: Path) -> bool:
+        try:
+            with os.scandir(folder) as it:
+                for de in it:
+                    if self.should_hide_entry(folder, de.name):
+                        continue
+                    try:
+                        if de.is_dir(follow_symlinks=False):
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            return False
+        return False
+
+    def list_tree_children(self, path: Path, *, max_children: int = 500) -> Dict[str, Any]:
+        """Return lazy-loadable child folders for Windows Explorer-style tree sidebar."""
+        root = self.cfg.root.resolve()
+        resolved = path.resolve()
+        rel = resolved.relative_to(root).as_posix()
+        rel = "" if rel == "." else rel
+        children: List[Dict[str, Any]] = []
+        errors = 0
+        try:
+            with os.scandir(resolved) as it:
+                entries = list(it)
+        except OSError:
+            entries = []
+            errors += 1
+
+        dir_rows: List[Tuple[str, str, Path]] = []
+        for de in entries:
+            name = de.name
+            if self.should_hide_entry(resolved, name):
+                continue
+            try:
+                if de.is_dir(follow_symlinks=False):
+                    dir_rows.append((name.lower(), name, resolved / name))
+            except OSError:
+                errors += 1
+
+        dir_rows.sort(key=lambda r: r[0])
+        total = len(dir_rows)
+        truncated = total > max_children
+        for _lname, name, child_path in dir_rows[:max_children]:
+            child_rel = f"{rel}/{name}" if rel else name
+            children.append({
+                "name": name,
+                "rel": child_rel,
+                "href": "/" + self.quote_path(child_rel) + "/",
+                "hasChildren": self._has_visible_subdir(child_path),
+            })
+
+        parent_rel = ""
+        if rel:
+            p = Path(rel).parent.as_posix()
+            parent_rel = "" if p == "." else p
+        return {
+            "ok": True,
+            "path": rel,
+            "name": resolved.name or str(root),
+            "href": "/" if not rel else "/" + self.quote_path(rel) + "/",
+            "parent": parent_rel,
+            "children": children,
+            "total": total,
+            "truncated": truncated,
+            "errors": errors,
+        }
+
+    def list_tree_with_ancestors(self, path: Path, *, max_children: int = 500) -> Dict[str, Any]:
+        """Return tree nodes for root and every ancestor down to `path` in one round-trip."""
+        root = self.cfg.root.resolve()
+        resolved = path.resolve()
+        rel = resolved.relative_to(root).as_posix()
+        rel = "" if rel == "." else rel
+        parts = [p for p in rel.split("/") if p]
+        nodes: Dict[str, Dict[str, Any]] = {}
+        acc = root
+        nodes[""] = self.list_tree_children(acc, max_children=max_children)
+        cur_rel = ""
+        for part in parts:
+            acc = acc / part
+            cur_rel = f"{cur_rel}/{part}" if cur_rel else part
+            if acc.is_dir():
+                nodes[cur_rel] = self.list_tree_children(acc, max_children=max_children)
+        return {
+            "ok": True,
+            "rootName": root.name or str(root),
+            "rootPath": str(root),
+            "activePath": rel,
+            "nodes": nodes,
+        }
+
+    def get_item_properties(self, path: Path, *, max_scan: int = 5000) -> Dict[str, Any]:
+        """Return detailed Windows Explorer-style properties for a file or folder."""
+        resolved = path.resolve()
+        st = resolved.stat()
+        is_dir = resolved.is_dir()
+        rel = self.rel_url_for_path(resolved)
+        kind = self.classify(resolved, is_dir)
+        props: Dict[str, Any] = {
+            "ok": True,
+            "name": resolved.name or str(resolved),
+            "rel": rel,
+            "fullPath": str(resolved),
+            "isDir": is_dir,
+            "kind": kind,
+            "ext": "" if is_dir else resolved.suffix.lower(),
+            "mtime": st.st_mtime,
+            "mtimeText": self.mtime_fmt(st.st_mtime),
+            "ctime": st.st_ctime,
+            "ctimeText": self.mtime_fmt(st.st_ctime),
+        }
+        if is_dir:
+            file_count = 0
+            dir_count = 0
+            total_bytes = 0
+            truncated = False
+            stack = [resolved]
+            scanned = 0
+            while stack:
+                cur = stack.pop()
+                try:
+                    with os.scandir(cur) as it:
+                        for de in it:
+                            scanned += 1
+                            if scanned > max_scan:
+                                truncated = True
+                                break
+                            if self.should_hide_entry(cur, de.name):
+                                continue
+                            try:
+                                if de.is_dir(follow_symlinks=False):
+                                    dir_count += 1
+                                    stack.append(cur / de.name)
+                                else:
+                                    file_count += 1
+                                    total_bytes += de.stat(follow_symlinks=False).st_size
+                            except OSError:
+                                continue
+                except OSError:
+                    continue
+                if truncated:
+                    break
+            props.update({
+                "size": total_bytes,
+                "sizeText": self.size_fmt(total_bytes) + ("+" if truncated else ""),
+                "files": file_count,
+                "folders": dir_count,
+                "truncated": truncated,
+            })
+        else:
+            import mimetypes as _mt
+            mime = _mt.guess_type(str(resolved))[0] or "application/octet-stream"
+            props.update({
+                "size": st.st_size,
+                "sizeText": self.size_fmt(st.st_size),
+                "mime": mime,
+            })
+            if kind == "image":
+                try:
+                    from PIL import Image
+                    with Image.open(resolved) as im:
+                        props["width"], props["height"] = im.size
+                        props["format"] = im.format or ""
+                except Exception:
+                    pass
+        return props

@@ -53,4 +53,5 @@ class MediaRoutes:
             elif kind == "video": ok = self.app.media.make_video_thumb(target, dst)
             if not ok:
                 self.send_error(404, "thumbnail unavailable"); return
-        self.serve_static_file(dst, download=False, ctype="image/jpeg", cache_control="no-cache")
+        cc = "public, max-age=31536000, immutable" if qs.get("v") else "no-cache"
+        self.serve_static_file(dst, download=False, ctype="image/jpeg", cache_control=cc)

@@ -1,5 +1,6 @@
 
 import email.utils
+import gzip
 import json
 import mimetypes
 import os
@@ -40,6 +41,32 @@ class FilesRoutes:
                 href = "/" if parent == "." else "/" + self.app.files.quote_path(parent) + "/"
                 items.insert(0, {"special": "back", "href": href})
         self.send_json(200, {"items": items, "nextOffset": next_offset, "hasMore": has_more, "errors": errors, "total": total, "sort": sort_mode, "folders_first": folders_first, "recursive_depth": recursive_depth_raw if q.strip() else "0"})
+
+
+    def api_tree(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        rel = qs.get("path", qs.get("p", [""]))[0]
+        ancestors = str(qs.get("ancestors", ["0"])[0]).lower() in {"1", "true", "yes"}
+        try:
+            max_children = max(50, min(int(qs.get("limit", ["500"])[0] or 500), 2000))
+        except Exception:
+            max_children = 500
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
+        if not target.is_dir():
+            self.send_json(404, {"error": "not a folder"}); return
+        if ancestors:
+            payload = self.app.files.list_tree_with_ancestors(target, max_children=max_children)
+        else:
+            payload = self.app.files.list_tree_children(target, max_children=max_children)
+        self.send_json(200, payload)
+
+    def api_properties(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        rel = qs.get("p", qs.get("path", [""]))[0]
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
+        if not target.exists():
+            self.send_json(404, {"error": "not found"}); return
+        self.send_json(200, self.app.files.get_item_properties(target))
 
     def resolve_upload_target(self, base_rel: str, name: str) -> Path:
         """Use identical path validation for lightweight preflight and upload."""
@@ -144,6 +171,128 @@ class FilesRoutes:
                 except Exception:
                     pass
         self.send_json(200, {"ok": True, "file": self.app.files.rel_url_for_path(dest), "bytes": written})
+
+
+    def _chunk_stage_dir(self, upload_id: str) -> Path:
+        clean_id = re.sub(r"[^A-Za-z0-9._-]", "", str(upload_id or ""))[:80]
+        if len(clean_id) < 6:
+            raise BadRequest("invalid upload id")
+        base = (self.app.config.cache_dir / "upload_chunks").resolve()
+        stage = (base / clean_id).resolve()
+        try:
+            stage.relative_to(base)
+        except ValueError:
+            raise BadRequest("invalid upload id")
+        return stage
+
+    def api_upload_chunk(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        upload_id = qs.get("id", [""])[0]
+        try:
+            index = int(qs.get("index", ["-1"])[0])
+            total_chunks = int(qs.get("total", ["0"])[0])
+        except ValueError:
+            raise BadRequest("invalid chunk index")
+        if index < 0 or total_chunks <= 0 or index >= total_chunks or total_chunks > 10000:
+            raise BadRequest("chunk index out of range")
+        total = self.content_length()
+        stage = self._chunk_stage_dir(upload_id)
+        stage.mkdir(parents=True, exist_ok=True)
+        part_path = stage / f"part-{index:06d}"
+        tmp: Optional[Path] = None
+        written = 0
+        remaining = total
+        try:
+            fd, tmp_name = tempfile.mkstemp(prefix=f".chunk-{index:06d}-", dir=str(stage))
+            tmp = Path(tmp_name)
+            with os.fdopen(fd, "wb") as out:
+                while remaining > 0:
+                    buf = self.rfile.read(min(CHUNK_SIZE, remaining))
+                    if not buf:
+                        break
+                    out.write(buf)
+                    written += len(buf)
+                    remaining -= len(buf)
+            if written != total:
+                raise BadRequest("incomplete chunk body")
+            os.replace(tmp, part_path)
+            tmp = None
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self.send_json(200, {"ok": True, "id": upload_id, "index": index, "written": written})
+
+    def api_upload_complete(self) -> None:
+        data = self.read_json()
+        upload_id = str(data.get("id") or "")
+        base_rel = str(data.get("path") or "")
+        name = str(data.get("name") or "")
+        conflict = normalize_conflict(str(data.get("conflict") or self.app.config.upload_conflict))
+        try:
+            total_chunks = int(data.get("total") or 0)
+        except (TypeError, ValueError):
+            raise BadRequest("invalid total chunks")
+        if total_chunks <= 0 or total_chunks > 10000:
+            raise BadRequest("invalid total chunks")
+        stage = self._chunk_stage_dir(upload_id)
+        parts = [stage / f"part-{i:06d}" for i in range(total_chunks)]
+        missing = [i for i, p in enumerate(parts) if not p.is_file()]
+        if missing:
+            raise BadRequest(f"missing chunks: {missing[:5]}")
+
+        dest = self.resolve_upload_target(base_rel, name)
+        self.app.files.protect_config_mutation(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            if conflict == "skip":
+                shutil.rmtree(stage, ignore_errors=True)
+                self.send_json(200, {"ok": True, "skipped": True, "file": self.app.files.rel_url_for_path(dest), "reason": "exists"}); return
+            if conflict == "ask":
+                self.send_json(409, {"error": "exists", "file": self.app.files.rel_url_for_path(dest)}); return
+
+        tmp: Optional[Path] = None
+        written = 0
+        try:
+            fd, tmp_name = tempfile.mkstemp(prefix=".lantern-uploading-", dir=str(dest.parent))
+            tmp = Path(tmp_name)
+            with os.fdopen(fd, "wb") as out:
+                for p in parts:
+                    with open(p, "rb") as src:
+                        while True:
+                            buf = src.read(CHUNK_SIZE)
+                            if not buf:
+                                break
+                            out.write(buf)
+                            written += len(buf)
+            if conflict == "overwrite":
+                os.replace(tmp, dest)
+                final_dest = dest
+            else:
+                final_dest = self.app.files.unique_path(dest) if dest.exists() else dest
+                os.replace(tmp, final_dest)
+            tmp = None
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        shutil.rmtree(stage, ignore_errors=True)
+        self.send_json(200, {"ok": True, "file": self.app.files.rel_url_for_path(final_dest), "size": written})
+
+    def api_upload_abort(self) -> None:
+        data = self.read_json()
+        upload_id = str(data.get("id") or "")
+        if upload_id:
+            try:
+                stage = self._chunk_stage_dir(upload_id)
+                shutil.rmtree(stage, ignore_errors=True)
+            except BadRequest:
+                pass
+        self.send_json(200, {"ok": True})
 
     def api_save(self) -> None:
         data = self.read_json()
@@ -480,11 +629,28 @@ class FilesRoutes:
     def serve_directory(self, path: Path) -> None:
         rel = path.resolve().relative_to(self.app.config.root.resolve()).as_posix()
         if rel == ".": rel = ""
+        esc_title = self.app.files.html_escape(self.app.config.title)
+        esc_root = self.app.files.html_escape(str(self.app.config.root))
+        esc_rel = self.app.files.html_escape(rel)
         body = f"""
-<div class="app">
+<div class="app explorer-app">
   <header class="top">
     <div class="top-inner">
-      <div class="brand"><div class="logo">LD</div><div><div class="brand-title">{self.app.files.html_escape(self.app.config.title)}</div><div class="brand-sub">Root: {self.app.files.html_escape(str(self.app.config.root))}</div></div></div>
+      <div class="brand">
+        <button id="treeToggleBtn" class="btn small icon-only" onclick="toggleTreePane()" title="Ẩn/hiện cây thư mục (Ctrl+B)" aria-label="Toggle folder tree">☰</button>
+        <div class="logo">LD</div>
+        <div class="brand-meta"><div class="brand-title">{esc_title}</div><div class="brand-sub" title="{esc_root}">{esc_root}</div></div>
+      </div>
+      <div class="nav-cluster">
+        <button id="navBackBtn" class="btn small icon-only" onclick="navHistoryBack()" title="Quay lại (Alt+←)" disabled>←</button>
+        <button id="navFwdBtn" class="btn small icon-only" onclick="navHistoryForward()" title="Tiến tới (Alt+→)" disabled>→</button>
+        <button id="navUpBtn" class="btn small icon-only" onclick="navParentFolder()" title="Lên thư mục cha (Alt+↑)">↑</button>
+        <button class="btn small icon-only" onclick="refreshFolder()" title="Làm mới (F5)">↻</button>
+      </div>
+      <div class="address-wrap" id="addressWrap" title="Bấm vùng trống hoặc Ctrl+L để nhập đường dẫn">
+        <div class="crumbs" id="crumbsBar">{self.app.views.breadcrumb(rel)}</div>
+        <input id="addressInput" class="address-input hidden" type="text" spellcheck="false" autocomplete="off" placeholder="Nhập đường dẫn tương đối, ví dụ: docs/images">
+      </div>
       <div class="search">
         <select id="recursiveDepth" class="search-depth" onchange="changeRecursiveDepth(this)" title="Độ sâu tìm đệ quy; 0 chỉ tìm thư mục hiện tại">
           <option value="0">Hiện tại</option>
@@ -496,7 +662,7 @@ class FilesRoutes:
           <option value="5">5 cấp</option>
           <option value="6">6 cấp</option>
         </select>
-        <input id="q" type="search" placeholder="Tìm tên, đường dẫn, đuôi file...">
+        <input id="q" type="search" placeholder="Tìm file, đuôi, đường dẫn... (Ctrl+F)">
       </div>
       <div class="actions">
         <div id="sysTelemetryPill" class="sys-telemetry-pill" onclick="refreshSysTelemetry()" title="GPU / VRAM &amp; RAM Status">🎮 <span>VRAM · GPU · RAM</span></div>
@@ -506,11 +672,13 @@ class FilesRoutes:
         <button class="btn terminal-btn" onclick="toggleTerminal()">⌨️ <span class="label">Terminal</span></button>
       </div>
     </div>
-    <div class="crumbs">{self.app.views.breadcrumb(rel)}</div>
-  </header>
-  <main class="main">
     <div class="toolbar">
-      <div class="view-toggle"><button data-view="grid" onclick="setView('grid')">Grid</button><button data-view="list" onclick="setView('list')">List</button></div>
+      <div class="view-toggle" role="group" aria-label="View mode">
+        <button data-view="large" onclick="setView('large')" title="Ảnh lớn (Gallery)">Large</button>
+        <button data-view="grid" onclick="setView('grid')" title="Lưới chuẩn">Grid</button>
+        <button data-view="list" onclick="setView('list')" title="Danh sách gọn">List</button>
+        <button data-view="details" onclick="setView('details')" title="Chi tiết kiểu Windows">Details</button>
+      </div>
       <select id="sortSelect" class="select" onchange="changeSort(this)" title="Sắp xếp">
         <option value="name-asc">Tên A→Z</option>
         <option value="name-desc">Tên Z→A</option>
@@ -524,69 +692,144 @@ class FilesRoutes:
         <option value="ext-desc">Đuôi file Z→A</option>
       </select>
       <select id="limitSelect" class="select compact" onchange="changeLimit(this)" title="Số mục tải thêm mỗi lần cuộn">
-        <option value="100">Tải 100 mục</option>
-        <option value="220">Tải 220 mục</option>
-        <option value="500">Tải 500 mục</option>
-        <option value="1000">Tải 1000 mục</option>
+        <option value="100">100/trang</option>
+        <option value="220">220/trang</option>
+        <option value="500">500/trang</option>
+        <option value="1000">1000/trang</option>
       </select>
       <label class="checkline" title="Giữ thư mục nằm trước file khi sắp xếp"><input id="foldersFirst" type="checkbox" onchange="changeFoldersFirst(this)"> 📁 trước</label>
       <select id="thumbFit" class="select compact" onchange="changeThumbFit(this)" title="Cách fit thumbnail"><option value="contain">Fit</option><option value="cover">Crop</option></select>
-      <label class="checkline" title="Bật/tắt preview 2x2 cho folder"><input id="folderPreviewToggle" type="checkbox" onchange="toggleFolderPreview(this)"> Preview</label>
+      <label class="checkline" title="Bật/tắt preview 2x2 cho folder"><input id="folderPreviewToggle" type="checkbox" onchange="toggleFolderPreview(this)"> Mosaic</label>
       <select id="previewAnim" class="select compact" onchange="changePreviewAnimation(this)" title="Animation folder preview"><option value="none">No anim</option><option value="fade">Fade</option><option value="flip">Flip</option><option value="slide">Slide</option></select>
-      <button id="previewPaneBtn" class="btn small" onclick="togglePreviewPane()" title="Bật/tắt preview pane bên phải">👁 Preview on</button>
-      <button class="btn small" onclick="refreshFolder()">↻ Refresh</button>
-      <button class="btn small" onclick="selectVisible()">Chọn hiện</button>
+      <button id="previewPaneBtn" class="btn small" onclick="togglePreviewPane()" title="Bật/tắt preview pane bên phải">👁 Preview</button>
+      <button class="btn small" onclick="selectVisible()" title="Chọn tất cả mục hiện có (Ctrl+A)">Chọn hết</button>
       <button class="btn small ghost" onclick="clearSel()">Bỏ chọn</button>
       <span id="selCount" class="sub"></span>
       <div class="grow"></div>
-      <button id="shareBtn" class="btn small hidden" onclick="shareOne()">🔗 Copy link</button>
-      <button id="previewBtn" class="btn small hidden" onclick="previewSelected()">👁 Preview</button>
-      <button class="btn small" onclick="addPreviewExtension()" title="Thêm đuôi/pattern để plugin đọc nhanh, ví dụ .foo hoặc *.env.*">＋ Đuôi đọc</button>
-      <button id="copyBtn" class="btn small hidden" onclick="copySel()">📋 Copy</button>
-      <button id="moveBtn" class="btn small hidden" onclick="moveSel()">➡️ Move</button>
-      <button id="duplicateBtn" class="btn small hidden" onclick="duplicateSel()">⧉ Duplicate</button>
-      <button id="batchRenameBtn" class="btn small hidden" onclick="batchRenameSel()">🔤 Batch rename</button>
-      <button id="extractBtn" class="btn small hidden" onclick="extractSelected()">📦 Extract</button>
-      <button id="archiveBtn" class="btn small hidden" onclick="archiveSelected()">🗜 Archive</button>
-      <button id="renameBtn" class="btn small warn hidden" onclick="renameOne()">✏️ Rename</button>
+      <button id="pasteBtn" class="btn small primary hidden" onclick="pasteClipboard()" title="Dán vào thư mục hiện tại (Ctrl+V)">📋 Paste</button>
+      <button id="shareBtn" class="btn small hidden" onclick="shareOne()">🔗 Link</button>
+      <button id="previewBtn" class="btn small hidden" onclick="previewSelected()">👁 Xem</button>
+      <button class="btn small" onclick="addPreviewExtension()" title="Thêm đuôi/pattern để plugin đọc nhanh">＋ Đuôi</button>
+      <button id="copyBtn" class="btn small hidden" onclick="copySel()" title="Copy (Ctrl+C)">📋 Copy</button>
+      <button id="moveBtn" class="btn small hidden" onclick="moveSel()" title="Move / Cut (Ctrl+X)">➡️ Move</button>
+      <button id="duplicateBtn" class="btn small hidden" onclick="duplicateSel()">⧉ Nhân bản</button>
+      <button id="batchRenameBtn" class="btn small hidden" onclick="batchRenameSel()">🔤 Đổi hàng loạt</button>
+      <button id="extractBtn" class="btn small hidden" onclick="extractSelected()">📦 Giải nén</button>
+      <button id="archiveBtn" class="btn small hidden" onclick="archiveSelected()">🗜 Nén</button>
+      <button id="renameBtn" class="btn small warn hidden" onclick="renameOne()" title="Đổi tên (F2)">✏️ Đổi tên</button>
       <button id="downloadBtn" class="btn small hidden" onclick="downloadSelected()">⬇️ Tải</button>
-      <button id="deleteBtn" class="btn small danger hidden" onclick="deleteSel()">🗑️ Xoá</button>
+      <button id="deleteBtn" class="btn small danger hidden" onclick="deleteSel()" title="Xoá (Delete)">🗑️ Xoá</button>
     </div>
-    <div id="browserArea" class="browser-area"><section id="grid" class="dropzone grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></section><aside id="sidePreview" class="side-preview"><div class="side-empty">Chọn file để preview</div></aside></div>
+  </header>
+  <main class="main explorer-shell" id="explorerShell">
+    <aside id="treePane" class="tree-pane" aria-label="Folder navigation tree">
+      <div class="tree-head">
+        <span class="tree-head-title">🗂️ Thư mục</span>
+        <div class="tree-head-actions">
+          <button class="btn small icon-only ghost" onclick="window.LanternTree?.refresh()" title="Làm mới cây thư mục">↻</button>
+          <button class="btn small icon-only ghost" onclick="window.LanternTree?.collapseAll()" title="Thu gọn tất cả">⊟</button>
+        </div>
+      </div>
+      <div id="treeBody" class="tree-body" role="tree"></div>
+    </aside>
+    <div id="treeResizer" class="tree-resizer" title="Kéo để đổi độ rộng cây thư mục"></div>
+    <div id="browserArea" class="browser-area">
+      <section id="grid" class="dropzone grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></section>
+      <aside id="sidePreview" class="side-preview"><div class="side-empty">Chọn file để preview</div></aside>
+    </div>
   </main>
+  <footer id="statusBar" class="status-bar">
+    <span id="statusItems">0 mục</span>
+    <span id="statusSel" class="status-sep hidden"></span>
+    <span id="statusClip" class="status-clip hidden"></span>
+    <span class="status-grow"></span>
+    <span id="statusHint" class="status-hint">F2 Đổi tên · Ctrl+C/X/V Sao chép/Di chuyển · Ctrl+L Đường dẫn · Space Xem nhanh</span>
+  </footer>
 </div>
 <input id="fileInput" class="hidden" type="file" multiple>
 <input id="folderInput" class="hidden" type="file" webkitdirectory directory multiple>
-<div id="modal" class="modal" onclick="if(event.target===this)closeModal()"><div class="modal-box"><div class="modal-head"><div class="modal-title-wrap"><div id="modalTitle" class="modal-title"></div><div id="modalMeta" class="modal-meta"></div></div><div class="actions"><button id="modalCropBtn" class="btn small hidden" onclick="cropViewedImage()" title="Crop into a new image">✂ Crop</button><button id="modalCropOverwriteBtn" class="btn small hidden" onclick="cropViewedImage(true)" title="Crop and overwrite original (requires confirmation)">✂ Overwrite original</button><button id="modalPrevBtn" class="btn small" onclick="stepMedia(-1,event)" title="Trước">←</button><button id="modalNextBtn" class="btn small" onclick="stepMedia(1,event)" title="Tiếp">→</button><button class="btn small" onclick="closeModal()">✕</button></div></div><div class="modal-stage"><button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Trước">‹</button><div id="modalBody" class="modal-body"></div><button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Tiếp">›</button></div></div></div>
+<div id="modal" class="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="modal-title-wrap"><div id="modalTitle" class="modal-title"></div><div id="modalMeta" class="modal-meta"></div></div>
+      <div class="actions">
+        <div id="modalImageTools" class="media-tools hidden">
+          <button class="btn small icon-only" onclick="window.LanternMedia?.zoomBy(-0.25)" title="Thu nhỏ (-)">−</button>
+          <button id="modalZoomLabel" class="btn small" onclick="window.LanternMedia?.resetZoom()" title="Đặt lại 100% (0)">100%</button>
+          <button class="btn small icon-only" onclick="window.LanternMedia?.zoomBy(0.25)" title="Phóng to (+)">＋</button>
+          <button class="btn small icon-only" onclick="window.LanternMedia?.rotateBy(90)" title="Xoay 90° (R)">↻</button>
+        </div>
+        <select id="modalVideoSpeed" class="select compact hidden" onchange="window.LanternMedia?.setVideoSpeed(this.value)" title="Tốc độ phát video">
+          <option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
+        </select>
+        <button id="modalCropBtn" class="btn small hidden" onclick="cropViewedImage()" title="Crop thành ảnh mới">✂ Crop</button>
+        <button id="modalCropOverwriteBtn" class="btn small hidden" onclick="cropViewedImage(true)" title="Crop ghi đè ảnh gốc">✂ Overwrite</button>
+        <button class="btn small icon-only" onclick="window.LanternMedia?.toggleFullscreen()" title="Toàn màn hình (F)">⛶</button>
+        <button id="modalPrevBtn" class="btn small" onclick="stepMedia(-1,event)" title="Trước (←)">←</button>
+        <button id="modalNextBtn" class="btn small" onclick="stepMedia(1,event)" title="Tiếp (→)">→</button>
+        <button class="btn small" onclick="closeModal()" title="Đóng (Esc)">✕</button>
+      </div>
+    </div>
+    <div class="modal-stage">
+      <button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Trước">‹</button>
+      <div id="modalBody" class="modal-body"></div>
+      <button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Tiếp">›</button>
+    </div>
+  </div>
+</div>
 <div id="uploadModal" class="upload-backdrop" onclick="if(event.target===this)closeUploadDialog()">
   <div class="upload-box">
-    <div class="upload-head"><div><div class="upload-title">⬆️ Upload vào: /{self.app.files.html_escape(rel)}</div><div class="sub">Kéo file/folder vào vùng dấu +, hoặc bấm chọn file/folder. Folder drag/drop tốt nhất trên Chrome/Edge.</div></div><button class="btn small" onclick="closeUploadDialog()">✕</button></div>
+    <div class="upload-head">
+      <div><div id="uploadTargetTitle" class="upload-title">⬆️ Upload vào: /{esc_rel}</div><div class="sub">Kéo thả file/folder bất cứ lúc nào (hỗ trợ thêm vào hàng đợi ngay cả khi đang upload).</div></div>
+      <div style="display:flex;gap:6px"><button class="btn small ghost" onclick="closeUploadDialog()" title="Thu gọn chạy nền">— Thu gọn</button><button class="btn small" onclick="closeUploadDialog()">✕</button></div>
+    </div>
     <div class="upload-body">
-      <div id="uploadDrop" class="upload-drop"><div><div class="upload-plus">＋</div><b>Kéo file/folder vào đây</b><div>hoặc bấm để chọn file</div></div></div>
+      <div id="uploadDrop" class="upload-drop"><div><div class="upload-plus">＋</div><b>Kéo file/folder vào đây</b><div>hoặc bấm chọn file/folder bên dưới</div></div></div>
       <div class="upload-options">
         <button class="btn" onclick="pickUploadFiles()">Chọn file</button>
         <button class="btn" onclick="pickUploadFolder()">Chọn folder</button>
         <label class="checkline">Trùng tên: <select id="uploadConflict" class="select compact"><option value="ask">Hỏi</option><option value="overwrite">Ghi đè</option><option value="skip">Bỏ qua</option><option value="rename">Tự đổi tên</option></select></label>
+        <button id="uploadPauseBtn" class="btn small hidden" onclick="window.LanternUpload?.togglePause()">⏸ Tạm dừng</button>
+        <button id="uploadRetryBtn" class="btn small warn hidden" onclick="window.LanternUpload?.retryFailed()">↻ Thử lại lỗi</button>
       </div>
       <div id="uploadQueue" class="upload-queue"></div>
     </div>
-    <div class="upload-foot"><div id="uploadSummary" class="upload-summary">0 file</div><div class="upload-progress"><span id="uploadModalBar"></span></div><button class="btn ghost" onclick="clearUploadQueue()">Clear</button><button class="btn primary" onclick="startUploadQueue()">Start Upload</button></div>
+    <div class="upload-foot">
+      <div id="uploadSummary" class="upload-summary">0 file</div>
+      <div class="upload-progress"><span id="uploadModalBar"></span></div>
+      <button class="btn ghost" onclick="clearUploadQueue()">Clear</button>
+      <button id="uploadStartBtn" class="btn primary" onclick="startUploadQueue()">Start Upload</button>
+    </div>
   </div>
 </div>
-<div id="termDrawer" class="term-drawer" style="height:{int(self.app.config.terminal_start_height_px)}px" role="region" aria-label="Terminal and source control"></div>\n<div id="ctxMenu" class="ctx-menu hidden" onclick="event.stopPropagation()">
-  <button data-act="open" onclick="contextAction('open')">↗ Open</button>
-  <button data-act="preview" onclick="contextAction('preview')">👁 Preview</button>
-  <button data-act="edit" onclick="contextAction('edit')">📝 Edit</button>
-  <button data-act="rename" onclick="contextAction('rename')">✏️ Rename</button>
-  <button data-act="download" onclick="contextAction('download')">⬇️ Download</button>
-  <button data-act="archive" onclick="contextAction('archive')">🗜 Archive</button>
-  <button data-act="extract" onclick="contextAction('extract')">📦 Extract</button>
-  <button data-act="copy" onclick="contextAction('copy')">📋 Copy</button>
-  <button data-act="move" onclick="contextAction('move')">➡️ Move</button>
-  <button data-act="duplicate" onclick="contextAction('duplicate')">⧉ Duplicate</button>
-  <button data-act="batch" onclick="contextAction('batch')">🔤 Batch rename</button>
+<div id="uploadFloatPill" class="upload-float-pill hidden" onclick="openUploadDialog()" title="Bấm để mở chi tiết hàng đợi Upload">
+  <span id="uploadFloatText">⬆️ Uploading...</span>
+  <div class="upload-float-bar"><span id="uploadFloatFill"></span></div>
+</div>
+<div id="propsModal" class="modal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="props-box">
+    <div class="modal-head"><div id="propsTitle" class="modal-title">Properties</div><button class="btn small" onclick="$('#propsModal')?.classList.remove('show')">✕</button></div>
+    <div id="propsBody" class="props-body"></div>
+  </div>
+</div>
+<div id="termDrawer" class="term-drawer" style="height:{int(self.app.config.terminal_start_height_px)}px" role="region" aria-label="Terminal and source control"></div>
+<div id="ctxMenu" class="ctx-menu hidden" onclick="event.stopPropagation()">
+  <button data-act="open" onclick="contextAction('open')">↗ Mở</button>
+  <button data-act="preview" onclick="contextAction('preview')">👁 Xem nhanh</button>
+  <button data-act="edit" onclick="contextAction('edit')">📝 Chỉnh sửa</button>
+  <button data-act="rename" onclick="contextAction('rename')">✏️ Đổi tên (F2)</button>
+  <button data-act="download" onclick="contextAction('download')">⬇️ Tải xuống</button>
+  <button data-act="copy" onclick="contextAction('copy')">📋 Copy (Ctrl+C)</button>
+  <button data-act="cut" onclick="contextAction('cut')">✂️ Cut (Ctrl+X)</button>
+  <button data-act="paste" onclick="contextAction('paste')">📥 Paste vào đây (Ctrl+V)</button>
+  <button data-act="move" onclick="contextAction('move')">➡️ Move đến...</button>
+  <button data-act="duplicate" onclick="contextAction('duplicate')">⧉ Nhân bản</button>
+  <button data-act="batch" onclick="contextAction('batch')">🔤 Đổi tên hàng loạt</button>
+  <button data-act="archive" onclick="contextAction('archive')">🗜 Nén (Zip/Tar)</button>
+  <button data-act="extract" onclick="contextAction('extract')">📦 Giải nén</button>
   <button data-act="share" onclick="contextAction('share')">🔗 Copy link</button>
-  <button data-act="delete" class="danger" onclick="contextAction('delete')">🗑 Delete</button>
+  <button data-act="properties" onclick="contextAction('properties')">ℹ️ Properties</button>
+  <button data-act="delete" class="danger" onclick="contextAction('delete')">🗑 Xoá (Del)</button>
 </div>
 <div id="toast" class="toast"></div>
 """
@@ -675,6 +918,30 @@ document.addEventListener('keydown',e=>{{if((e.ctrlKey||e.metaKey)&&e.key.toLowe
             self.end_headers(); return
 
         range_header = self.headers.get("Range")
+        if (
+            not download
+            and not range_header
+            and 1024 <= st.st_size <= 8 * 1024 * 1024
+            and hasattr(self, "_accepts_gzip")
+            and self._accepts_gzip()
+            and self._is_compressible_ctype(ctype)
+        ):
+            raw_bytes = path.read_bytes()
+            gz_bytes = gzip.compress(raw_bytes, compresslevel=5)
+            if len(gz_bytes) < len(raw_bytes):
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Vary", "Accept-Encoding")
+                self.send_header("Content-Length", str(len(gz_bytes)))
+                self.send_header("ETag", etag)
+                self.send_header("Last-Modified", email.utils.formatdate(st.st_mtime, usegmt=True))
+                if cache_control:
+                    self.send_header("Cache-Control", cache_control)
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(gz_bytes)
+                return
         start, end = 0, st.st_size - 1
         status = 200
         if range_header:
@@ -706,7 +973,9 @@ document.addEventListener('keydown',e=>{{if((e.ctrlKey||e.metaKey)&&e.key.toLowe
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{st.st_size}")
         if download:
-            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            safe_ascii = path.name.encode("ascii", "ignore").decode("ascii").replace('"', "_").replace("\r", "").replace("\n", "") or "download"
+            utf8_name = urllib.parse.quote(path.name, safe="")
+            self.send_header("Content-Disposition", f'attachment; filename="{safe_ascii}"; filename*=UTF-8\'\'{utf8_name}')
         self.end_headers()
         if self.command == "HEAD":
             return

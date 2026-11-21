@@ -74,6 +74,8 @@ class CropOverwriteTests(unittest.TestCase):
     def test_viewer_preserves_save_as_and_offers_separate_overwrite(self):
         with urllib.request.urlopen(self.base+'/',timeout=3) as response:
             page=response.read().decode('utf-8')
+        with urllib.request.urlopen(self.base+'/static/gallery_media.js',timeout=3) as response:
+            page+='\n'+response.read().decode('utf-8')
         self.assertIn('id="modalCropBtn"',page)
         self.assertIn('id="modalCropOverwriteBtn"',page)
         self.assertIn('onclick="cropViewedImage(true)"',page)
@@ -165,7 +167,7 @@ class CropOverwriteTests(unittest.TestCase):
         with urllib.request.urlopen(self.base+'/api/thumb?p=photo.png',timeout=8) as response:
             new_thumb=response.read()
         self.assertNotEqual(old_thumb,new_thumb)
-        with urllib.request.urlopen(self.base+'/',timeout=8) as response:
+        with urllib.request.urlopen(self.base+'/static/gallery_media.js',timeout=8) as response:
             html=response.read().decode('utf-8')
         self.assertIn('updated.url=refreshedUrl',html)
 
