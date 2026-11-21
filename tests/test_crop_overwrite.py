@@ -75,12 +75,11 @@ class CropOverwriteTests(unittest.TestCase):
         with urllib.request.urlopen(self.base+'/',timeout=3) as response:
             page=response.read().decode('utf-8')
         with urllib.request.urlopen(self.base+'/static/gallery_media.js',timeout=3) as response:
-            page+='\n'+response.read().decode('utf-8')
-        self.assertIn('id="modalCropBtn"',page)
-        self.assertIn('id="modalCropOverwriteBtn"',page)
-        self.assertIn('onclick="cropViewedImage(true)"',page)
-        self.assertIn('async function cropViewedImage(overwriteOriginal=false)',page)
-        self.assertIn('original image?',page)
+            media_js=response.read().decode('utf-8')
+        self.assertRegex(page, r'<button\b[^>]*\bid="modalCropBtn"[^>]*\bonclick="cropViewedImage\(\s*\)"')
+        self.assertRegex(page, r'<button\b[^>]*\bid="modalCropOverwriteBtn"[^>]*\bonclick="cropViewedImage\(\s*true\s*\)"')
+        self.assertRegex(media_js, r'\bfunction\s+cropViewedImage\s*\(\s*overwriteOriginal\s*=\s*false\s*\)')
+        self.assertRegex(media_js, r'\bconfirm\s*\([^;]*?(?i:overwrite original image\?)')
 
     def test_success_changes_original_without_new_file_and_cas(self):
         expected=self.version()
@@ -156,7 +155,7 @@ class CropOverwriteTests(unittest.TestCase):
 
     def test_thumbnail_reflects_overwrite_and_versioned_viewer_cache(self):
         # Ensure byte-for-byte changed thumb where PIL is installed and
-        # explicit ?v=SHA versioned viewer refresh exists in HTML.
+        # the viewer URL uses the new version returned by overwrite.
         try:
             with urllib.request.urlopen(self.base+'/api/thumb?p=photo.png',timeout=8) as response:
                 old_thumb=response.read()
@@ -168,8 +167,9 @@ class CropOverwriteTests(unittest.TestCase):
             new_thumb=response.read()
         self.assertNotEqual(old_thumb,new_thumb)
         with urllib.request.urlopen(self.base+'/static/gallery_media.js',timeout=8) as response:
-            html=response.read().decode('utf-8')
-        self.assertIn('updated.url=refreshedUrl',html)
+            media_js=response.read().decode('utf-8')
+        self.assertRegex(media_js, r"['\"]\?v=['\"]\s*\+\s*encodeURIComponent\s*\(\s*update\.version\b")
+        self.assertRegex(media_js, r'\bupdated\.url\s*=\s*refreshedUrl\b')
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows sharing-lock behavior')
     def test_windows_reader_disallowing_delete_returns_423_untouched(self):
