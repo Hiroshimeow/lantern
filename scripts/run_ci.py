@@ -7,7 +7,8 @@ Runs:
   3. Full repository-native `unittest discover -s tests` (zero omitted modules).
   4. Strict browser gate: when --require-browser or LANTERN_CI_REQUIRE_BROWSER=1
      is set, skipped acceptance browser E2E tests fail the run. Explicitly
-     opt-in crop performance benchmarks remain allowed to skip.
+     opt-in crop performance benchmarks and explicitly retired Markdown-mode
+     cases (whose skip reason says they were replaced) remain allowed to skip.
 """
 from __future__ import annotations
 
@@ -72,7 +73,10 @@ def main(argv: list[str] | None = None) -> int:
             (test, reason)
             for test, reason in result.skipped
             if "cropperformancee2e" not in str(test).lower()
-            and "crop performance" not in str(reason).lower()
+            and not (
+                "markdownmodese2e" in str(test).lower()
+                and "removed; replaced" in str(reason).lower()
+            )
             and any(k in str(test).lower() or k in str(reason).lower() for k in ("browser", "e2e", "chromium", "playwright"))
         ]
         if browser_skips:
