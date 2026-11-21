@@ -492,7 +492,11 @@ class LanternV4UpgradesTests(unittest.TestCase):
         # Bug 3: Stop button hidden when [hidden] is set; turn_end releases _turn_in_progress; New Conversation resets state
         self.assertIn(".lc-stop-btn[hidden]", chat_css)
         self.assertIn("display: none !important", chat_css)
-        self.assertIn("snap.isNew || sessionChanged || snap.messages.length === 0", chat_js)
+        # The current branch spells this reset predicate as explicit branches;
+        # retain the semantic contract without depending on the old one-line form.
+        self.assertIn("if (snap.isNew)", chat_js)
+        self.assertIn("sessionChanged", chat_js)
+        self.assertIn("snap.messages.length === 0", chat_js)
 
         # Bug 4: Redundant 🎯 Double-Click Jump button removed from toolbar
         self.assertNotIn("🎯 Double-Click Jump", shell_js)
@@ -1508,7 +1512,7 @@ class SharedSessionTests(unittest.TestCase):
 class LanternV79HarnessTests(unittest.TestCase):
     def setUp(self) -> None:
         import sys
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.base = Path(self.tmp.name)
         self.root = self.base / "project"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -1532,6 +1536,8 @@ class LanternV79HarnessTests(unittest.TestCase):
                 },
             }),
         )
+        # Keep this fixture isolated from operator-global skills installed on the host.
+        self.bot._save_prefs({"useGlobalSkills": False})
 
     def tearDown(self) -> None:
         self.bot.close()
@@ -1592,7 +1598,7 @@ class LanternV79HarnessTests(unittest.TestCase):
     def test_v79_unopened_unattached_markdown_edit_creates_baseline_and_emits_lock(self) -> None:
         unopened = self.root / "unopened_guide.md"
         original_text = "# Original Guide\nBefore bot edit.\n"
-        unopened.write_text(original_text, encoding="utf-8")
+        unopened.write_text(original_text, encoding="utf-8", newline="")
 
         # Simulate Pi tool_execution_start targeting unopened_guide.md before any browser open
         self.events.clear()

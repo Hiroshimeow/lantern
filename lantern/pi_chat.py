@@ -5216,6 +5216,15 @@ class LanternBotManager:
                 proc.stdin.close()
         except Exception:
             pass
+        if os.name == "nt" and proc.pid:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    timeout=2.5,
+                )
+            except Exception:
+                pass
         try:
             if proc.poll() is None:
                 proc.terminate()
@@ -5224,6 +5233,15 @@ class LanternBotManager:
             try:
                 proc.kill()
                 proc.wait(timeout=1)
+            except Exception:
+                pass
+        if os.name == "nt" and proc.pid:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    timeout=2.5,
+                )
             except Exception:
                 pass
         for stream in (proc.stdout, proc.stderr):
