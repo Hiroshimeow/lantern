@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import tarfile
 import time
 import urllib.parse
@@ -17,6 +18,38 @@ from typing import List, Optional, Tuple
 from lantern.config import (CHUNK_SIZE, MAX_TEXT_PREVIEW, MAX_ZIP_PAYLOAD, normalize_conflict, normalize_recursive_depth, normalize_sort)
 from lantern.filesystem import BadRequest
 from lantern.md_editor import MarkdownEditorError, read_document as read_markdown_document
+
+
+MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024  # 64 MiB per chunk cap
+CHUNK_STAGE_TTL_SEC = 24 * 3600
+_CHUNK_LOCKS_GUARD = threading.Lock()
+_CHUNK_LOCKS: dict[str, threading.Lock] = {}
+_CANCEL_LOCKS: dict[str, threading.Lock] = {}
+_LAST_CHUNK_SWEEP_AT = 0.0
+
+
+def _get_chunk_lock(upload_id: str) -> threading.Lock:
+    with _CHUNK_LOCKS_GUARD:
+        lock = _CHUNK_LOCKS.get(upload_id)
+        if lock is None:
+            lock = threading.Lock()
+            _CHUNK_LOCKS[upload_id] = lock
+        return lock
+
+
+def _drop_chunk_lock(upload_id: str) -> None:
+    with _CHUNK_LOCKS_GUARD:
+        _CHUNK_LOCKS.pop(upload_id, None)
+
+
+def _get_cancel_lock(upload_id: str) -> threading.Lock:
+    with _CHUNK_LOCKS_GUARD:
+        lock = _CANCEL_LOCKS.get(upload_id)
+        if lock is None:
+            lock = threading.Lock()
+            _CANCEL_LOCKS[upload_id] = lock
+        return lock
+
 
 class FilesRoutes:
     def api_list(self, query: str) -> None:
@@ -30,17 +63,30 @@ class FilesRoutes:
         recursive_depth = normalize_recursive_depth(recursive_depth_raw)
         folders_first_raw = qs.get("folders_first", ["true" if self.app.config.folders_first else "false"])[0]
         folders_first = str(folders_first_raw).lower() not in {"0", "false", "no", "off"}
-        target = self.app.files.safe_join("/" + rel)
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
         if not target.is_dir():
             self.send_json(404, {"error": "not a folder"}); return
-        items, next_offset, has_more, errors, total = self.app.files.list_entries_page(target, offset, limit, sort_mode, q, folders_first, recursive_depth)
-        if offset == 0:
+        sh_raw = qs.get("show_hidden", [None])[0]
+        ss_raw = qs.get("show_system", [None])[0]
+        show_hidden = None if sh_raw is None else (str(sh_raw).lower() in {"1", "true", "yes", "on"})
+        show_system = show_hidden if ss_raw is None else (str(ss_raw).lower() in {"1", "true", "yes", "on"})
+        media_filter = str(qs.get("media_filter", [""])[0] or "").strip().lower()
+        if media_filter not in {"", "all", "media", "image", "video"}:
+            media_filter = ""
+        items, next_offset, has_more, errors, total = self.app.files.list_entries_page(
+            target, offset, limit, sort_mode, q, folders_first, recursive_depth,
+            show_hidden=show_hidden, show_system=show_system, media_filter=media_filter,
+        )
+        if offset == 0 and not media_filter:
             rel_norm = target.resolve().relative_to(self.app.config.root.resolve()).as_posix()
             if rel_norm != ".":
                 parent = Path(rel_norm).parent.as_posix()
                 href = "/" if parent == "." else "/" + self.app.files.quote_path(parent) + "/"
                 items.insert(0, {"special": "back", "href": href})
-        self.send_json(200, {"items": items, "nextOffset": next_offset, "hasMore": has_more, "errors": errors, "total": total, "sort": sort_mode, "folders_first": folders_first, "recursive_depth": recursive_depth_raw if q.strip() else "0"})
+        payload = {"items": items, "nextOffset": next_offset, "hasMore": has_more, "errors": errors, "total": total, "sort": sort_mode, "folders_first": folders_first, "recursive_depth": recursive_depth_raw if q.strip() else "0"}
+        if media_filter:
+            payload["media_filter"] = media_filter
+        self.send_json(200, payload)
 
 
     def api_tree(self, query: str) -> None:
@@ -54,10 +100,14 @@ class FilesRoutes:
         target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
         if not target.is_dir():
             self.send_json(404, {"error": "not a folder"}); return
+        sh_raw = qs.get("show_hidden", [None])[0]
+        ss_raw = qs.get("show_system", [None])[0]
+        show_hidden = None if sh_raw is None else (str(sh_raw).lower() in {"1", "true", "yes", "on"})
+        show_system = show_hidden if ss_raw is None else (str(ss_raw).lower() in {"1", "true", "yes", "on"})
         if ancestors:
-            payload = self.app.files.list_tree_with_ancestors(target, max_children=max_children)
+            payload = self.app.files.list_tree_with_ancestors(target, max_children=max_children, show_hidden=show_hidden, show_system=show_system)
         else:
-            payload = self.app.files.list_tree_children(target, max_children=max_children)
+            payload = self.app.files.list_tree_children(target, max_children=max_children, show_hidden=show_hidden, show_system=show_system)
         self.send_json(200, payload)
 
     def api_properties(self, query: str) -> None:
@@ -173,17 +223,121 @@ class FilesRoutes:
         self.send_json(200, {"ok": True, "file": self.app.files.rel_url_for_path(dest), "bytes": written})
 
 
-    def _chunk_stage_dir(self, upload_id: str) -> Path:
+    def _cleanup_stale_chunk_stages(self, base: Path) -> None:
+        global _LAST_CHUNK_SWEEP_AT
+        now = time.time()
+        with _CHUNK_LOCKS_GUARD:
+            if now - _LAST_CHUNK_SWEEP_AT < 300.0:
+                return
+            _LAST_CHUNK_SWEEP_AT = now
+        cutoff = now - CHUNK_STAGE_TTL_SEC
+        for root_dir in (base, (self.app.config.cache_dir / "upload_outcomes").resolve()):
+            if not root_dir.is_dir():
+                continue
+            try:
+                for entry in root_dir.iterdir():
+                    try:
+                        if entry.stat().st_mtime < cutoff:
+                            if entry.is_dir():
+                                shutil.rmtree(entry, ignore_errors=True)
+                            else:
+                                entry.unlink(missing_ok=True)
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+
+    def _chunk_stage_dir(self, upload_id: str) -> Tuple[str, Path]:
         clean_id = re.sub(r"[^A-Za-z0-9._-]", "", str(upload_id or ""))[:80]
         if len(clean_id) < 6:
             raise BadRequest("invalid upload id")
         base = (self.app.config.cache_dir / "upload_chunks").resolve()
+        self._cleanup_stale_chunk_stages(base)
         stage = (base / clean_id).resolve()
         try:
             stage.relative_to(base)
         except ValueError:
             raise BadRequest("invalid upload id")
-        return stage
+        return clean_id, stage
+
+    def _outcome_path(self, clean_id: str) -> Path:
+        base = (self.app.config.cache_dir / "upload_outcomes").resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        return (base / f"{clean_id}.json").resolve()
+
+    def _cancel_path(self, clean_id: str) -> Path:
+        base = (self.app.config.cache_dir / "upload_outcomes").resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        return (base / f"{clean_id}.cancel").resolve()
+
+    def _cancel_requested(self, clean_id: str) -> bool:
+        with _get_cancel_lock(clean_id):
+            return self._cancel_path(clean_id).is_file()
+
+    def _request_cancel(self, clean_id: str) -> None:
+        with _get_cancel_lock(clean_id):
+            marker = self._cancel_path(clean_id)
+            tmp = marker.with_name(f".{clean_id}.{os.getpid()}.{threading.get_ident()}.cancel.tmp")
+            try:
+                tmp.write_text("cancel", encoding="utf-8")
+                os.replace(tmp, marker)
+            finally:
+                tmp.unlink(missing_ok=True)
+
+    def _clear_cancel(self, clean_id: str) -> None:
+        with _get_cancel_lock(clean_id):
+            self._cancel_path(clean_id).unlink(missing_ok=True)
+
+    def _record_aborted_upload(self, clean_id: str, stage: Path) -> dict:
+        shutil.rmtree(stage, ignore_errors=True)
+        record = {
+            "state": "aborted-before-publication",
+            "published": False,
+            "aborted": True,
+            "updatedAt": time.time(),
+        }
+        self._write_upload_outcome(clean_id, record)
+        self._clear_cancel(clean_id)
+        return record
+
+    def _read_upload_outcome(self, clean_id: str) -> Optional[dict]:
+        p = self._outcome_path(clean_id)
+        if not p.is_file():
+            return None
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _write_upload_outcome(self, clean_id: str, record: dict) -> None:
+        p = self._outcome_path(clean_id)
+        tmp = p.with_name(f".{clean_id}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, p)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def api_upload_status(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        upload_id = qs.get("id", [""])[0]
+        clean_id, stage = self._chunk_stage_dir(upload_id)
+        with _get_chunk_lock(clean_id):
+            outcome = self._read_upload_outcome(clean_id)
+            if outcome:
+                self.send_json(200, {"ok": True, "id": clean_id, **outcome})
+                return
+            if self._cancel_requested(clean_id):
+                record = self._record_aborted_upload(clean_id, stage)
+                self.send_json(409, {"error": "upload aborted before publication", "code": "aborted", **record})
+                return
+        self.send_json(200, {
+            "ok": True, "id": clean_id,
+            "state": "not-published", "published": False, "aborted": False,
+        })
 
     def api_upload_chunk(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
@@ -196,8 +350,30 @@ class FilesRoutes:
         if index < 0 or total_chunks <= 0 or index >= total_chunks or total_chunks > 10000:
             raise BadRequest("chunk index out of range")
         total = self.content_length()
-        stage = self._chunk_stage_dir(upload_id)
-        stage.mkdir(parents=True, exist_ok=True)
+        if total < 0 or total > MAX_UPLOAD_CHUNK_BYTES:
+            raise BadRequest(f"chunk size out of range (max {MAX_UPLOAD_CHUNK_BYTES} bytes)")
+        clean_id, stage = self._chunk_stage_dir(upload_id)
+
+        with _get_chunk_lock(clean_id):
+            outcome = self._read_upload_outcome(clean_id)
+            if outcome and outcome.get("state") in {"aborted-before-publication", "published"}:
+                self.send_json(409, {
+                    "error": f"upload already {outcome.get('state')}",
+                    "code": "aborted" if outcome.get("state") == "aborted-before-publication" else "published",
+                    "state": outcome.get("state"),
+                    "published": bool(outcome.get("published")),
+                })
+                return
+            if self._cancel_requested(clean_id):
+                record = self._record_aborted_upload(clean_id, stage)
+                self.send_json(409, {"error": "upload aborted before publication", "code": "aborted", **record})
+                return
+            stage.mkdir(parents=True, exist_ok=True)
+            if not outcome:
+                self._write_upload_outcome(clean_id, {
+                    "state": "not-published", "published": False, "aborted": False, "updatedAt": time.time(),
+                })
+
         part_path = stage / f"part-{index:06d}"
         tmp: Optional[Path] = None
         written = 0
@@ -213,17 +389,31 @@ class FilesRoutes:
                     out.write(buf)
                     written += len(buf)
                     remaining -= len(buf)
-            if written != total:
+            if written != total or remaining != 0:
                 raise BadRequest("incomplete chunk body")
-            os.replace(tmp, part_path)
-            tmp = None
+            with _get_chunk_lock(clean_id):
+                outcome = self._read_upload_outcome(clean_id)
+                if (outcome and outcome.get("state") in {"aborted-before-publication", "published"}) or not stage.is_dir():
+                    self.send_json(409, {
+                        "error": "upload aborted or completed",
+                        "code": "aborted",
+                        "state": (outcome or {}).get("state", "aborted-before-publication"),
+                        "published": bool((outcome or {}).get("published")),
+                    })
+                    return
+                if self._cancel_requested(clean_id):
+                    record = self._record_aborted_upload(clean_id, stage)
+                    self.send_json(409, {"error": "upload aborted before publication", "code": "aborted", **record})
+                    return
+                os.replace(tmp, part_path)
+                tmp = None
         finally:
             if tmp is not None:
                 try:
                     tmp.unlink(missing_ok=True)
                 except OSError:
                     pass
-        self.send_json(200, {"ok": True, "id": upload_id, "index": index, "written": written})
+        self.send_json(200, {"ok": True, "id": clean_id, "index": index, "written": written, "state": "not-published"})
 
     def api_upload_complete(self) -> None:
         data = self.read_json()
@@ -237,68 +427,201 @@ class FilesRoutes:
             raise BadRequest("invalid total chunks")
         if total_chunks <= 0 or total_chunks > 10000:
             raise BadRequest("invalid total chunks")
-        stage = self._chunk_stage_dir(upload_id)
-        parts = [stage / f"part-{i:06d}" for i in range(total_chunks)]
-        missing = [i for i, p in enumerate(parts) if not p.is_file()]
-        if missing:
-            raise BadRequest(f"missing chunks: {missing[:5]}")
+        clean_id, stage = self._chunk_stage_dir(upload_id)
 
         dest = self.resolve_upload_target(base_rel, name)
         self.app.files.protect_config_mutation(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            if conflict == "skip":
-                shutil.rmtree(stage, ignore_errors=True)
-                self.send_json(200, {"ok": True, "skipped": True, "file": self.app.files.rel_url_for_path(dest), "reason": "exists"}); return
-            if conflict == "ask":
-                self.send_json(409, {"error": "exists", "file": self.app.files.rel_url_for_path(dest)}); return
 
-        tmp: Optional[Path] = None
-        written = 0
-        try:
-            fd, tmp_name = tempfile.mkstemp(prefix=".lantern-uploading-", dir=str(dest.parent))
-            tmp = Path(tmp_name)
-            with os.fdopen(fd, "wb") as out:
-                for p in parts:
-                    with open(p, "rb") as src:
-                        while True:
-                            buf = src.read(CHUNK_SIZE)
-                            if not buf:
-                                break
-                            out.write(buf)
-                            written += len(buf)
-            if conflict == "overwrite":
-                os.replace(tmp, dest)
-                final_dest = dest
-            else:
-                final_dest = self.app.files.unique_path(dest) if dest.exists() else dest
-                os.replace(tmp, final_dest)
-            tmp = None
-        finally:
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        shutil.rmtree(stage, ignore_errors=True)
-        self.send_json(200, {"ok": True, "file": self.app.files.rel_url_for_path(final_dest), "size": written})
+        with _get_chunk_lock(clean_id):
+            outcome = self._read_upload_outcome(clean_id)
+            if outcome:
+                st = outcome.get("state")
+                if st == "published":
+                    self.send_json(200, {"ok": True, "id": clean_id, **outcome})
+                    return
+                if st == "aborted-before-publication":
+                    self.send_json(409, {
+                        "error": "upload aborted before publication",
+                        "code": "aborted",
+                        "state": "aborted-before-publication",
+                        "published": False,
+                        "aborted": True,
+                    })
+                    return
+            if not stage.is_dir():
+                self.send_json(409, {
+                    "error": "upload session already completed or aborted",
+                    "code": "aborted",
+                    "state": "aborted-before-publication",
+                    "published": False,
+                    "aborted": True,
+                })
+                return
+            parts = [stage / f"part-{i:06d}" for i in range(total_chunks)]
+            missing = [i for i, p in enumerate(parts) if not p.is_file()]
+            if missing:
+                raise BadRequest(f"missing chunks: {missing[:5]}")
+
+            self._write_upload_outcome(clean_id, {
+                "state": "publishing", "published": False, "aborted": False, "updatedAt": time.time(),
+            })
+
+            tmp: Optional[Path] = None
+            written = 0
+            final_dest = dest
+            try:
+                fd, tmp_name = tempfile.mkstemp(prefix=".lantern-uploading-", dir=str(dest.parent))
+                tmp = Path(tmp_name)
+                with os.fdopen(fd, "wb") as out:
+                    for p in parts:
+                        with open(p, "rb") as src_f:
+                            while True:
+                                buf = src_f.read(CHUNK_SIZE)
+                                if not buf:
+                                    break
+                                out.write(buf)
+                                written += len(buf)
+                    out.flush()
+                    try:
+                        os.fsync(out.fileno())
+                    except OSError:
+                        pass
+
+                if conflict == "overwrite":
+                    # Serialize explicit overwrite with image content-version/CAS lock.
+                    cancelled = False
+                    with self.app.crop.lock:
+                        with _get_cancel_lock(clean_id):
+                            cancelled = self._cancel_path(clean_id).is_file()
+                            if not cancelled:
+                                os.replace(tmp, dest)
+                    if cancelled:
+                        record = self._record_aborted_upload(clean_id, stage)
+                        self.send_json(409, {"error": "upload aborted before publication", "code": "aborted", **record})
+                        return
+                    final_dest = dest
+                    tmp = None
+                else:
+                    # Atomic no-clobber publication via os.link (never replaces an existing path).
+                    for index in range(10000 if conflict == "rename" else 1):
+                        candidate = dest if index == 0 else dest.with_name(f"{dest.stem} ({index}){dest.suffix}")
+                        cancelled = False
+                        try:
+                            with _get_cancel_lock(clean_id):
+                                cancelled = self._cancel_path(clean_id).is_file()
+                                if not cancelled:
+                                    os.link(tmp, candidate)
+                            if cancelled:
+                                record = self._record_aborted_upload(clean_id, stage)
+                                self.send_json(409, {"error": "upload aborted before publication", "code": "aborted", **record})
+                                return
+                        except FileExistsError:
+                            if conflict == "skip":
+                                record = {
+                                    "state": "published",
+                                    "published": True,
+                                    "aborted": False,
+                                    "skipped": True,
+                                    "file": self.app.files.rel_url_for_path(dest),
+                                    "reason": "exists",
+                                    "updatedAt": time.time(),
+                                }
+                                self._write_upload_outcome(clean_id, record)
+                                shutil.rmtree(stage, ignore_errors=True)
+                                self.send_json(200, {"ok": True, "id": clean_id, **record})
+                                return
+                            if conflict == "ask":
+                                self._write_upload_outcome(clean_id, {
+                                    "state": "not-published", "published": False, "aborted": False, "updatedAt": time.time(),
+                                })
+                                self.send_json(409, {
+                                    "error": "exists",
+                                    "file": self.app.files.rel_url_for_path(dest),
+                                    "state": "not-published",
+                                })
+                                return
+                            continue
+                        except OSError as exc:
+                            self._write_upload_outcome(clean_id, {
+                                "state": "failed", "published": False, "aborted": False,
+                                "error": str(exc), "updatedAt": time.time(),
+                            })
+                            raise BadRequest(f"atomic no-overwrite upload unsupported on this filesystem: {exc}") from exc
+                        final_dest = candidate
+                        tmp.unlink()
+                        tmp = None
+                        break
+                    else:
+                        self._write_upload_outcome(clean_id, {
+                            "state": "failed", "published": False, "aborted": False,
+                            "error": "all rename candidates exist", "updatedAt": time.time(),
+                        })
+                        self.send_json(409, {
+                            "error": "all rename candidates exist",
+                            "file": self.app.files.rel_url_for_path(dest),
+                            "state": "failed",
+                        })
+                        return
+            except Exception as exc:
+                if not isinstance(exc, BadRequest):
+                    self._write_upload_outcome(clean_id, {
+                        "state": "failed", "published": False, "aborted": False,
+                        "error": str(exc), "updatedAt": time.time(),
+                    })
+                raise
+            finally:
+                if tmp is not None:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+            # Persist durable terminal published state BEFORE removing stage or returning.
+            record = {
+                "state": "published",
+                "published": True,
+                "aborted": False,
+                "file": self.app.files.rel_url_for_path(final_dest),
+                "size": written,
+                "bytes": written,
+                "updatedAt": time.time(),
+            }
+            self._clear_cancel(clean_id)
+            self._write_upload_outcome(clean_id, record)
+            shutil.rmtree(stage, ignore_errors=True)
+        self.send_json(200, {"ok": True, "id": clean_id, **record})
 
     def api_upload_abort(self) -> None:
         data = self.read_json()
         upload_id = str(data.get("id") or "")
-        if upload_id:
-            try:
-                stage = self._chunk_stage_dir(upload_id)
-                shutil.rmtree(stage, ignore_errors=True)
-            except BadRequest:
-                pass
-        self.send_json(200, {"ok": True})
+        if not upload_id:
+            self.send_json(200, {"ok": True, "state": "aborted-before-publication", "aborted": True, "published": False})
+            return
+        try:
+            clean_id, stage = self._chunk_stage_dir(upload_id)
+        except BadRequest:
+            self.send_json(200, {"ok": True, "state": "aborted-before-publication", "aborted": True, "published": False})
+            return
+        # Publish the cancellation intent before waiting for the completion
+        # transaction.  Completion observes this marker at its final
+        # pre-publication gate, including while waiting on the crop lock.
+        self._request_cancel(clean_id)
+        with _get_chunk_lock(clean_id):
+            outcome = self._read_upload_outcome(clean_id)
+            if outcome and outcome.get("state") == "published":
+                # Publication already committed; NEVER report aborted or delete the file.
+                self._clear_cancel(clean_id)
+                self.send_json(200, {"ok": True, "id": clean_id, **outcome})
+                return
+            record = self._record_aborted_upload(clean_id, stage)
+        self.send_json(200, {"ok": True, "id": clean_id, **record})
 
     def api_save(self) -> None:
         data = self.read_json()
         rel = str(data.get("path", ""))
         content = str(data.get("content", ""))
-        target = self.app.files.safe_join("/" + rel)
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(str(rel)))
         if not target.is_file():
             self.send_json(404, {"error": "file not found"}); return
         if self.app.files.classify(target) != "text":
@@ -311,7 +634,7 @@ class FilesRoutes:
 
     def api_mkdir(self) -> None:
         data = self.read_json()
-        base = self.app.files.safe_join("/" + str(data.get("path", "")))
+        base = self.app.files.safe_join("/" + self.app.files.quote_path(str(data.get("path", ""))))
         name = self.app.files.clean_component(str(data.get("name", "")))
         dest = (base / name).resolve()
         dest.relative_to(self.app.config.root.resolve())
@@ -320,7 +643,7 @@ class FilesRoutes:
 
     def api_newfile(self) -> None:
         data = self.read_json()
-        base = self.app.files.safe_join("/" + str(data.get("path", "")))
+        base = self.app.files.safe_join("/" + self.app.files.quote_path(str(data.get("path", ""))))
         name = self.app.files.clean_component(str(data.get("name", "")))
         dest = (base / name).resolve()
         dest.relative_to(self.app.config.root.resolve())
@@ -332,7 +655,7 @@ class FilesRoutes:
 
     def api_rename(self) -> None:
         data = self.read_json()
-        target = self.app.files.safe_join("/" + str(data.get("path", "")))
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(str(data.get("path", ""))))
         name = self.app.files.clean_component(str(data.get("name", "")))
         if not target.exists():
             self.send_json(404, {"error": "not found"}); return
@@ -564,7 +887,7 @@ class FilesRoutes:
         paths = data.get("paths") or []
         deleted = 0
         for rel in paths:
-            target = self.app.files.safe_join("/" + str(rel))
+            target = self.app.files.safe_join("/" + self.app.files.quote_path(str(rel)))
             if target.resolve() == self.app.config.root.resolve():
                 continue
             self.app.files.protect_config_mutation(target)
@@ -607,7 +930,7 @@ class FilesRoutes:
         # ZipFile needs seekable output for central directory? It can write to unseekable in py3.5+ via data descriptors.
         with zipfile.ZipFile(self.wfile, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=3) as zf:
             for rel in paths:
-                target = self.app.files.safe_join("/" + str(rel))
+                target = self.app.files.safe_join("/" + self.app.files.quote_path(str(rel)))
                 if not target.exists():
                     continue
                 if target.is_dir():
@@ -634,204 +957,258 @@ class FilesRoutes:
         esc_rel = self.app.files.html_escape(rel)
         body = f"""
 <div class="app explorer-app">
-  <header class="top">
+  <header class="top" id="topHeader">
     <div class="top-inner">
       <div class="brand">
-        <button id="treeToggleBtn" class="btn small icon-only" onclick="toggleTreePane()" title="Ẩn/hiện cây thư mục (Ctrl+B)" aria-label="Toggle folder tree">☰</button>
-        <div class="logo">LD</div>
+        <button id="treeToggleBtn" class="btn icon-only" onclick="toggleTreePane()" title="Toggle folder tree (Ctrl+B)" aria-label="Toggle folder tree" aria-expanded="false" aria-controls="treePane">☰</button>
+        <div class="logo" aria-hidden="true">LD</div>
         <div class="brand-meta"><div class="brand-title">{esc_title}</div><div class="brand-sub" title="{esc_root}">{esc_root}</div></div>
       </div>
-      <div class="nav-cluster">
-        <button id="navBackBtn" class="btn small icon-only" onclick="navHistoryBack()" title="Quay lại (Alt+←)" disabled>←</button>
-        <button id="navFwdBtn" class="btn small icon-only" onclick="navHistoryForward()" title="Tiến tới (Alt+→)" disabled>→</button>
-        <button id="navUpBtn" class="btn small icon-only" onclick="navParentFolder()" title="Lên thư mục cha (Alt+↑)">↑</button>
-        <button class="btn small icon-only" onclick="refreshFolder()" title="Làm mới (F5)">↻</button>
+      <div class="nav-cluster" role="group" aria-label="Folder history">
+        <button id="navBackBtn" class="btn icon-only" onclick="navHistoryBack()" title="Back (Alt+Left)" aria-label="Back" disabled>←</button>
+        <button id="navFwdBtn" class="btn icon-only" onclick="navHistoryForward()" title="Forward (Alt+Right)" aria-label="Forward" disabled>→</button>
+        <button id="navUpBtn" class="btn icon-only" onclick="navParentFolder()" title="Parent folder (Alt+Up)" aria-label="Up">↑</button>
       </div>
-      <div class="address-wrap" id="addressWrap" title="Bấm vùng trống hoặc Ctrl+L để nhập đường dẫn">
-        <div class="crumbs" id="crumbsBar">{self.app.views.breadcrumb(rel)}</div>
-        <input id="addressInput" class="address-input hidden" type="text" spellcheck="false" autocomplete="off" placeholder="Nhập đường dẫn tương đối, ví dụ: docs/images">
+      <div class="address-wrap" id="addressWrap" title="Click empty area or press Ctrl+L to type a path">
+        <nav class="crumbs" id="crumbsBar" aria-label="Breadcrumb">{self.app.views.breadcrumb(rel)}</nav>
+        <input id="addressInput" class="address-input hidden" type="text" spellcheck="false" autocomplete="off" placeholder="Enter path, e.g. Photos/2026" aria-label="Folder path">
       </div>
-      <div class="search">
-        <select id="recursiveDepth" class="search-depth" onchange="changeRecursiveDepth(this)" title="Độ sâu tìm đệ quy; 0 chỉ tìm thư mục hiện tại">
-          <option value="0">Hiện tại</option>
-          <option value="all">All</option>
-          <option value="1">1 cấp</option>
-          <option value="2">2 cấp</option>
-          <option value="3">3 cấp</option>
-          <option value="4">4 cấp</option>
-          <option value="5">5 cấp</option>
-          <option value="6">6 cấp</option>
+      <div class="search" id="searchCluster" role="search">
+        <select id="recursiveDepth" class="search-depth" onchange="changeRecursiveDepth(this)" title="Search scope" aria-label="Search scope">
+          <option value="0" data-i18n="scopeHere">Here</option>
+          <option value="all" data-i18n="scopeAll">All</option>
+          <option value="1">1 lvl</option>
+          <option value="2">2 lvl</option>
+          <option value="3">3 lvl</option>
         </select>
-        <input id="q" type="search" placeholder="Tìm file, đuôi, đường dẫn... (Ctrl+F)">
+        <input id="q" type="search" placeholder="Search files... (Ctrl+F)" aria-label="Search files">
+        <button id="searchClearBtn" class="btn ghost icon-only hidden" onclick="clearSearchInput()" title="Clear search" aria-label="Clear search">✕</button>
       </div>
       <div class="actions">
-        <div id="sysTelemetryPill" class="sys-telemetry-pill" onclick="refreshSysTelemetry()" title="GPU / VRAM &amp; RAM Status">🎮 <span>VRAM · GPU · RAM</span></div>
-        <button class="btn primary" onclick="openUploadDialog()">⬆️ <span class="label">Upload</span></button>
-        <button class="btn" onclick="mkdir()">➕ <span class="label">Thư mục</span></button>
-        <button class="btn" onclick="newFile()">📝 <span class="label">File</span></button>
-        <button class="btn terminal-btn" onclick="toggleTerminal()">⌨️ <span class="label">Terminal</span></button>
+        <button id="mobileSearchBtn" class="btn icon-only mobile-only" onclick="toggleMobileSearch()" title="Search files" aria-label="Search" aria-expanded="false" aria-controls="mobileSearchBar">🔍</button>
+        <button class="btn primary" onclick="openUploadDialog()" title="Upload files or folders" aria-label="Upload">⬆️ <span class="label" data-i18n="upload">Upload</span></button>
+        <button class="btn desktop-only" onclick="mkdir()" title="Create new folder" aria-label="New folder">➕ <span class="label" data-i18n="newFolder">New</span></button>
+        <button id="optionsBtn" class="btn" onclick="toggleOptionsMenu(event)" title="View, sort &amp; settings" aria-label="Options" aria-haspopup="dialog" aria-expanded="false" aria-controls="optionsMenu">⚙ <span class="label" data-i18n="options">Options</span></button>
+        <button class="btn terminal-btn desktop-only" onclick="toggleTerminal()" title="Open Terminal &amp; Git" aria-label="Terminal">⌨️ <span class="label">Terminal</span></button>
       </div>
     </div>
-    <div class="toolbar">
-      <div class="view-toggle" role="group" aria-label="View mode">
-        <button data-view="large" onclick="setView('large')" title="Ảnh lớn (Gallery)">Large</button>
-        <button data-view="grid" onclick="setView('grid')" title="Lưới chuẩn">Grid</button>
-        <button data-view="list" onclick="setView('list')" title="Danh sách gọn">List</button>
-        <button data-view="details" onclick="setView('details')" title="Chi tiết kiểu Windows">Details</button>
+    <div id="mobileSearchBar" class="mobile-search-bar hidden" role="search" aria-label="Mobile file search">
+      <select id="mobileRecursiveDepth" class="search-depth" onchange="changeRecursiveDepth(this)" aria-label="Search depth">
+        <option value="0" data-i18n="scopeHere">Here</option><option value="all" data-i18n="scopeAll">All</option><option value="1">1 lvl</option><option value="2">2 lvl</option>
+      </select>
+      <input id="mobileQ" type="search" placeholder="Search files..." aria-label="Search files">
+      <button class="btn icon-only ghost" onclick="clearSearchInput(); toggleMobileSearch(false)" aria-label="Close search">✕</button>
+    </div>
+    <div class="toolbar" id="subToolbar">
+      <div class="mode-toggle" role="group" aria-label="Workspace mode">
+        <button data-mode="explorer" class="active" aria-pressed="true" onclick="setAppMode('explorer')" data-i18n="modeExplorer">Explorer</button>
+        <button data-mode="gallery" aria-pressed="false" onclick="setAppMode('gallery')" data-i18n="modeGallery">Gallery</button>
       </div>
-      <select id="sortSelect" class="select" onchange="changeSort(this)" title="Sắp xếp">
-        <option value="name-asc">Tên A→Z</option>
-        <option value="name-desc">Tên Z→A</option>
-        <option value="mtime-desc">Ngày mới nhất</option>
-        <option value="mtime-asc">Ngày cũ nhất</option>
-        <option value="size-desc">Dung lượng lớn nhất</option>
-        <option value="size-asc">Dung lượng nhỏ nhất</option>
-        <option value="type-asc">Loại file A→Z</option>
-        <option value="type-desc">Loại file Z→A</option>
-        <option value="ext-asc">Đuôi file A→Z</option>
-        <option value="ext-desc">Đuôi file Z→A</option>
+      <div class="view-toggle desktop-only" role="group" aria-label="View layout">
+        <button data-view="large" onclick="setView('large')" title="Large thumbnails">Large</button>
+        <button data-view="grid" onclick="setView('grid')" title="Standard grid">Grid</button>
+        <button data-view="list" onclick="setView('list')" title="Compact list">List</button>
+        <button data-view="details" onclick="setView('details')" title="Detailed table">Details</button>
+      </div>
+      <div id="galleryFilterBar" class="gallery-filters hidden" role="group" aria-label="Media filter">
+        <button data-media="all" class="active" aria-pressed="true" onclick="setMediaFilter('all')" data-i18n="filterAll">All</button>
+        <button data-media="image" aria-pressed="false" onclick="setMediaFilter('image')" data-i18n="filterPhotos">Photos</button>
+        <button data-media="video" aria-pressed="false" onclick="setMediaFilter('video')" data-i18n="filterVideos">Videos</button>
+      </div>
+      <select id="sortSelect" class="select desktop-only" onchange="changeSort(this)" title="Sort items" aria-label="Sort items">
+        <option value="name-asc">Name A→Z</option>
+        <option value="name-desc">Name Z→A</option>
+        <option value="mtime-desc">Newest</option>
+        <option value="mtime-asc">Oldest</option>
+        <option value="size-desc">Largest</option>
+        <option value="size-asc">Smallest</option>
+        <option value="type-asc">Type A→Z</option>
+        <option value="ext-asc">Extension A→Z</option>
       </select>
-      <select id="limitSelect" class="select compact" onchange="changeLimit(this)" title="Số mục tải thêm mỗi lần cuộn">
-        <option value="100">100/trang</option>
-        <option value="220">220/trang</option>
-        <option value="500">500/trang</option>
-        <option value="1000">1000/trang</option>
-      </select>
-      <label class="checkline" title="Giữ thư mục nằm trước file khi sắp xếp"><input id="foldersFirst" type="checkbox" onchange="changeFoldersFirst(this)"> 📁 trước</label>
-      <select id="thumbFit" class="select compact" onchange="changeThumbFit(this)" title="Cách fit thumbnail"><option value="contain">Fit</option><option value="cover">Crop</option></select>
-      <label class="checkline" title="Bật/tắt preview 2x2 cho folder"><input id="folderPreviewToggle" type="checkbox" onchange="toggleFolderPreview(this)"> Mosaic</label>
-      <select id="previewAnim" class="select compact" onchange="changePreviewAnimation(this)" title="Animation folder preview"><option value="none">No anim</option><option value="fade">Fade</option><option value="flip">Flip</option><option value="slide">Slide</option></select>
-      <button id="previewPaneBtn" class="btn small" onclick="togglePreviewPane()" title="Bật/tắt preview pane bên phải">👁 Preview</button>
-      <button class="btn small" onclick="selectVisible()" title="Chọn tất cả mục hiện có (Ctrl+A)">Chọn hết</button>
-      <button class="btn small ghost" onclick="clearSel()">Bỏ chọn</button>
-      <span id="selCount" class="sub"></span>
+      <button id="previewPaneBtn" class="btn small desktop-only" onclick="togglePreviewPane()" title="Toggle side preview pane" aria-pressed="false">👁 <span class="label" data-i18n="preview">Preview</span></button>
+      <button class="btn small icon-only desktop-only" onclick="refreshFolder()" title="Refresh folder (F5)" aria-label="↻ Refresh">↻</button>
+      <span id="selCount" class="sub desktop-only"></span>
       <div class="grow"></div>
-      <button id="pasteBtn" class="btn small primary hidden" onclick="pasteClipboard()" title="Dán vào thư mục hiện tại (Ctrl+V)">📋 Paste</button>
-      <button id="shareBtn" class="btn small hidden" onclick="shareOne()">🔗 Link</button>
-      <button id="previewBtn" class="btn small hidden" onclick="previewSelected()">👁 Xem</button>
-      <button class="btn small" onclick="addPreviewExtension()" title="Thêm đuôi/pattern để plugin đọc nhanh">＋ Đuôi</button>
-      <button id="copyBtn" class="btn small hidden" onclick="copySel()" title="Copy (Ctrl+C)">📋 Copy</button>
-      <button id="moveBtn" class="btn small hidden" onclick="moveSel()" title="Move / Cut (Ctrl+X)">➡️ Move</button>
-      <button id="duplicateBtn" class="btn small hidden" onclick="duplicateSel()">⧉ Nhân bản</button>
-      <button id="batchRenameBtn" class="btn small hidden" onclick="batchRenameSel()">🔤 Đổi hàng loạt</button>
-      <button id="extractBtn" class="btn small hidden" onclick="extractSelected()">📦 Giải nén</button>
-      <button id="archiveBtn" class="btn small hidden" onclick="archiveSelected()">🗜 Nén</button>
-      <button id="renameBtn" class="btn small warn hidden" onclick="renameOne()" title="Đổi tên (F2)">✏️ Đổi tên</button>
-      <button id="downloadBtn" class="btn small hidden" onclick="downloadSelected()">⬇️ Tải</button>
-      <button id="deleteBtn" class="btn small danger hidden" onclick="deleteSel()" title="Xoá (Delete)">🗑️ Xoá</button>
+      <button id="pasteBtn" class="btn small primary hidden" onclick="pasteClipboard()" title="Paste here (Ctrl+V)">📋 <span data-i18n="paste">Paste</span></button>
+    </div>
+    <div id="selectionBar" class="selection-bar hidden" role="toolbar" aria-label="Selection actions">
+      <span id="mobileSelCount" class="mobile-sel-count mobile-only"></span>
+      <button class="btn small desktop-only" onclick="selectVisible()" title="Select all (Ctrl+A)" data-i18n="selectAll">Select all</button>
+      <button class="btn small ghost desktop-only" onclick="clearSel()" data-i18n="clearSel">Clear</button>
+      <button id="previewBtn" class="btn small desktop-only hidden" onclick="previewSelected()">👁 <span data-i18n="open">Open</span></button>
+      <button id="downloadBtn" class="btn small hidden" onclick="downloadSelected()">⬇️ <span data-i18n="download">Download</span></button>
+      <button id="copyBtn" class="btn small desktop-only hidden" onclick="copySel()" title="Copy (Ctrl+C)">📋 <span data-i18n="copy">Copy</span></button>
+      <button id="moveBtn" class="btn small desktop-only hidden" onclick="moveSel()" title="Move">➡️ <span data-i18n="move">Move</span></button>
+      <button id="renameBtn" class="btn small warn desktop-only hidden" onclick="renameOne()" title="Rename (F2)">✏️ <span data-i18n="rename">Rename</span></button>
+      <button id="duplicateBtn" class="btn small desktop-only hidden" onclick="duplicateSel()">⧉ <span data-i18n="duplicate">Duplicate</span></button>
+      <button id="batchRenameBtn" class="btn small desktop-only hidden" onclick="batchRenameSel()">🔤 <span data-i18n="batchRename">Batch</span></button>
+      <button id="archiveBtn" class="btn small desktop-only hidden" onclick="archiveSelected()">🗜 Zip</button>
+      <button id="extractBtn" class="btn small desktop-only hidden" onclick="extractSelected()">📦 <span data-i18n="extract">Extract</span></button>
+      <button id="shareBtn" class="btn small desktop-only hidden" onclick="shareOne()">🔗 Link</button>
+      <button id="mobileMoreActBtn" class="btn small mobile-only" onclick="openMobileSelectionMenu(event)" aria-haspopup="menu" aria-expanded="false" aria-controls="ctxMenu">⋯ <span data-i18n="more">More</span></button>
+      <button id="deleteBtn" class="btn small danger desktop-only hidden" onclick="deleteSel()" title="Delete (Del)">🗑️ <span data-i18n="delete">Delete</span></button>
     </div>
   </header>
+
+  <div id="optionsMenu" class="options-menu hidden" role="dialog" aria-labelledby="optionsMenuTitle" onclick="event.stopPropagation()">
+    <div class="opt-head">
+      <span id="optionsMenuTitle" class="opt-title" data-i18n="optionsTitle">View &amp; Explorer Options</span>
+      <button id="optionsCloseBtn" class="btn small icon-only ghost" onclick="closeOptionsMenu(true)" aria-label="Close options">✕</button>
+    </div>
+    <div class="opt-row">
+      <span data-i18n="optViewLayout">Layout</span>
+      <div class="view-toggle" role="group" aria-label="View layout">
+        <button data-view="large" onclick="setView('large')">Large</button>
+        <button data-view="grid" onclick="setView('grid')">Grid</button>
+        <button data-view="list" onclick="setView('list')">List</button>
+        <button data-view="details" onclick="setView('details')">Details</button>
+      </div>
+    </div>
+    <label class="opt-row"><span data-i18n="optSort">Sort by</span><select id="optSortSelect" class="select compact" onchange="changeSort(this)"><option value="name-asc">Name A→Z</option><option value="name-desc">Name Z→A</option><option value="mtime-desc">Newest</option><option value="mtime-asc">Oldest</option><option value="size-desc">Largest</option><option value="size-asc">Smallest</option></select></label>
+    <label class="opt-row"><span data-i18n="optFoldersFirst">Folders before files</span><input id="foldersFirst" type="checkbox" onchange="changeFoldersFirst(this)"></label>
+    <label class="opt-row"><span data-i18n="optShowHidden">Show hidden &amp; system (this tab)</span><input id="showHiddenToggle" type="checkbox" onchange="toggleShowHidden(this)"></label>
+    <label class="opt-row"><span data-i18n="optFolderMosaic">Folder 2×2 preview mosaic</span><input id="folderPreviewToggle" type="checkbox" onchange="toggleFolderPreview(this)"></label>
+    <label class="opt-row"><span data-i18n="optThumbFit">Thumbnail framing</span><select id="thumbFit" class="select compact" onchange="changeThumbFit(this)"><option value="contain">Fit (Full)</option><option value="cover">Crop (Fill)</option></select></label>
+    <label class="opt-row"><span data-i18n="optPreviewAnim">Mosaic animation</span><select id="previewAnim" class="select compact" onchange="changePreviewAnimation(this)"><option value="none">None</option><option value="fade">Fade</option><option value="flip">Flip</option><option value="slide">Slide</option></select></label>
+    <label class="opt-row"><span data-i18n="optPageLimit">Items per page</span><select id="limitSelect" class="select compact" onchange="changeLimit(this)"><option value="100">100</option><option value="220">220</option><option value="500">500</option><option value="1000">1000</option></select></label>
+    <label class="opt-row"><span data-i18n="optLanguage">Language</span><select id="langSelect" class="select compact" onchange="setLanguage(this.value)"><option value="en">English</option><option value="vi">Tiếng Việt</option></select></label>
+    <div class="opt-actions">
+      <button class="btn small" onclick="mkdir(); closeOptionsMenu()">➕ <span data-i18n="newFolder">New Folder</span></button>
+      <button class="btn small" onclick="newFile(); closeOptionsMenu()">📝 <span data-i18n="newFile">New File</span></button>
+      <button class="btn small" onclick="togglePreviewPane(); closeOptionsMenu()">👁 <span data-i18n="preview">Preview</span></button>
+      <button class="btn small" onclick="toggleTerminal(); closeOptionsMenu()">⌨️ Terminal</button>
+      <button class="btn small" onclick="addPreviewExtension(); closeOptionsMenu()">＋ Ext</button>
+    </div>
+  </div>
+
+  <div id="treeBackdrop" class="tree-backdrop hidden" onclick="closeMobileTree(true)" aria-hidden="true"></div>
+
   <main class="main explorer-shell" id="explorerShell">
-    <aside id="treePane" class="tree-pane" aria-label="Folder navigation tree">
+    <aside id="treePane" class="tree-pane" aria-label="Folder navigation">
       <div class="tree-head">
-        <span class="tree-head-title">🗂️ Thư mục</span>
+        <span id="treeHeadTitle" class="tree-head-title" data-i18n="folders">Folders</span>
         <div class="tree-head-actions">
-          <button class="btn small icon-only ghost" onclick="window.LanternTree?.refresh()" title="Làm mới cây thư mục">↻</button>
-          <button class="btn small icon-only ghost" onclick="window.LanternTree?.collapseAll()" title="Thu gọn tất cả">⊟</button>
+          <button class="btn small icon-only ghost" onclick="window.LanternTree?.refresh()" title="Refresh folder tree" aria-label="Refresh folder tree">↻</button>
+          <button class="btn small icon-only ghost" onclick="window.LanternTree?.collapseAll()" title="Collapse all branches" aria-label="Collapse all folders">⊟</button>
+          <button id="treeCloseBtn" class="btn small icon-only ghost mobile-only" onclick="closeMobileTree(true)" title="Close folder tree" aria-label="Close folder tree">✕</button>
         </div>
       </div>
-      <div id="treeBody" class="tree-body" role="tree"></div>
+      <div id="treeBody" class="tree-body" role="tree" aria-label="Folder navigation"></div>
+      <div id="treeLive" class="sr-only" aria-live="polite" aria-atomic="true"></div>
     </aside>
-    <div id="treeResizer" class="tree-resizer" title="Kéo để đổi độ rộng cây thư mục"></div>
+    <div id="treeResizer" class="tree-resizer" title="Drag to resize folder tree" role="separator" aria-orientation="vertical" aria-label="Resize folder tree"></div>
     <div id="browserArea" class="browser-area">
-      <section id="grid" class="dropzone grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></section>
-      <aside id="sidePreview" class="side-preview"><div class="side-empty">Chọn file để preview</div></aside>
+      <section id="grid" class="dropzone grid" aria-label="File list" tabindex="-1"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></section>
+      <aside id="sidePreview" class="side-preview" aria-label="File preview">
+        <div class="side-title">
+          <button id="sideCloseBtn" class="btn small ghost" onclick="closeSidePreview()" title="Close preview (Esc)" aria-label="Close preview">← <span data-i18n="close">Close</span></button>
+          <span class="side-title-text" id="sidePreviewTitle" data-i18n="preview">Preview</span>
+          <div class="side-nav top" id="sidePreviewActions"></div>
+        </div>
+        <div class="side-body" id="sidePreviewBody"><div class="side-empty" data-i18n="selectToPreview">Select a file to preview</div></div>
+      </aside>
     </div>
   </main>
+
   <footer id="statusBar" class="status-bar">
-    <span id="statusItems">0 mục</span>
+    <span id="statusItems">0 items</span>
     <span id="statusSel" class="status-sep hidden"></span>
     <span id="statusClip" class="status-clip hidden"></span>
     <span class="status-grow"></span>
-    <span id="statusHint" class="status-hint">F2 Đổi tên · Ctrl+C/X/V Sao chép/Di chuyển · Ctrl+L Đường dẫn · Space Xem nhanh</span>
+    <span id="statusHint" class="status-hint">F2 Rename · Ctrl+C/X/V · Ctrl+L Address · Space Preview</span>
+    <button type="button" id="sysTelemetryPill" class="sys-telemetry-pill" onclick="refreshSysTelemetry()" title="System GPU / VRAM / CPU / RAM" aria-label="Refresh system telemetry">💻 <span>System</span></button>
   </footer>
+  <div id="a11yLive" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 </div>
 <input id="fileInput" class="hidden" type="file" multiple>
 <input id="folderInput" class="hidden" type="file" webkitdirectory directory multiple>
-<div id="modal" class="modal" onclick="if(event.target===this)closeModal()">
+<div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
     <div class="modal-head">
       <div class="modal-title-wrap"><div id="modalTitle" class="modal-title"></div><div id="modalMeta" class="modal-meta"></div></div>
       <div class="actions">
         <div id="modalImageTools" class="media-tools hidden">
-          <button class="btn small icon-only" onclick="window.LanternMedia?.zoomBy(-0.25)" title="Thu nhỏ (-)">−</button>
-          <button id="modalZoomLabel" class="btn small" onclick="window.LanternMedia?.resetZoom()" title="Đặt lại 100% (0)">100%</button>
-          <button class="btn small icon-only" onclick="window.LanternMedia?.zoomBy(0.25)" title="Phóng to (+)">＋</button>
-          <button class="btn small icon-only" onclick="window.LanternMedia?.rotateBy(90)" title="Xoay 90° (R)">↻</button>
+          <button class="btn small icon-only" onclick="window.LanternMedia?.zoomBy(-0.25)" title="Zoom out (-)" aria-label="Zoom out">−</button>
+          <button id="modalZoomLabel" class="btn small" onclick="window.LanternMedia?.resetZoom()" title="Fit to screen (0)" aria-label="Fit to screen">Fit</button>
+          <button class="btn small" onclick="window.LanternMedia?.setActualSize()" title="Actual size 100% (1)" aria-label="Actual size 100%">1:1</button>
+          <button class="btn small icon-only" onclick="window.LanternMedia?.zoomBy(0.25)" title="Zoom in (+)" aria-label="Zoom in">＋</button>
+          <button class="btn small icon-only" onclick="window.LanternMedia?.rotateBy(90)" title="Rotate 90° (R)" aria-label="Rotate 90 degrees">↻</button>
         </div>
-        <select id="modalVideoSpeed" class="select compact hidden" onchange="window.LanternMedia?.setVideoSpeed(this.value)" title="Tốc độ phát video">
+        <select id="modalVideoSpeed" class="select compact hidden" onchange="window.LanternMedia?.setVideoSpeed(this.value)" title="Playback speed" aria-label="Playback speed">
           <option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
         </select>
-        <button id="modalCropBtn" class="btn small hidden" onclick="cropViewedImage()" title="Crop thành ảnh mới">✂ Crop</button>
-        <button id="modalCropOverwriteBtn" class="btn small hidden" onclick="cropViewedImage(true)" title="Crop ghi đè ảnh gốc">✂ Overwrite</button>
-        <button class="btn small icon-only" onclick="window.LanternMedia?.toggleFullscreen()" title="Toàn màn hình (F)">⛶</button>
-        <button id="modalPrevBtn" class="btn small" onclick="stepMedia(-1,event)" title="Trước (←)">←</button>
-        <button id="modalNextBtn" class="btn small" onclick="stepMedia(1,event)" title="Tiếp (→)">→</button>
-        <button class="btn small" onclick="closeModal()" title="Đóng (Esc)">✕</button>
+        <button id="modalCropBtn" class="btn small hidden" onclick="cropViewedImage()" title="Crop into a new image" aria-label="Crop into a new image">✂ Crop</button>
+        <button id="modalCropOverwriteBtn" class="btn small hidden" onclick="cropViewedImage(true)" title="Crop and overwrite original" aria-label="Crop and overwrite original">✂ Overwrite</button>
+        <button class="btn small icon-only" onclick="window.LanternMedia?.toggleFullscreen()" title="Fullscreen (F)" aria-label="Toggle fullscreen">⛶</button>
+        <button id="modalPrevBtn" class="btn small icon-only" onclick="stepMedia(-1,event)" title="Previous (Left)" aria-label="Previous media">←</button>
+        <button id="modalNextBtn" class="btn small icon-only" onclick="stepMedia(1,event)" title="Next (Right)" aria-label="Next media">→</button>
+        <button id="modalCloseBtn" class="btn small icon-only" onclick="closeModal()" title="Close (Esc)" aria-label="Close viewer">✕</button>
       </div>
     </div>
     <div class="modal-stage">
-      <button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Trước">‹</button>
+      <button id="modalPrevFloat" class="modal-nav modal-prev" onclick="stepMedia(-1,event)" title="Previous" aria-label="Previous media">‹</button>
       <div id="modalBody" class="modal-body"></div>
-      <button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Tiếp">›</button>
+      <button id="modalNextFloat" class="modal-nav modal-next" onclick="stepMedia(1,event)" title="Next" aria-label="Next media">›</button>
     </div>
   </div>
 </div>
-<div id="uploadModal" class="upload-backdrop" onclick="if(event.target===this)closeUploadDialog()">
+<div id="uploadModal" class="upload-backdrop" role="dialog" aria-modal="true" aria-labelledby="uploadTargetTitle" onclick="if(event.target===this)closeUploadDialog()">
   <div class="upload-box">
     <div class="upload-head">
-      <div><div id="uploadTargetTitle" class="upload-title">⬆️ Upload vào: /{esc_rel}</div><div class="sub">Kéo thả file/folder bất cứ lúc nào (hỗ trợ thêm vào hàng đợi ngay cả khi đang upload).</div></div>
-      <div style="display:flex;gap:6px"><button class="btn small ghost" onclick="closeUploadDialog()" title="Thu gọn chạy nền">— Thu gọn</button><button class="btn small" onclick="closeUploadDialog()">✕</button></div>
+      <div><div id="uploadTargetTitle" class="upload-title">⬆️ Upload to: /{esc_rel}</div><div class="sub" data-i18n="uploadSub">Drop files or folders anytime. Large files (≥32 MB) upload in resumable 16 MB chunks.</div></div>
+      <div style="display:flex;gap:6px"><button class="btn small ghost" onclick="closeUploadDialog()" title="Minimize to background" aria-label="Minimize upload dialog">—</button><button id="uploadCloseBtn" class="btn small" onclick="closeUploadDialog()" aria-label="Close upload dialog">✕</button></div>
     </div>
     <div class="upload-body">
-      <div id="uploadDrop" class="upload-drop"><div><div class="upload-plus">＋</div><b>Kéo file/folder vào đây</b><div>hoặc bấm chọn file/folder bên dưới</div></div></div>
+      <div id="uploadDrop" class="upload-drop" role="button" tabindex="0" aria-label="Drop files or folders here"><div><div class="upload-plus">＋</div><b data-i18n="dropHere">Drop files or folders here</b><div data-i18n="orPickBelow">or use the buttons below</div></div></div>
       <div class="upload-options">
-        <button class="btn" onclick="pickUploadFiles()">Chọn file</button>
-        <button class="btn" onclick="pickUploadFolder()">Chọn folder</button>
-        <label class="checkline">Trùng tên: <select id="uploadConflict" class="select compact"><option value="ask">Hỏi</option><option value="overwrite">Ghi đè</option><option value="skip">Bỏ qua</option><option value="rename">Tự đổi tên</option></select></label>
-        <button id="uploadPauseBtn" class="btn small hidden" onclick="window.LanternUpload?.togglePause()">⏸ Tạm dừng</button>
-        <button id="uploadRetryBtn" class="btn small warn hidden" onclick="window.LanternUpload?.retryFailed()">↻ Thử lại lỗi</button>
+        <button class="btn" onclick="pickUploadFiles()" data-i18n="selectFiles">Select Files</button>
+        <button class="btn" onclick="pickUploadFolder()" data-i18n="selectFolder">Select Folder</button>
+        <label class="checkline"><span data-i18n="onConflict">On conflict:</span> <select id="uploadConflict" class="select compact"><option value="ask">Ask</option><option value="overwrite">Overwrite</option><option value="skip">Skip</option><option value="rename">Auto-rename</option></select></label>
+        <button id="uploadPauseBtn" class="btn small hidden" onclick="window.LanternUpload?.togglePause()">⏸ Pause</button>
+        <button id="uploadRetryBtn" class="btn small warn hidden" onclick="window.LanternUpload?.retryFailed()">↻ Retry Failed</button>
       </div>
       <div id="uploadQueue" class="upload-queue"></div>
     </div>
     <div class="upload-foot">
-      <div id="uploadSummary" class="upload-summary">0 file</div>
+      <div id="uploadSummary" class="upload-summary">0 files</div>
       <div class="upload-progress"><span id="uploadModalBar"></span></div>
-      <button class="btn ghost" onclick="clearUploadQueue()">Clear</button>
-      <button id="uploadStartBtn" class="btn primary" onclick="startUploadQueue()">Start Upload</button>
+      <button class="btn ghost" onclick="clearUploadQueue()" data-i18n="clearSel">Clear</button>
+      <button id="uploadStartBtn" class="btn primary" onclick="startUploadQueue()" data-i18n="startUpload">Start Upload</button>
     </div>
   </div>
 </div>
-<div id="uploadFloatPill" class="upload-float-pill hidden" onclick="openUploadDialog()" title="Bấm để mở chi tiết hàng đợi Upload">
+<button type="button" id="uploadFloatPill" class="upload-float-pill hidden" onclick="openUploadDialog()" title="Open upload queue" aria-label="Open upload queue">
   <span id="uploadFloatText">⬆️ Uploading...</span>
   <div class="upload-float-bar"><span id="uploadFloatFill"></span></div>
-</div>
-<div id="propsModal" class="modal" onclick="if(event.target===this)this.classList.remove('show')">
+</button>
+<div id="propsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="propsTitle" onclick="if(event.target===this)closePropsModal()">
   <div class="props-box">
-    <div class="modal-head"><div id="propsTitle" class="modal-title">Properties</div><button class="btn small" onclick="$('#propsModal')?.classList.remove('show')">✕</button></div>
+    <div class="modal-head"><div id="propsTitle" class="modal-title">Properties</div><button id="propsCloseBtn" class="btn small" onclick="closePropsModal()" aria-label="Close properties">✕</button></div>
     <div id="propsBody" class="props-body"></div>
   </div>
 </div>
 <div id="termDrawer" class="term-drawer" style="height:{int(self.app.config.terminal_start_height_px)}px" role="region" aria-label="Terminal and source control"></div>
-<div id="ctxMenu" class="ctx-menu hidden" onclick="event.stopPropagation()">
-  <button data-act="open" onclick="contextAction('open')">↗ Mở</button>
-  <button data-act="preview" onclick="contextAction('preview')">👁 Xem nhanh</button>
-  <button data-act="edit" onclick="contextAction('edit')">📝 Chỉnh sửa</button>
-  <button data-act="rename" onclick="contextAction('rename')">✏️ Đổi tên (F2)</button>
-  <button data-act="download" onclick="contextAction('download')">⬇️ Tải xuống</button>
-  <button data-act="copy" onclick="contextAction('copy')">📋 Copy (Ctrl+C)</button>
-  <button data-act="cut" onclick="contextAction('cut')">✂️ Cut (Ctrl+X)</button>
-  <button data-act="paste" onclick="contextAction('paste')">📥 Paste vào đây (Ctrl+V)</button>
-  <button data-act="move" onclick="contextAction('move')">➡️ Move đến...</button>
-  <button data-act="duplicate" onclick="contextAction('duplicate')">⧉ Nhân bản</button>
-  <button data-act="batch" onclick="contextAction('batch')">🔤 Đổi tên hàng loạt</button>
-  <button data-act="archive" onclick="contextAction('archive')">🗜 Nén (Zip/Tar)</button>
-  <button data-act="extract" onclick="contextAction('extract')">📦 Giải nén</button>
-  <button data-act="share" onclick="contextAction('share')">🔗 Copy link</button>
-  <button data-act="properties" onclick="contextAction('properties')">ℹ️ Properties</button>
-  <button data-act="delete" class="danger" onclick="contextAction('delete')">🗑 Xoá (Del)</button>
+<div id="ctxMenu" class="ctx-menu hidden" role="menu" aria-label="File actions" onclick="event.stopPropagation()">
+  <button role="menuitem" tabindex="-1" data-act="selectAll" onclick="contextAction('selectAll')">☑️ <span data-i18n="selectAll">Select all</span></button>
+  <button role="menuitem" tabindex="-1" data-act="clearSel" onclick="contextAction('clearSel')">⬜ <span data-i18n="clearSel">Clear selection</span></button>
+  <button role="menuitem" tabindex="-1" data-act="open" onclick="contextAction('open')">↗ <span data-i18n="open">Open</span></button>
+  <button role="menuitem" tabindex="-1" data-act="preview" onclick="contextAction('preview')">👁 <span data-i18n="preview">Quick Preview</span></button>
+  <button role="menuitem" tabindex="-1" data-act="edit" onclick="contextAction('edit')">📝 Edit</button>
+  <button role="menuitem" tabindex="-1" data-act="rename" onclick="contextAction('rename')">✏️ <span data-i18n="rename">Rename</span> (F2)</button>
+  <button role="menuitem" tabindex="-1" data-act="download" onclick="contextAction('download')">⬇️ <span data-i18n="download">Download</span></button>
+  <button role="menuitem" tabindex="-1" data-act="copy" onclick="contextAction('copy')">📋 <span data-i18n="copy">Copy</span> (Ctrl+C)</button>
+  <button role="menuitem" tabindex="-1" data-act="cut" onclick="contextAction('cut')">✂️ Cut (Ctrl+X)</button>
+  <button role="menuitem" tabindex="-1" data-act="paste" onclick="contextAction('paste')">📥 <span data-i18n="paste">Paste</span> (Ctrl+V)</button>
+  <button role="menuitem" tabindex="-1" data-act="move" onclick="contextAction('move')">➡️ <span data-i18n="move">Move</span>...</button>
+  <button role="menuitem" tabindex="-1" data-act="duplicate" onclick="contextAction('duplicate')">⧉ <span data-i18n="duplicate">Duplicate</span></button>
+  <button role="menuitem" tabindex="-1" data-act="batch" onclick="contextAction('batch')">🔤 <span data-i18n="batchRename">Batch Rename</span></button>
+  <button role="menuitem" tabindex="-1" data-act="archive" onclick="contextAction('archive')">🗜 Archive (Zip/Tar)</button>
+  <button role="menuitem" tabindex="-1" data-act="extract" onclick="contextAction('extract')">📦 <span data-i18n="extract">Extract</span></button>
+  <button role="menuitem" tabindex="-1" data-act="share" onclick="contextAction('share')">🔗 Copy Link</button>
+  <button role="menuitem" tabindex="-1" data-act="properties" onclick="contextAction('properties')">ℹ️ Properties</button>
+  <button role="menuitem" tabindex="-1" data-act="delete" class="danger" onclick="contextAction('delete')">🗑 <span data-i18n="delete">Delete</span> (Del)</button>
 </div>
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 """
         self.send_bytes(200, self.app.views.page_shell(self.app.config.title, body, "/" + rel), "text/html; charset=utf-8")
 
@@ -910,9 +1287,23 @@ document.addEventListener('keydown',e=>{{if((e.ctrlKey||e.metaKey)&&e.key.toLowe
     def serve_static_file(self, path: Path, download: bool = False, ctype: Optional[str] = None, cache_control: Optional[str] = None) -> None:
         st = path.stat()
         ctype = ctype or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        etag = self.app.files.file_etag(path, st)
-        if self.headers.get("If-None-Match") == etag:
+        raw_etag = f'"{self.app.files.file_etag(path, st)}"'
+        variant = (
+            not download
+            and not (self.headers.get("Range") or "")
+            and 1024 <= st.st_size <= 8 * 1024 * 1024
+            and self._is_compressible_ctype(ctype)
+        )
+        etag = raw_etag
+        if variant and not raw_etag.startswith("W/"):
+            # Identity and gzip representations share bytes but not wire
+            # representation; use a weak validator for both variants.
+            etag = "W/" + raw_etag
+        if self.headers.get("If-None-Match") in {raw_etag, etag}:
             self.send_response(304)
+            if variant:
+                self.send_header("Vary", "Accept-Encoding")
+            self.send_header("ETag", etag)
             if cache_control:
                 self.send_header("Cache-Control", cache_control)
             self.end_headers(); return
@@ -967,6 +1358,8 @@ document.addEventListener('keydown',e=>{{if((e.ctrlKey||e.metaKey)&&e.key.toLowe
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("ETag", etag)
+        if variant:
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Last-Modified", email.utils.formatdate(st.st_mtime, usegmt=True))
         if cache_control:
             self.send_header("Cache-Control", cache_control)

@@ -171,6 +171,12 @@ class AppRoutes:
         if "folders_first" in data:
             self.app.config.folders_first = bool(data.get("folders_first"))
             changed["folders_first"] = self.app.config.folders_first
+        if "show_hidden" in data:
+            self.app.config.show_hidden = bool(data.get("show_hidden"))
+            changed["show_hidden"] = self.app.config.show_hidden
+        if "show_system" in data:
+            self.app.config.show_system = bool(data.get("show_system"))
+            changed["show_system"] = self.app.config.show_system
         if "search_debounce_ms" in data:
             try:
                 self.app.config.search_debounce_ms = max(100, min(int(data.get("search_debounce_ms")), 1500))

@@ -17,9 +17,9 @@ def breadcrumb(rel_path: str, files: FileService) -> str:
         parent_href = "/" if not parent_rel else f"/{files.quote_path(parent_rel)}/"
         out.append(
             f'<a class="crumb-back" data-action="back" data-rel="{files.html_escape(parent_rel)}" '
-            f'href="{parent_href}" onclick="return goParentFolder(event, \'{parent_href}\')">↩ Back</a>'
+            f'href="{parent_href}">↩ Back</a>'
         )
-    out.append('<a data-rel="" href="/" onclick="return navigateCrumb(event, \'\')">Root</a>')
+    out.append('<a data-rel="" href="/">Root</a>')
     acc = []
     for p in parts:
         acc.append(p)
@@ -27,8 +27,7 @@ def breadcrumb(rel_path: str, files: FileService) -> str:
         href = f"/{files.quote_path(cur)}/"
         out.append(
             f'<span class="crumb-sep">/</span>'
-            f'<a data-rel="{files.html_escape(cur)}" href="{href}" '
-            f'onclick="return navigateCrumb(event, {files.json_dumps(cur)})">{files.html_escape(p)}</a>'
+            f'<a data-rel="{files.html_escape(cur)}" href="{href}">{files.html_escape(p)}</a>'
         )
     return "".join(out)
 
@@ -69,6 +68,8 @@ def page_shell(title: str, body: str, current_path: str, *, config: AppConfig, f
             "default_view": config.default_view,
             "page_limit": config.page_limit,
             "folders_first": config.folders_first,
+            "show_hidden": config.show_hidden,
+            "show_system": config.show_system,
             "search_debounce_ms": config.search_debounce_ms,
             "terminal_enabled": config.terminal_enabled,
             "terminal_max_buffer_chars": config.terminal_max_buffer_chars,
@@ -90,7 +91,7 @@ def page_shell(title: str, body: str, current_path: str, *, config: AppConfig, f
         },
     }
     html_doc = f"""<!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">

@@ -70,7 +70,9 @@ class LanbotV4RealUserE2ETests(unittest.TestCase):
             fake_pi.chmod(0o755)
 
             old_env = os.environ.get("LANTERN_PI_COMMAND")
+            old_session_dir = os.environ.get("LANTERN_PI_SESSION_DIR")
             os.environ["LANTERN_PI_COMMAND"] = str(fake_pi)
+            os.environ["LANTERN_PI_SESSION_DIR"] = str(root / ".pi-sessions")
             cfg = AppConfig(
                 root=root,
                 host="127.0.0.1",
@@ -191,6 +193,10 @@ class LanbotV4RealUserE2ETests(unittest.TestCase):
                     os.environ.pop("LANTERN_PI_COMMAND", None)
                 else:
                     os.environ["LANTERN_PI_COMMAND"] = old_env
+                if old_session_dir is None:
+                    os.environ.pop("LANTERN_PI_SESSION_DIR", None)
+                else:
+                    os.environ["LANTERN_PI_SESSION_DIR"] = old_session_dir
 
 
 if __name__ == "__main__":

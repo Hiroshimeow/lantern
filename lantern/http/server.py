@@ -61,8 +61,33 @@ class Handler(
         super().end_headers()
 
     def _accepts_gzip(self) -> bool:
-        ae = (self.headers.get("Accept-Encoding") or "").lower()
-        return "gzip" in ae
+        ae = (self.headers.get("Accept-Encoding") or "").strip()
+        if not ae:
+            return False
+        gzip_q: Optional[float] = None
+        star_q: Optional[float] = None
+        for raw_part in ae.split(","):
+            part = raw_part.strip()
+            if not part:
+                continue
+            segs = [s.strip() for s in part.split(";")]
+            coding = segs[0].lower()
+            q = 1.0
+            for param in segs[1:]:
+                if param.lower().startswith("q="):
+                    try:
+                        q = float(param[2:].strip())
+                    except ValueError:
+                        q = 0.0
+            if coding == "gzip":
+                gzip_q = q
+            elif coding == "*":
+                star_q = q
+        if gzip_q is not None:
+            return gzip_q > 0.0
+        if star_q is not None:
+            return star_q > 0.0
+        return False
 
     def _is_compressible_ctype(self, ctype: str) -> bool:
         low = (ctype or "").split(";", 1)[0].strip().lower()
@@ -75,13 +100,13 @@ class Handler(
 
     def send_bytes(self, status: int, body: bytes, ctype: str = "text/html; charset=utf-8", extra: Optional[Dict[str, str]] = None) -> None:
         payload = body
-        use_gzip = (
+        compressible = (
             status == 200
             and len(body) >= 1024
-            and self._accepts_gzip()
             and self._is_compressible_ctype(ctype)
             and not (extra and any(k.lower() == "content-encoding" for k in extra))
         )
+        use_gzip = compressible and self._accepts_gzip()
         if use_gzip:
             compressed = gzip.compress(body, compresslevel=5)
             if len(compressed) < len(body):
@@ -92,11 +117,23 @@ class Handler(
         self.send_header("Content-Type", ctype)
         if use_gzip:
             self.send_header("Content-Encoding", "gzip")
-            self.send_header("Vary", "Accept-Encoding")
+        out_extra = dict(extra) if extra else {}
+        if compressible:
+            vary_key = next((k for k in out_extra if k.lower() == "vary"), None)
+            if vary_key:
+                existing_vary = [v.strip() for v in out_extra[vary_key].split(",") if v.strip()]
+                if not any(v.lower() == "accept-encoding" for v in existing_vary):
+                    existing_vary.append("Accept-Encoding")
+                out_extra[vary_key] = ", ".join(existing_vary)
+            else:
+                out_extra["Vary"] = "Accept-Encoding"
+        if use_gzip:
+            etag_key = next((k for k in out_extra if k.lower() == "etag"), None)
+            if etag_key and out_extra[etag_key].startswith('"'):
+                out_extra[etag_key] = "W/" + out_extra[etag_key]
         self.send_header("Content-Length", str(len(payload)))
-        if extra:
-            for k, v in extra.items():
-                self.send_header(k, v)
+        for k, v in out_extra.items():
+            self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(payload)
@@ -181,6 +218,8 @@ class Handler(
                 return self.api_properties(parsed.query)
             if parsed.path == "/api/upload/check":
                 return self.api_upload_check(parsed.query)
+            if parsed.path == "/api/upload/status":
+                return self.api_upload_status(parsed.query)
             if parsed.path == "/api/image/version":
                 return self.api_image_version(parsed.query)
             if parsed.path == "/api/thumb":

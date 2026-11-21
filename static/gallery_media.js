@@ -15,11 +15,12 @@
     panX: 0,
     panY: 0,
     preloaded: new Set(),
+    returnFocusEl: null,
   };
 
   function qSel(s) { return document.querySelector(s); }
   function isMediaKind(kind) { return MEDIA_KINDS.has(kind); }
-  function mediaLabel(kind) { return kind === 'image' ? 'Ảnh' : kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : 'Media'; }
+  function mediaLabel(kind) { return window.LanternI18n?.t(kind, kind) || 'Media'; }
 
   function encPath(s) { return encodeURIComponent(String(s || '')).replace(/%2F/g, '/'); }
   function fileUrl(rel) { return '/' + encPath(rel); }
@@ -41,8 +42,8 @@
       kind: src?.kind || kind || 'image',
       url: src?.url || url || fileUrl(r),
       name: src?.name || name || r.split('/').pop() || 'Media',
-      size_text: src?.size_text || '',
-      mtime_text: src?.mtime_text || '',
+      size_text: src?.sizeText || src?.size_text || '',
+      mtime_text: src?.mtimeText || src?.mtime_text || '',
     };
   }
 
@@ -63,15 +64,44 @@
     return (h ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
   }
 
+  function computeFitScale(img) {
+    const body = qSel('#modalBody');
+    if (!img || !body || !img.naturalWidth || !img.naturalHeight) return 1;
+    const bw = Math.max(100, body.clientWidth - 24);
+    const bh = Math.max(100, body.clientHeight - 24);
+    const rotated = (Math.abs(mediaState.rotate) % 180) === 90;
+    const iw = rotated ? img.naturalHeight : img.naturalWidth;
+    const ih = rotated ? img.naturalWidth : img.naturalHeight;
+    return Math.min(1, bw / iw, bh / ih);
+  }
+
   function applyImageTransform() {
     const img = qSel('#modalBody img.lightbox-img');
     const lbl = qSel('#modalZoomLabel');
-    if (lbl) lbl.textContent = Math.round(mediaState.zoom * 100) + '%';
+    if (lbl) {
+      lbl.textContent = mediaState.zoomMode === 'fit' ? 'Fit' : (Math.round(mediaState.zoom * 100) + '%');
+    }
     if (!img) return;
+    if (mediaState.zoomMode === 'fit') {
+      const rotated = (Math.abs(mediaState.rotate) % 180) === 90;
+      const body = qSel('#modalBody');
+      if (rotated && body && body.clientWidth && body.clientHeight) {
+        img.style.maxWidth = Math.max(80, body.clientHeight - 24) + 'px';
+        img.style.maxHeight = Math.max(80, body.clientWidth - 24) + 'px';
+      } else {
+        img.style.maxWidth = '100%';
+        img.style.maxHeight = '100%';
+      }
+      img.style.transform = `translate3d(0px, 0px, 0) scale(1) rotate(${mediaState.rotate}deg)`;
+      return;
+    }
+    img.style.maxWidth = '100%';
+    img.style.maxHeight = '100%';
     img.style.transform = `translate3d(${mediaState.panX}px, ${mediaState.panY}px, 0) scale(${mediaState.zoom}) rotate(${mediaState.rotate}deg)`;
   }
 
   function resetZoom() {
+    mediaState.zoomMode = 'fit';
     mediaState.zoom = 1;
     mediaState.rotate = 0;
     mediaState.panX = 0;
@@ -79,8 +109,20 @@
     applyImageTransform();
   }
 
+  function setActualSize() {
+    if (mediaState.kind !== 'image') return;
+    const img = qSel('#modalBody img.lightbox-img');
+    const fitScale = computeFitScale(img);
+    mediaState.zoomMode = 'custom';
+    mediaState.zoom = fitScale > 0 ? Number((1 / fitScale).toFixed(2)) : 1;
+    mediaState.panX = 0;
+    mediaState.panY = 0;
+    applyImageTransform();
+  }
+
   function zoomBy(delta) {
     if (mediaState.kind !== 'image') return;
+    mediaState.zoomMode = 'custom';
     mediaState.zoom = Math.max(0.25, Math.min(6, Number((mediaState.zoom + delta).toFixed(2))));
     if (mediaState.zoom <= 1) { mediaState.panX = 0; mediaState.panY = 0; }
     applyImageTransform();
@@ -152,8 +194,8 @@
       const info = await r.json();
       if (!r.ok || info.error || mediaState.current?.rel !== it.rel) return;
       panel.textContent = '';
-      if (info.width && info.height) addVideoPanelItem(panel, 'Độ phân giải', `${info.width}×${info.height}`);
-      if (info.duration) addVideoPanelItem(panel, 'Thời lượng', fmtTime(info.duration));
+      if (info.width && info.height) addVideoPanelItem(panel, window.LanternI18n?.t('resolution', 'Resolution'), `${info.width}×${info.height}`);
+      if (info.duration) addVideoPanelItem(panel, window.LanternI18n?.t('duration', 'Duration'), fmtTime(info.duration));
       if (info.video_codec) addVideoPanelItem(panel, 'Video', info.video_codec + (info.fps ? ` · ${info.fps} fps` : ''));
       if (info.audio_codec) addVideoPanelItem(panel, 'Audio', info.audio_codec);
       if (info.bitrate_text) addVideoPanelItem(panel, 'Bitrate', info.bitrate_text);
@@ -166,7 +208,7 @@
           if (idx === 0) track.default = true;
           video.appendChild(track);
         });
-        addVideoPanelItem(panel, 'Phụ đề', info.subtitles.map(s => s.name).join(', '));
+        addVideoPanelItem(panel, window.LanternI18n?.t('subtitles', 'Subtitles'), info.subtitles.map(s => s.name).join(', '));
       }
     } catch (_) {}
   }
@@ -239,6 +281,26 @@
           metaEl.textContent = parts.join(' · ');
         }
       };
+      img.onerror = () => {
+        if (mediaState.current?.rel !== it.rel) return;
+        body.textContent = '';
+        const box = document.createElement('div');
+        box.className = 'lightbox-broken';
+        const ic = document.createElement('div');
+        ic.style.fontSize = '38px';
+        ic.textContent = '🖼️';
+        const msg = document.createElement('b');
+        msg.textContent = window.LanternI18n?.t('brokenImage', 'This image could not be displayed.');
+        const sub = document.createElement('div');
+        sub.className = 'sub';
+        sub.textContent = it.name || it.rel;
+        const dl = document.createElement('a');
+        dl.className = 'btn small';
+        dl.href = url + (url.includes('?') ? '&' : '?') + 'download=1';
+        dl.textContent = '⬇️ ' + (window.LanternI18n?.t('download', 'Download'));
+        box.append(ic, msg, sub, dl);
+        body.appendChild(box);
+      };
       body.appendChild(img);
       wireImageZoomPan(img, body);
       prefetchAround();
@@ -270,12 +332,17 @@
   }
 
   function openPreview(kind, url, name, rel = '') {
+    const m = qSel('#modal');
+    if (m && !m.classList.contains('show')) {
+      mediaState.returnFocusEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
     const found = findLoadedItem(rel);
     const fallback = normalizeMediaItem(found, kind, url, name, rel);
     mediaState.kind = fallback.kind;
     mediaState.items = collectMediaItems(fallback.kind, fallback);
     const idx = Math.max(0, mediaState.items.findIndex(x => x.rel === fallback.rel));
     renderMediaItem(mediaState.items[idx] || fallback, idx);
+    qSel('#modalCloseBtn')?.focus?.();
   }
 
   async function stepMedia(delta, ev) {
@@ -308,51 +375,96 @@
     mediaState.items = [];
     mediaState.index = -1;
     mediaState.busy = false;
+    const ret = mediaState.returnFocusEl;
+    mediaState.returnFocusEl = null;
+    try { ret?.focus?.(); } catch (_) {}
   }
 
-  async function loadCropBundle() {
-    if (window.LanternImageCrop) return window.LanternImageCrop;
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = '/static/vendor/lantern-image-crop.min.js';
-      s.onload = resolve;
-      s.onerror = () => reject(new Error('Could not load crop tool'));
-      document.head.appendChild(s);
-    });
-    return window.LanternImageCrop;
-  }
-
-  async function cropViewedImage(overwriteOriginal=false) {
-    const it = mediaState.current;
-    if (!it || it.kind !== 'image') return;
-    if (overwriteOriginal && !confirm('Overwrite original image?')) return;
+  async function cropViewedImage(overwriteOriginal = false) {
+    const original = mediaState.current;
+    if (mediaState.cropActive || original?.kind !== 'image' || !original.rel) return;
     mediaState.cropActive = true;
     try {
-      const cropper = await loadCropBundle();
-      if (!cropper?.open) throw new Error('Crop tool unavailable');
-      const result = await cropper.open({
-        src: mediaUrl(it),
-        rel: it.rel,
-        name: it.name,
-        overwriteOriginal: Boolean(overwriteOriginal),
-      });
-      if (result && result.ok) {
-        if (typeof window.toast === 'function') window.toast(overwriteOriginal ? '✓ Đã ghi đè ảnh đã crop' : '✓ Đã lưu ảnh crop mới');
-        if (typeof window.clearFolderCache === 'function') window.clearFolderCache();
-        if (typeof window.softRefresh === 'function') await window.softRefresh();
-        const refreshed = findLoadedItem(result.rel || it.rel);
-        if (refreshed) {
-          const refreshedUrl = refreshed.url || (fileUrl(refreshed.rel) + '?v=' + Date.now());
-          const updated = { ...refreshed };
-          updated.url=refreshedUrl;
-          mediaState.items = collectMediaItems('image', updated);
-          const idx = Math.max(0, mediaState.items.findIndex(x => x.rel === updated.rel));
-          renderMediaItem(mediaState.items[idx] || updated, idx);
-        }
+      const cropURL = '/static/vendor/lantern-image-crop.min.js';
+      const mod = await import(cropURL);
+      const openCrop = mod?.openCrop || mod?.default?.openCrop || mod?.default;
+      if (typeof openCrop !== 'function') throw new Error('Crop module unavailable');
+
+      const originalExt = (original.rel.match(/\.([^.]+)$/) || [])[1]?.toLowerCase();
+      const validType = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[originalExt];
+      const canOverwrite = Boolean(validType);
+      let originalVersion = null;
+      if (canOverwrite) {
+        const check = await fetch('/api/image/version?p=' + encodeURIComponent(original.rel), { cache: 'no-store' });
+        const st = await check.json().catch(() => ({}));
+        if (!check.ok || !st.version) throw new Error(st.error || 'Cannot inspect original image');
+        originalVersion = st.version;
       }
+
+      const result = await openCrop({
+        src: mediaUrl(original),
+        name: original.name || 'Image',
+        allowOverwrite: canOverwrite,
+        preferredAction: overwriteOriginal ? 'overwrite' : 'copy',
+      });
+      if (!result) return;
+
+      const persistOverwrite = result.action === 'overwrite' || (!result.action && overwriteOriginal);
+      if (persistOverwrite) {
+        if (!validType || validType !== result.blob.type) {
+          throw new Error('Crop output format differs from original; use Crop (Save As)');
+        }
+        if (!confirm(window.LanternI18n?.t('cropConfirmOver', 'Overwrite original image? All files using this image will change. This cannot be undone. EXIF/ICC metadata may be lost.'))) {
+          return;
+        }
+        const response = await fetch('/api/image/overwrite?p=' + encodeURIComponent(original.rel), {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'Content-Type': result.blob.type, 'If-Match': originalVersion },
+          body: result.blob,
+        });
+        const update = await response.json().catch(() => ({}));
+        if (!response.ok || update.error) throw new Error(update.error || ('Overwrite HTTP ' + response.status));
+        if (typeof window.toast === 'function') window.toast(window.LanternI18n?.t('cropSavedOver', 'Original image overwritten'));
+        if (typeof window.clearFolderCache === 'function') window.clearFolderCache();
+        if (typeof window.softRefresh === 'function') await window.softRefresh().catch(() => {});
+        mediaState.cropActive = false;
+        const refreshedUrl = fileUrl(original.rel) + '?v=' + encodeURIComponent(update.version || String(Date.now()));
+        openPreview('image', refreshedUrl, original.name, original.rel);
+        const updated = mediaState.items[mediaState.index];
+        if (updated?.rel === original.rel) {
+          updated.url = refreshedUrl;
+          renderMediaItem(updated, mediaState.index);
+        }
+        return;
+      }
+
+      const pieces = original.rel.split('/');
+      const originalName = pieces.pop() || 'image';
+      const directory = pieces.join('/');
+      const stem = originalName.replace(/\.[^.]+$/, '');
+      const ext = result.extension || originalExt || 'png';
+      const name = `${stem}-cropped-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      if (typeof window.toast === 'function') window.toast('Saving cropped copy…');
+      const response = await fetch('/api/upload?path=' + encodeURIComponent(directory) + '&name=' + encodeURIComponent(name) + '&conflict=rename', {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Content-Type': result.blob.type },
+        body: result.blob,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error || !data.file) throw new Error(data.error || ('Upload HTTP ' + response.status));
+      const newRel = decodeURIComponent(String(data.file).replace(/^\//, ''));
+      if (typeof window.toast === 'function') window.toast('New image created: ' + newRel);
+      if (typeof window.clearFolderCache === 'function') window.clearFolderCache();
+      if (typeof window.softRefresh === 'function') await window.softRefresh().catch(() => {});
+      mediaState.cropActive = false;
+      openPreview('image', fileUrl(newRel), newRel.split('/').pop(), newRel);
     } catch (err) {
       if (err && err.message !== 'cancelled' && typeof window.toast === 'function') {
-        window.toast('Lỗi crop: ' + err.message);
+        window.toast('Crop failed: ' + err.message);
       }
     } finally {
       mediaState.cropActive = false;
@@ -363,6 +475,17 @@
     const modal = qSel('#modal');
     if (!modal || !modal.classList.contains('show') || mediaState.cropActive) return false;
     if (e.key === 'Escape') { e.preventDefault(); closeModal(); return true; }
+    if (e.key === 'Tab') {
+      const focusables = Array.from(modal.querySelectorAll('button:not([disabled]):not(.hidden), select:not([disabled]):not(.hidden), a[href], video, audio'))
+        .filter(el => el.offsetParent !== null);
+      if (focusables.length) {
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); return true; }
+        if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); return true; }
+      }
+      return false;
+    }
     if (e.key === 'ArrowLeft' && !e.shiftKey) { e.preventDefault(); void stepMedia(-1); return true; }
     if (e.key === 'ArrowRight' && !e.shiftKey) { e.preventDefault(); void stepMedia(1); return true; }
     if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleFullscreen(); return true; }
@@ -370,6 +493,7 @@
       if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomBy(0.25); return true; }
       if (e.key === '-') { e.preventDefault(); zoomBy(-0.25); return true; }
       if (e.key === '0') { e.preventDefault(); resetZoom(); return true; }
+      if (e.key === '1') { e.preventDefault(); setActualSize(); return true; }
       if (e.key === 'r' || e.key === 'R') { e.preventDefault(); rotateBy(90); return true; }
     } else if (mediaState.kind === 'video') {
       const v = qSel('#modalBody video');
@@ -392,6 +516,7 @@
     cropViewedImage,
     zoomBy,
     resetZoom,
+    setActualSize,
     rotateBy,
     setVideoSpeed,
     toggleFullscreen,

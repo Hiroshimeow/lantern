@@ -147,8 +147,38 @@ class MediaService:
         return items
 
     def make_image_thumb(self, src: Path, dst: Path) -> bool:
-        if not HAS_PIL:
+        if src.suffix.lower() in {".svg", ".avif", ".heic", ".heif"}:
             return False
+        if not HAS_PIL:
+            if not FFMPEG:
+                return False
+            with self._lock_for_thumb(dst):
+                if dst.exists() and dst.stat().st_size > 0:
+                    return True
+                tmp_path: Optional[Path] = None
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    fd, tmp_name = tempfile.mkstemp(prefix=".ithumb-", suffix=".jpg", dir=str(dst.parent))
+                    os.close(fd)
+                    tmp_path = Path(tmp_name)
+                    subprocess.run([
+                        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", str(src), "-frames:v", "1",
+                        "-vf", "scale='min(480,iw)':-2", "-q:v", "3", str(tmp_path)
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                    if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                        os.replace(tmp_path, dst)
+                        tmp_path = None
+                        return True
+                    return False
+                except Exception:
+                    return False
+                finally:
+                    if tmp_path is not None:
+                        try:
+                            tmp_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
         if src.suffix.lower() in {".svg", ".avif", ".heic", ".heif"}:
             return False
         with self._lock_for_thumb(dst):
