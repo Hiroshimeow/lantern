@@ -19,3 +19,15 @@ These rules apply to every agent and contributor working in this repository.
 5. LanternBot uses native interactive Pi TUI/PTY for full command, skill and extension parity; sessions are identified by opaque session ID, not file path/browser tab. No new security/LAN quota enforcement until separately approved.
 6. Baseline/architecture/Markdown/Pi design: `specs/002-lantern-foundation/`, `specs/003-markdown-fidelity/`, `specs/004-pi-native-harness/`. The documents are **DRAFT**: implementation gates and user approval still apply.
 7. Do not deploy, restart a user's live Lantern process, merge functional refactors, or claim completion without fresh verification and owner authorization.
+
+## Lantern v9.24 Architecture Invariants (Multi-Agent Alignment)
+
+1. **Three Markdown Modes (`Preview`, `Edit visually`, `Source`) — Zero Milkdown**:
+   - **Mode 1 (`Preview`)**: Fast HTML Preview with **In-Cell Table Diff** (`tryRenderTableHunkInPlace`) and quick 1-click inline editing (`mountPreviewLiveEditor`).
+   - **Mode 2 (`Edit visually`)**: **Hybrid Option 1 + Option 3 DOCX-Style Visual Studio** (`createDocxHybridVisualEditor` in `static/markdown_visual_shell.js`). Completely replaces Milkdown/ProseMirror with a Word/DOCX-inspired visual page canvas, sticky formatting ribbon (`P`, `H1..H3`, `Quote`, `Callout`, `Code`, `Bold`, `Italic`, `Strike`, `Inline Code`, `Highlight`, `Link`, `Bullet/Number/Task Lists`, `+Table`, `Rule`, `+Block`), contextual **Table Studio** (`+Row ↑/↓`, `−Row`, `+Col ←/→`, `−Col`, `Align L/C/R`), block reordering (`↑`/`↓`/`⧉`/`🗑`), and **Option 1+3 Hybrid Raw Block Syntax toggle (`⌨ Hybrid Syntax` / `Alt+M`)**.
+   - **Mode 3 (`Source`)**: Raw Markdown editor in CodeMirror 6 (`static/vendor/lantern-source-editor.min.js`).
+   - All user edits before `Ctrl+S` MUST write to `temp_user` (`.user_draft.md` via `/api/work/write` or `/api/work/patch` with `userDraft: true`).
+2. **Lanbot = Core Pi + Lantern Display + Native Terminal Display (`v9.24`)**:
+   - **Retired `Todo` Mode**: The legacy Todo button/popover (`#lcTodoBtn`, `#lcTodoPopover`) is removed.
+   - **Single-Line `[skill]` Display**: Skills render strictly as a compact 1-line summary in `.lc-work-box-summary` (`[skill] <skill list> · ⚡ N tool call(s)`) and a single 1-line `.lc-pi-skill-card` inside `.lc-work-box-body` (`[skill] <skill list> (ctrl+o to expand)`), without duplicate outer skill stacks or false-positive matches from directory listings.
+   - **Per-Tab (`#bot1`, `#bot2`) Model Isolation & Rapid Switch Stability**: Each `#bot` worker tab (`clientSessionId`) and saved session (`sessionId`) maintains its own independent `provider / model` selection (`_pinned_model` & `sessionModels`) and absorbs background WebSocket state/history/stream packets without race conditions during rapid tab switching.

@@ -14,12 +14,12 @@ const TEMPLATE = [
   '</cropper-selection></cropper-canvas>',
 ].join('');
 const CSS = [
-  '.lantern-crop-dialog{width:min(96vw,1180px);max-height:96dvh;box-sizing:border-box;border:1px solid #526981;border-radius:12px;background:#101a28;color:#f3f7fa;padding:14px;overflow:auto;font:14px/1.5 system-ui,sans-serif}',
+  '.lantern-crop-dialog{width:min(98vw,1680px);max-height:96dvh;box-sizing:border-box;border:1px solid #526981;border-radius:12px;background:#101a28;color:#f3f7fa;padding:14px;overflow:auto;font:14px/1.5 system-ui,sans-serif}',
   '.lantern-crop-dialog::backdrop{background:rgba(0,0,0,.86)}',
   '.lantern-crop-dialog *{box-sizing:border-box}',
   '.lantern-crop-dialog h2{margin:0 0 6px;font-size:18px}',
   '.lantern-crop-tip{margin:0 0 12px;color:#b9cad9}',
-  '.lantern-crop-stage{position:relative;display:block;width:100%;height:min(63dvh,680px);min-height:180px;background:#070b10;overflow:hidden;border:1px solid #526981;touch-action:none}',
+  '.lantern-crop-stage{position:relative;display:block;width:100%;height:min(78dvh,880px);min-height:360px;background:#070b10;overflow:hidden;border:1px solid #526981;touch-action:none}',
   '.lantern-crop-stage cropper-canvas{display:block;width:100%;height:100%}',
   '.lantern-crop-paste-layer{position:absolute;z-index:30;border:2px solid #ffd178;border-radius:4px;cursor:move;touch-action:none;user-select:none;box-shadow:0 0 0 1px rgba(0,0,0,.55)}',
   '.lantern-crop-paste-layer>img{display:block;width:100%;height:100%;object-fit:fill;pointer-events:none}',
@@ -244,13 +244,21 @@ export async function openCrop({src,name='image',signal,allowOverwrite=false,pre
         });
       }else{update();clampLayers();}
     };
-    const placeLayer=(layer,left,top,width,height)=>{
-      const bounds=selectionBounds();if(!bounds)return;
-      width=Math.max(24,Math.min(width,bounds.width));
-      height=Math.max(24,Math.min(height,bounds.height));
-      left=Math.max(bounds.left,Math.min(left,bounds.left+bounds.width-width));
-      top=Math.max(bounds.top,Math.min(top,bounds.top+bounds.height-height));
+    const placeLayer=(layer,left,top,width,height,clampMove=true,boundsOverride=null)=>{
+      const bounds=boundsOverride||selectionBounds();if(!bounds)return;
+      width=Math.max(20,width);
+      height=Math.max(20,height);
+      if(clampMove){
+        const minL=Math.min(bounds.left,bounds.left+bounds.width-width);
+        const maxL=Math.max(bounds.left,bounds.left+bounds.width-width);
+        const minT=Math.min(bounds.top,bounds.top+bounds.height-height);
+        const maxT=Math.max(bounds.top,bounds.top+bounds.height-height);
+        left=Math.max(minL,Math.min(maxL,left));
+        top=Math.max(minT,Math.min(maxT,top));
+      }
+      layer.left=left;layer.top=top;layer.width=width;layer.height=height;
       Object.assign(layer.el.style,{left:left+'px',top:top+'px',width:width+'px',height:height+'px'});
+      update();
     };
     const clampLayers=()=>{
       const bounds=selectionBounds();if(!bounds)return;
@@ -395,8 +403,18 @@ export async function openCrop({src,name='image',signal,allowOverwrite=false,pre
         // Cropper may finish its initial layout one frame after image decode.
         // Force full-image selection, rather than 100% of the canvas viewport.
         requestAnimationFrame(()=>{
-          const bounds=imageBounds();
-          if(bounds && !done)selection.$change(bounds.x,bounds.y,bounds.width,bounds.height);
+          let bounds=imageBounds();
+          if(bounds && !done && stage.clientWidth > 0 && stage.clientHeight > 0){
+            const targetW = stage.clientWidth * 0.86;
+            const targetH = stage.clientHeight * 0.86;
+            if(bounds.width < targetW * 0.78 && bounds.height < targetH * 0.78){
+              const up = Math.min(targetW / Math.max(1, bounds.width), targetH / Math.max(1, bounds.height), 4.0);
+              if(up > 1.05){
+                try { cropperImage.$scale(up, up); cropperImage.$center(); bounds = imageBounds() || bounds; } catch {}
+              }
+            }
+            selection.$change(bounds.x,bounds.y,bounds.width,bounds.height);
+          }
           update();
         });
         status.textContent='Original image remains unchanged.';

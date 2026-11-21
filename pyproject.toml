@@ -1,6 +1,6 @@
 [project]
 name = "lantern"
-version = "0.1.0"
+version = "9.24.0"
 description = "Local file manager, Markdown editor, and terminal application"
 requires-python = ">=3.12"
 dependencies = [

@@ -24,16 +24,18 @@ class MarkdownToolbarBreaksTests(unittest.TestCase):
         self.assertIn("&lt;br&gt;", html)
         self.assertNotIn("<img src=x onerror=alert(1)>", html)
 
-    def test_markdown_edit_actions_are_in_fixed_header_above_mode_row(self):
-        html = self.preview("# Header\n\nLong content")
+    def test_markdown_edit_actions_are_in_compact_fixed_header_without_clutter(self):
+        html = self.preview("# Header\n\n[TOC](#header)\n\nLong content")
         self.assertIn('class="bar md-bar"', html)
         self.assertIn('class="bar-top"', html)
         self.assertIn('class="bar-bottom"', html)
         self.assertIn('data-action="md-save"', html)
-        self.assertIn('data-action="md-download-draft"', html)
-        self.assertIn('data-action="md-back-preview"', html)
-        self.assertLess(html.index('data-action="print"'), html.index('data-action="md-save"'))
-        self.assertLess(html.index('data-action="md-back-preview"'), html.index('class="bar-bottom"'))
+        self.assertNotIn('data-action="md-download-draft"', html)
+        self.assertNotIn('data-action="md-back-preview"', html)
+        self.assertNotIn("Markdown preview uses a bounded parser", html)
+        self.assertNotIn("plugin preview · sample.md", html)
+        self.assertIn('<a href="#header">TOC</a>', html)
+        self.assertLess(html.index('data-action="md-save"'), html.index('class="bar-bottom"'))
         self.assertLess(html.index('class="bar-bottom"'), html.index('data-action="mode-source"'))
         self.assertIn('.bar.md-bar{position:fixed', html)
 

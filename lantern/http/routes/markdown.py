@@ -1,5 +1,7 @@
 import os
 import re
+import shutil
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -34,6 +36,8 @@ class MarkdownRoutes:
                 data.get("content"),
                 expect_hash=data.get("expectHash"),
                 base_version=data.get("baseVersion"),
+                allow_concurrent=bool(data.get("allowConcurrent")),
+                user_draft=bool(data.get("userDraft")),
             )
             self.send_json(200, {"ok": True, **result})
         except WorkingCopyError as exc:
@@ -47,6 +51,8 @@ class MarkdownRoutes:
                 data.get("patches"),
                 expect_hash=data.get("expectHash"),
                 base_version=data.get("baseVersion"),
+                allow_concurrent=bool(data.get("allowConcurrent")),
+                user_draft=bool(data.get("userDraft")),
             )
             self.send_json(200, {"ok": True, **result})
         except WorkingCopyError as exc:
@@ -71,6 +77,8 @@ class MarkdownRoutes:
                 data.get("path"), data.get("content"),
                 expect_saved_version=data.get("expectSavedVersion"),
                 expect_current_version=data.get("expectCurrentVersion"),
+                next_real_content=data.get("nextRealContent"),
+                next_user_content=data.get("nextUserContent"),
             )
             self.send_json(200, {"ok": True, **result})
         except WorkingCopyError as exc:
@@ -143,20 +151,20 @@ class MarkdownRoutes:
                 filtered.append(clean_ref)
         return filtered
 
-    def api_md_image_audit(self, query: str) -> None:
-        qs = urllib.parse.parse_qs(query)
-        rel = qs.get("p", [""])[0]
-        if not isinstance(rel, str) or not rel.strip():
-            self.send_json(400, {"error": "Markdown path required"}); return
-        target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
-        if not target.is_file() or target.suffix.lower() not in {".md", ".markdown"}:
-            self.send_json(404, {"error": "Markdown file not found"}); return
+    def _compute_md_image_audit(self, target: Path) -> dict:
         root = self.app.config.root.resolve()
         md_dir = target.parent.resolve()
+        text = target.read_text(encoding="utf-8", errors="replace")
         try:
-            text = target.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            self.send_json(400, {"error": str(exc)}); return
+            rel_doc = target.resolve().relative_to(root).as_posix()
+            if self.app.work is not None:
+                wstate = self.app.work.get(rel_doc)
+                if isinstance(wstate, dict) and isinstance(wstate.get("work"), dict):
+                    wcontent = wstate["work"].get("content")
+                    if isinstance(wcontent, str):
+                        text = wcontent
+        except Exception:
+            pass
 
         refs = self._extract_markdown_image_refs(text)
         missing: list[str] = []
@@ -188,21 +196,6 @@ class MarkdownRoutes:
                     seen_refs.add(norm_ref)
                     missing.append(norm_ref)
 
-        # Also collect image references from sibling .md files in the same folder so shared folder assets
-        # are only flagged as unused if NO .md file in the folder references them (unless in a doc-specific folder).
-        sibling_referenced: set[str] = set(referenced_resolved)
-        try:
-            for sib in md_dir.glob("*.md"):
-                if sib.resolve() == target.resolve():
-                    continue
-                sib_txt = sib.read_text(encoding="utf-8", errors="ignore")
-                for sref in self._extract_markdown_image_refs(sib_txt):
-                    snorm = sref.replace("\\", "/")
-                    scand = (root / snorm.lstrip("/")).resolve() if snorm.startswith("/") else (md_dir / snorm).resolve()
-                    sibling_referenced.add(os.path.normcase(str(scand)))
-        except Exception:
-            pass
-
         scan_dirs: list[Path] = [md_dir]
         for sub_name in ("assets", "images", "img", "media", f"{target.stem}_assets", f"{target.stem}.assets"):
             sub_dir = md_dir / sub_name
@@ -219,8 +212,11 @@ class MarkdownRoutes:
                     if entry.suffix.lower() not in _IMAGE_SUFFIXES:
                         continue
                     resolved_entry = entry.resolve()
+                    # Never flag already-archived images under assets/old/
+                    if "old" in [p.lower() for p in resolved_entry.relative_to(md_dir).parts[:-1]]:
+                        continue
                     norm_entry = os.path.normcase(str(resolved_entry))
-                    if norm_entry not in sibling_referenced and norm_entry not in seen_unused:
+                    if norm_entry not in referenced_resolved and norm_entry not in seen_unused:
                         seen_unused.add(norm_entry)
                         try:
                             rel_to_md = resolved_entry.relative_to(md_dir).as_posix()
@@ -230,15 +226,144 @@ class MarkdownRoutes:
             except Exception:
                 continue
 
-        self.send_json(200, {
-            "ok": True,
+        # Map each image ref to its first 1-based line number in the markdown text
+        ref_lines: dict[str, int] = {}
+        in_fence_scan = False
+        for line_idx, raw_line in enumerate(text.splitlines(), 1):
+            if re.match(r"^\s*(?:`{3,}|~{3,})", raw_line):
+                in_fence_scan = not in_fence_scan
+                continue
+            if in_fence_scan:
+                continue
+            for m in _MD_IMAGE_RE.finditer(raw_line):
+                r_raw = (m.group(1) or m.group(2) or "").strip()
+                c_ref = urllib.parse.unquote(r_raw.split("#", 1)[0].split("?", 1)[0]).strip().replace("\\", "/")
+                if c_ref and c_ref not in ref_lines:
+                    ref_lines[c_ref] = line_idx
+            for m in _HTML_IMG_RE.finditer(raw_line):
+                r_raw = (m.group(1) or m.group(2) or "").strip()
+                c_ref = urllib.parse.unquote(r_raw.split("#", 1)[0].split("?", 1)[0]).strip().replace("\\", "/")
+                if c_ref and c_ref not in ref_lines:
+                    ref_lines[c_ref] = line_idx
+
+        items: list[dict] = []
+        for v_ref in valid:
+            cand = (root / v_ref.lstrip("/")).resolve() if v_ref.startswith("/") else (md_dir / v_ref).resolve()
+            img_url = self.app.files.rel_url_for_path(cand) if cand.is_file() else ""
+            items.append({
+                "ref": v_ref,
+                "name": Path(v_ref).name,
+                "line": ref_lines.get(v_ref, 1),
+                "status": "ok",
+                "url": img_url,
+            })
+        for m_ref in missing:
+            items.append({
+                "ref": m_ref,
+                "name": Path(m_ref).name,
+                "line": ref_lines.get(m_ref, 1),
+                "status": "missing",
+                "url": "",
+            })
+        for u_ref in unreferenced:
+            cand = (md_dir / u_ref).resolve()
+            if not cand.is_file():
+                cand = (root / u_ref.lstrip("/")).resolve()
+            img_url = self.app.files.rel_url_for_path(cand) if cand.is_file() else ""
+            items.append({
+                "ref": u_ref,
+                "name": Path(u_ref).name,
+                "line": 0,
+                "status": "unused",
+                "url": img_url,
+            })
+
+        return {
             "path": self.app.files.rel_url_for_path(target),
             "referencedCount": len(seen_refs),
             "validCount": len(valid),
+            "valid": valid,
             "missing": missing,
             "missingCount": len(missing),
             "unreferenced": unreferenced,
             "unreferencedCount": len(unreferenced),
+            "items": items,
+        }
+
+    def api_md_image_audit(self, query: str) -> None:
+        qs = urllib.parse.parse_qs(query)
+        rel = qs.get("p", [""])[0]
+        if not isinstance(rel, str) or not rel.strip():
+            self.send_json(400, {"error": "Markdown path required"}); return
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
+        if not target.is_file() or target.suffix.lower() not in {".md", ".markdown"}:
+            self.send_json(404, {"error": "Markdown file not found"}); return
+        try:
+            audit = self._compute_md_image_audit(target)
+        except OSError as exc:
+            self.send_json(400, {"error": str(exc)}); return
+        self.send_json(200, {"ok": True, **audit})
+
+    def api_md_image_move_to_old(self) -> None:
+        data = self.read_json(max_bytes=256 * 1024)
+        rel = str(data.get("path") or "").strip()
+        if not rel:
+            self.send_json(400, {"error": "Markdown path required"}); return
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
+        if not target.is_file() or target.suffix.lower() not in {".md", ".markdown"}:
+            self.send_json(404, {"error": "Markdown file not found"}); return
+        root = self.app.config.root.resolve()
+        md_dir = target.parent.resolve()
+        try:
+            audit = self._compute_md_image_audit(target)
+        except OSError as exc:
+            self.send_json(400, {"error": str(exc)}); return
+
+        requested_files = data.get("files")
+        unused_set = set(audit.get("unreferenced") or [])
+        if isinstance(requested_files, list) and requested_files:
+            to_move = [str(f).replace("\\", "/").strip() for f in requested_files if str(f).replace("\\", "/").strip() in unused_set]
+        else:
+            to_move = list(audit.get("unreferenced") or [])
+
+        old_dir = (md_dir / "assets" / "old").resolve()
+        try:
+            old_dir.relative_to(root)
+        except ValueError:
+            self.send_json(403, {"error": "Invalid assets/old directory"}); return
+
+        moved: list[dict[str, str]] = []
+        if to_move:
+            old_dir.mkdir(parents=True, exist_ok=True)
+            for rel_img in to_move:
+                src_path = (md_dir / rel_img.lstrip("/")).resolve()
+                try:
+                    src_path.relative_to(md_dir)
+                except ValueError:
+                    continue
+                if not src_path.is_file() or src_path.suffix.lower() not in _IMAGE_SUFFIXES:
+                    continue
+                if old_dir in src_path.parents:
+                    continue
+                dest_path = old_dir / src_path.name
+                if dest_path.exists():
+                    dest_path = old_dir / f"{src_path.stem}-{int(time.time())}{src_path.suffix}"
+                try:
+                    shutil.move(str(src_path), str(dest_path))
+                    moved.append({
+                        "from": rel_img,
+                        "to": dest_path.relative_to(md_dir).as_posix(),
+                    })
+                except OSError:
+                    continue
+
+        updated_audit = self._compute_md_image_audit(target)
+        self.send_json(200, {
+            "ok": True,
+            "moved": moved,
+            "movedCount": len(moved),
+            "targetDir": "assets/old",
+            **updated_audit,
         })
 
     def api_md_document(self, query: str) -> None:
@@ -279,9 +404,9 @@ class MarkdownRoutes:
             self.send_json(400, {"error": "Markdown path required"}); return
         target = self.app.files.safe_join("/" + self.app.files.quote_path(rel))
         try:
-            # Block section-editor saves while LanternBot is actively editing this file.
+            # Block section-editor saves while LanternBot is actively editing this file unless allowConcurrent.
             state = self._work_store().get(rel)
-            if state.get("turnActive"):
+            if state.get("turnActive") and not bool(data.get("allowConcurrent")):
                 raise WorkingCopyError(409, "File is locked while LanternBot is editing it", reason="pi_turn")
             result = save_markdown_document(target, data.get("content"), data.get("version"))
             try:

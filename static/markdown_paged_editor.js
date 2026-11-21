@@ -106,15 +106,114 @@
       this.draftTimer=0; this.changedTimer=0; this.reindex=null;
       this.active=false; this.loadingPage=false; this.savePromise=null;
       this.botTurnActive=false;
+      this.chunkSizeKb=Number(localStorage.getItem('lantern-md-chunk-kb'))||64;
+      if(![32,64,128].includes(this.chunkSizeKb))this.chunkSizeKb=64;
+      this.lazyStreamMode=localStorage.getItem('lantern-md-lazy-stream')!=='off';
+      this.chunkObserver=null;
       this.pendingDraftWrites=new Set();
       this.draftKey='paged:'+location.origin+':'+path;
       this.onLeave=this.onLeave.bind(this); this.onKey=this.onKey.bind(this);
       this.onVisibility=this.onVisibility.bind(this);
     }
+    repartitionByChunkSize(rawRes, sourceText) {
+      try {
+        const targetChars = (this.chunkSizeKb || 64) * 1024;
+        const basePages = Array.isArray(rawRes?.pages) ? rawRes.pages : [];
+        if (basePages.length <= 1 || typeof sourceText !== 'string') return rawRes;
+        const combined = [{ ...basePages[0] }];
+        for (let i = 1; i < basePages.length; i++) {
+          const prev = combined[combined.length - 1];
+          const cur = basePages[i];
+          if ((cur.end - prev.start) <= targetChars && !prev.oversized && !cur.oversized) {
+            prev.end = cur.end;
+          } else {
+            combined.push({ ...cur });
+          }
+        }
+        rawRes.pages = combined;
+        if (Array.isArray(rawRes.headings)) {
+          for (const h of rawRes.headings) {
+            let lo = 0, hi = combined.length - 1;
+            while (lo < hi) {
+              const mid = (lo + hi) >>> 1;
+              if (combined[mid].end <= h.at) lo = mid + 1;
+              else hi = mid;
+            }
+            h.page = lo;
+          }
+        }
+      } catch {}
+      return rawRes;
+    }
+    renderLazyPreviewHtml(mdSlice) {
+      const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const lines = String(mdSlice || '').replace(/\r\n?/g, '\n').split('\n');
+      const out = [];
+      let inCode = false;
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (/^\s*(?:`{3,}|~{3,})/.test(l)) {
+          inCode = !inCode;
+          out.push(inCode ? '<pre class="md-code"><code>' : '</code></pre>');
+          continue;
+        }
+        if (inCode) { out.push(esc(l)); continue; }
+        const hm = l.match(/^(#{1,6})\s+(.*)$/);
+        if (hm) {
+          out.push(`<h${hm[1].length}>${esc(hm[2])}</h${hm[1].length}>`);
+        } else if (l.trim().startsWith('|')) {
+          out.push(`<div class="md-lazy-table-line">${esc(l)}</div>`);
+        } else if (l.trim()) {
+          out.push(`<p>${esc(l)}</p>`);
+        }
+      }
+      if (inCode) out.push('</code></pre>');
+      return out.join('\n');
+    }
+    syncLazyChunkStream() {
+      if (!this.streamWrap || !this.index?.pages) return;
+      if (!this.lazyStreamMode || this.index.pages.length <= 1) {
+        this.streamBefore.hidden = true;
+        this.streamAfter.hidden = true;
+        return;
+      }
+      this.streamBefore.hidden = false;
+      this.streamAfter.hidden = false;
+      this.streamBefore.replaceChildren();
+      this.streamAfter.replaceChildren();
+      const pages = this.index.pages;
+      const makeCard = (p, idx) => {
+        const card = document.createElement('div');
+        card.className = 'md-lazy-chunk-card';
+        card.dataset.chunkIndex = String(idx);
+        const badge = document.createElement('div');
+        badge.className = 'md-lazy-chunk-badge';
+        const kb = Math.max(1, Math.round((p.end - p.start) / 1024));
+        badge.innerHTML = `<span>📄 Chunk ${idx + 1} / ${pages.length} (${kb} KB)</span><span class="md-lazy-chunk-cta">Click to edit chunk</span>`;
+        const body = document.createElement('div');
+        body.className = 'md-preview md-lazy-chunk-preview';
+        body.innerHTML = this.renderLazyPreviewHtml(this.source.slice(p.start, p.end));
+        card.append(badge, body);
+        card.addEventListener('click', () => {
+          if (!this.loadingPage && this.pageNumber !== idx) {
+            void this.go(idx);
+          }
+        });
+        return card;
+      };
+      for (let i = 0; i < this.pageNumber; i++) {
+        this.streamBefore.appendChild(makeCard(pages[i], i));
+      }
+      for (let i = this.pageNumber + 1; i < pages.length; i++) {
+        this.streamAfter.appendChild(makeCard(pages[i], i));
+      }
+    }
     status(message,kind='info') {
       if(!this.statusEl)return;
-      this.statusEl.textContent=message;
+      const clean=String(message||'').trim();
+      this.statusEl.textContent=clean;
       this.statusEl.dataset.kind=kind;
+      this.statusEl.hidden=!clean;
     }
     currentText() {
       if(this.largeEditor)return (this.blockWrap?.prefix||'')+this.largeEditor.getContent()+(this.blockWrap?.suffix||'');
@@ -192,6 +291,7 @@
                 }
               }
             } catch {}
+            this.repartitionByChunkSize(rawRes, source);
             resolve(rawRes);
           },
           reject,
@@ -258,16 +358,14 @@
       if(generation!==this.generation||!this.active)return;
       if(this.rich&&typeof this.rich.isCleanFromMount==='function'&&this.rich.isCleanFromMount())return;
       this.dirty=true; this.revision++;
-      this.status(this.conflict?'File changed on another client; draft preserved.' :
-        this.botTurnActive?'Lanbot is updating the real .md.' :
-        'Updating the real .md automatically…',this.conflict?'error':'info');
+      if(this.conflict)this.status('File changed on another client; draft preserved.','error');
       clearTimeout(this.changedTimer);
       const revision=this.revision;
       this.changedTimer=setTimeout(()=>{
         if(revision!==this.revision || !this.active)return;
         if(this.currentText()===this.lastSaved) {
           this.dirty=false;clearTimeout(this.draftTimer);
-          if(!this.conflict&&!this.saving)this.status('Ready. Edit directly in the document.');
+          if(!this.conflict&&!this.saving)this.status('');
           return;
         }
         clearTimeout(this.draftTimer);
@@ -324,12 +422,46 @@
       const status=document.createElement('span');
       status.className='md-visual-status';status.setAttribute('role','status');
       status.setAttribute('aria-live','polite');
+      const chunkSelect=document.createElement('select');
+      chunkSelect.className='md-page-chunk-select';
+      chunkSelect.title='Milkdown Lazy Render Chunk Size (32KB / 64KB / 128KB)';
+      for(const kb of [32,64,128]){
+        const opt=new Option(`Chunk: ${kb} KB`,String(kb));
+        if(kb===this.chunkSizeKb)opt.selected=true;
+        chunkSelect.add(opt);
+      }
+      chunkSelect.addEventListener('change',async()=>{
+        const nextKb=Number(chunkSelect.value)||64;
+        this.chunkSizeKb=nextKb;
+        try{localStorage.setItem('lantern-md-chunk-kb',String(nextKb));}catch{}
+        if(this.hasUnsaved()&&!(await this.flushReal()))return;
+        const curOffset=this.page?.start||0;
+        this.index=await this.workerIndex(this.source);
+        let targetIdx=this.index.pages.findIndex(p=>p.end>curOffset);
+        if(targetIdx<0)targetIdx=0;
+        await this.go(targetIdx,null,true);
+      });
+      const streamToggle=button(this.lazyStreamMode?'📜 Full Lazy: ON':'📄 Paged Only',()=>{
+        this.lazyStreamMode=!this.lazyStreamMode;
+        try{localStorage.setItem('lantern-md-lazy-stream',this.lazyStreamMode?'on':'off');}catch{}
+        streamToggle.textContent=this.lazyStreamMode?'📜 Full Lazy: ON':'📄 Paged Only';
+        this.syncLazyChunkStream();
+      });
+      streamToggle.title='Show full Markdown document with lazy-rendered Milkdown chunks';
+      status.hidden=true;
       const pageRow=document.createElement('div');
       pageRow.className='md-paged-navigation';
-      pageRow.append(prev,page,pageCount,next,headingSearch,sections,search,goSearch);
-      toolbar.append(title,pageRow,save,draft,close,status);
+      pageRow.append(prev,page,pageCount,next,chunkSelect,streamToggle,sections,save,status);
+      toolbar.append(pageRow);
+      const streamWrap=document.createElement('div');
+      streamWrap.className='md-progressive-stream';
+      const streamBefore=document.createElement('div');
+      streamBefore.className='md-progressive-before';
       const host=document.createElement('div');host.className='md-visual-host';
       host.id='md-paged-edit-host';
+      const streamAfter=document.createElement('div');
+      streamAfter.className='md-progressive-after';
+      streamWrap.append(streamBefore,host,streamAfter);
       const bottomNav=document.createElement('div');
       bottomNav.className='md-paged-bottom-nav';
       const prevBottom=button('← Previous',()=>{void this.go(this.pageNumber-1);});
@@ -337,7 +469,8 @@
       countBottom.className='md-page-count';
       const nextBottom=button('Next →',()=>{void this.go(this.pageNumber+1);});
       bottomNav.append(prevBottom,countBottom,nextBottom);
-      shell.append(toolbar,host,bottomNav);
+      shell.append(toolbar,streamWrap,bottomNav);
+      this.streamWrap=streamWrap;this.streamBefore=streamBefore;this.streamAfter=streamAfter;
       this.preview.insertAdjacentElement('afterend',shell);
       this.shell=shell;this.host=host;this.statusEl=status;
       this.prev=prev;this.next=next;this.pageField=page;
@@ -426,25 +559,26 @@
       const current=this.currentText();
       if(current===this.lastSaved) {
         this.dirty=false;
-        this.status('Project .md is up to date.');
+        this.status('');
         return true;
       }
       if(!this.roundtripSafe&&!this.approved){
         this.approved=true;
       }
       const revision=this.revision;
-      this.saving=true;this.updateNav();this.status('Updating real .md…');
+      this.saving=true;this.updateNav();
       const task=(async()=>{
         try {
           const patch=boundaries(this.pageOriginal,current);
           const newSource=this.source.slice(0,this.page.start)+patch+
             this.source.slice(this.page.end);
-          const result=await api('/api/md/save',{
+          // v9.0 Unified 3-Way Harness: migrated from /api/md/save to /api/work/write (userDraft: true)
+          const result=await api('/api/work/write',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({path:this.path,version:this.version,content:newSource}),
+            body:JSON.stringify({path:this.path,baseVersion:this.version,content:newSource,allowConcurrent:true,userDraft:true}),
           });
           const change=patch.length-(this.page.end-this.page.start);
-          this.version=result.version;this.source=newSource;
+          this.version=result.currentVersion||result.version;this.source=newSource;
           this.savedSincePreview=true;
           this.page.end+=change;
           for(let i=this.pageNumber+1;i<this.index.pages.length;i++){
@@ -455,7 +589,7 @@
           if(this.revision===revision) {
             this.dirty=false;
             await this.clearDraft().catch(()=>{});
-            this.status('Updated real .md. Ctrl+S accepts the diff baseline.');
+            this.status('Saved.');
           } else {
             this.dirty=true;
             await this.draftWrite();
@@ -494,7 +628,7 @@
           body:JSON.stringify({path:this.path,expectHash:state.work?.hash||null,
             expectSavedVersion:state.saved.version}),
         });
-        if(manual)this.status('Saved diff baseline into md_temp. Real .md stays editable.');
+        if(manual)this.status('Saved.');
         return true;
       }catch(error){
         this.status('Cannot accept diff: '+error.message,'error');return false;
@@ -638,12 +772,12 @@
             restore.original!==this.pageOriginal)this.conflict=true;
         this.status(this.conflict?'Draft restored but file version differs. Download your draft before reloading.' :
           restore?'Unsaved draft restored. Review before saving.' :
-          this.roundtripSafe?'Ready. Edit directly in the document.' :
-          'Formatting may change; review this section before Save.',
+          '',
           this.conflict?'error':this.roundtripSafe?'info':'warn');
+        this.syncLazyChunkStream();
         if(this.rich)this.rich.focus();
         if(this.largeEditor)this.largeEditor.focus();
-        this.shell.scrollIntoView({block:'start'});
+        this.host.scrollIntoView({block:'nearest'});
         return true;
       } catch(error){
         this.status('Section unavailable: '+error.message,'error');

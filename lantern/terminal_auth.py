@@ -37,8 +37,8 @@ def is_loopback_ip(client_ip: str) -> bool:
 
 
 def hash_password(password: str) -> str:
-    if not isinstance(password, str) or len(password) < 12 or len(password) > 1024:
-        raise ValueError("Terminal password must contain 12-1024 characters")
+    if not isinstance(password, str) or len(password) < 4 or len(password) > 1024:
+        raise ValueError("Password must contain 4-12 characters")
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, ITERATIONS)
     b64 = lambda data: base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
@@ -110,6 +110,22 @@ class TerminalAccess:
         self.attempts: dict[str, deque[float]] = {}
         self.lock = threading.RLock()
         self.lan_locked: bool = not self.passwordless
+
+    def set_password(self, raw_password: str, config_path: Path | None = None) -> str:
+        with self.lock:
+            cleaned = str(raw_password or "").strip()
+            if not cleaned or cleaned.casefold() == "no-password":
+                encoded = "no-password"
+                self._hash = encoded
+                self.lan_locked = False
+            else:
+                if len(cleaned) < 4 or len(cleaned) > 12:
+                    raise ValueError("Password must be between 4 and 12 characters")
+                encoded = hash_password(cleaned)
+                self._hash = encoded
+            if config_path is not None:
+                update_password_yaml(config_path, encoded)
+            return encoded
 
     @property
     def configured(self) -> bool:

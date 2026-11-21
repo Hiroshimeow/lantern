@@ -80,13 +80,58 @@ def _inside(root: Path, candidate: Path) -> bool:
         return False
 
 
+def _strip_python_venv_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Remove Lantern server Python/uv environment variables (PYTHONHOME, PYTHONPATH,
+    VIRTUAL_ENV, etc.) and strip Lantern venv bin/Scripts directories from PATH so child
+    shells and tools resolve the user system Python cleanly without stdlib mismatches."""
+    import sys
+    venv_roots: set[str] = set()
+    raw_venv = env.get("VIRTUAL_ENV")
+    if raw_venv:
+        try:
+            venv_roots.add(os.path.normcase(str(Path(raw_venv).resolve())))
+        except Exception:
+            pass
+    if getattr(sys, "base_prefix", sys.prefix) != sys.prefix:
+        try:
+            venv_roots.add(os.path.normcase(str(Path(sys.prefix).resolve())))
+        except Exception:
+            pass
+    for key in (
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        "VIRTUAL_ENV_PROMPT",
+        "__PYVENV_LAUNCHER__",
+        "UV_INTERNAL__PARENT_INTERPRETER",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        env.pop(key, None)
+    if venv_roots:
+        for path_key in list(env.keys()):
+            if path_key.upper() == "PATH":
+                raw_path = env.get(path_key, "")
+                parts = [p for p in raw_path.split(os.pathsep) if p]
+                cleaned_parts = []
+                for p in parts:
+                    try:
+                        rp = os.path.normcase(str(Path(p).resolve()))
+                        if any(rp == vr or rp.startswith(vr + os.sep) for vr in venv_roots):
+                            continue
+                    except Exception:
+                        pass
+                    cleaned_parts.append(p)
+                env[path_key] = os.pathsep.join(cleaned_parts)
+    return env
+
+
 def _build_pty_env(overlay: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     if overlay is not None and any(
         not isinstance(key, str) or not isinstance(value, str)
         for key, value in overlay.items()
     ):
         raise TypeError("PTY environment keys and values must be strings")
-    env = os.environ.copy()
+    env = _strip_python_venv_env(os.environ.copy())
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("LANG", "en_US.UTF-8")
     if overlay:

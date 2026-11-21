@@ -109,7 +109,7 @@
     if (aText === bText) {
       return aText ? [{type: 'equal', text: aText}] : [];
     }
-    const tokenize = s => s.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]+/gu) || [];
+    const tokenize = s => s.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]/gu) || [];
     const a = tokenize(aText);
     const b = tokenize(bText);
     if (!a.length) return b.length ? [{type: 'add', text: bText}] : [];
@@ -145,15 +145,20 @@
     const inner = raw.slice(1, -1);
     const cells = [];
     let cur = '';
+    let inCode = false;
     for (let i = 0; i < inner.length; i++) {
-      if (inner[i] === '\\' && i + 1 < inner.length && inner[i + 1] === '|') {
+      const ch = inner[i];
+      if (ch === '\\' && i + 1 < inner.length && inner[i + 1] === '|') {
         cur += '|';
         i++;
-      } else if (inner[i] === '|') {
+      } else if (ch === '`') {
+        inCode = !inCode;
+        cur += ch;
+      } else if (ch === '|' && !inCode) {
         cells.push(cur.trim());
         cur = '';
       } else {
-        cur += inner[i];
+        cur += ch;
       }
     }
     cells.push(cur.trim());

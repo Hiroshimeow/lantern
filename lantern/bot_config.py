@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,16 +15,11 @@ DEFAULT_SYSTEM_PROMPT = """You are LanternBot, the assistant embedded in Lantern
 Each user turn carries its own <lantern_context> block showing the file that was open during that specific turn.
 The newest <lantern_context> block shows the file currently open right now (use it when the user says "this file" or "here"), while earlier turns' <lantern_context> blocks record which file was open when those earlier requests were made.
 For any active file (Markdown or non-Markdown code/text/data file), path, logicalPath, and workingPath identify the real project file the user is currently viewing or editing.
-Read and edit that file directly using native edit/write tools. Lantern shows
-the difference against an accepted md_temp snapshot. Ctrl+S accepts the current
-project file as the new comparison baseline; it does not write your changes.
-Never edit Lantern's private md_temp snapshot. Preserve unrelated formatting
-and content; do not claim tests passed unless you actually ran them.
-Context Efficiency Rule: Keep context lightweight. When line or selectedText is
-provided in <lantern_context>, use read with offset and limit around that line
-(e.g. 30-50 lines) rather than reading the entire file.
+Lazy File Reading & Token Efficiency Rule: Do NOT automatically read the file in <lantern_context> on greetings or unrelated questions. Only read or edit workingPath/logicalPath when the user actually asks about, references, or requests changes to that file. When line or selectedText is provided, use read with offset and limit around that line (e.g. 30-50 lines) rather than reading the entire file.
+When editing, edit the real file directly using native edit/write/bash tools. Lantern shows the difference against an accepted md_temp snapshot. Ctrl+S accepts the current project file as the new comparison baseline. Never edit Lantern's private md_temp snapshot.
+Full Coding Harness Rule: On localhost you have full coding harness permissions (including bash/script execution, @tintinweb/pi-subagents, pi-mcp-adapter, and @juicesharp/rpiv-todo). Preserve unrelated formatting and content; do not claim tests passed unless you actually ran them.
 Exact Edit & Target Continuity Rule: When calling edit, copy oldText byte-for-byte
-from the latest read output (never add or remove backslashes like Ref.\[3] vs Ref.\[3\]).
+from the latest read output (never add or remove backslashes like Ref.\\[3] vs Ref.\\[3\\]).
 If the user previously asked to edit file A and temporarily opened sample file B just to show a pattern, continue editing file A unless explicitly told to edit file B.
 Paths listed under attachments are user-selected context (including multi-file selection). Read or process all listed attachments when relevant."""
 
@@ -53,6 +49,78 @@ _TOOL_MODE_PRESETS: dict[str, tuple[str, ...]] = {
     "chat": ("none",),
 }
 
+ALL_THINKING_LEVELS: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh")
+
+
+def _parse_thinking_levels(value: Any) -> tuple[str, ...]:
+    if value is None or value == "" or value == "*":
+        return ()
+    if isinstance(value, str):
+        cleaned = value.strip().strip("[]()")
+        items = [part.strip().lower() for part in re.split(r"[,;\s]+", cleaned) if part.strip()]
+    elif isinstance(value, (list, tuple)):
+        items = [str(item or "").strip().lower() for item in value if str(item or "").strip()]
+    else:
+        return ()
+    if any(x in {"*", "all", "full"} for x in items):
+        return ()
+    valid = [x for x in items if x in ALL_THINKING_LEVELS]
+    return tuple(dict.fromkeys(valid))
+
+
+def _parse_models_and_thinking(
+    value: Any,
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    if value is None:
+        return (), {}
+    if isinstance(value, (str, dict)):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("LanternBot model/provider policy must be a YAML list")
+    patterns: list[str] = []
+    thinking_map: dict[str, tuple[str, ...]] = {}
+    inline_re = re.compile(
+        r"^(?:model\s*:\s*)?([^\s]+?)(?:\s+thinking\s*:\s*(\[[^\]]*\]|[^\s]+))?$",
+        re.IGNORECASE,
+    )
+    for item in value:
+        if isinstance(item, dict):
+            raw_model = str(
+                item.get("model")
+                or item.get("id")
+                or item.get("pattern")
+                or item.get("name")
+                or ""
+            ).strip()
+            raw_prov = str(item.get("provider") or "").strip()
+            if raw_prov and raw_model and "/" not in raw_model:
+                raw_model = f"{raw_prov}/{raw_model}"
+            if raw_model:
+                patterns.append(raw_model)
+                t_levels = _parse_thinking_levels(
+                    item.get("thinking", item.get("thinking_levels", item.get("allowed_thinking")))
+                )
+                if t_levels:
+                    thinking_map[raw_model] = t_levels
+            continue
+        text = str(item or "").strip()
+        if not text:
+            continue
+        m = inline_re.match(text)
+        if m:
+            pat = m.group(1).strip()
+            if pat.lower().startswith("model:"):
+                pat = pat[6:].strip()
+            if pat:
+                patterns.append(pat)
+                if m.group(2):
+                    t_levels = _parse_thinking_levels(m.group(2))
+                    if t_levels:
+                        thinking_map[pat] = t_levels
+        else:
+            patterns.append(text)
+    return tuple(patterns), thinking_map
+
 
 def _as_list(value: Any) -> tuple[str, ...]:
     if value is None:
@@ -63,6 +131,11 @@ def _as_list(value: Any) -> tuple[str, ...]:
         raise ValueError("LanternBot model/provider policy must be a YAML list")
     result = []
     for item in value:
+        if isinstance(item, dict):
+            raw_m = str(item.get("model") or item.get("id") or item.get("name") or "").strip()
+            if raw_m:
+                result.append(raw_m)
+            continue
         text = str(item or "").strip()
         if text:
             result.append(text)
@@ -79,6 +152,8 @@ def _normalize_tools(raw_tools: Any, raw_tool_mode: Any, *, is_lan: bool) -> tup
         if not parsed:
             raise ValueError("lantern_bot.access tools must contain at least one allowed tool")
         if any(item.lower() in {"*", "all", "full", "yolo"} for item in parsed):
+            return ("*",)
+        if not is_lan and set(x.lower() for x in parsed) == {"read", "edit", "write", "grep", "find", "ls"}:
             return ("*",)
         return parsed
     if raw_tool_mode is not None:
@@ -130,6 +205,8 @@ class LanternBotAccessPolicy:
     model: str = ""
     lock_provider: bool = False
     lock_model: bool = False
+    thinking_levels: tuple[str, ...] = field(default_factory=tuple)
+    model_thinking_map: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Tool names / globs are checked by the Pi tool-call guard per turn.
     # Default for localhost is Full / YOLO mode ("*") with extensions & MCP enabled.
     tools: tuple[str, ...] = ("*",)
@@ -178,18 +255,35 @@ class LanternBotAccessPolicy:
             "lantern_bot access provider_mode",
             default=fallback_provider_mode,
         )
+        raw_model_mode = raw.get("model_mode")
+        raw_models_source = raw["models"] if "models" in raw else fallback_models
+        if raw.get("models_whitelist") is not None:
+            raw_model_mode = "whitelist"
+            raw_models_source = raw.get("models_whitelist")
+        elif raw.get("models_blacklist") is not None:
+            raw_model_mode = "blacklist"
+            raw_models_source = raw.get("models_blacklist")
+
         model_mode = _mode(
-            raw.get("model_mode"),
+            raw_model_mode,
             "lantern_bot access model_mode",
             default=fallback_model_mode,
         )
         providers = _as_list(
             raw["providers"] if "providers" in raw else fallback_providers
         )
-        models = _as_list(raw["models"] if "models" in raw else fallback_models)
+        models, model_thinking_map = _parse_models_and_thinking(raw_models_source)
         bypass = _as_list(
             raw["bypass_models"] if "bypass_models" in raw else fallback_bypass
         )
+        scope_thinking = _parse_thinking_levels(
+            raw.get("thinking", raw.get("thinking_levels", selection.get("thinking")))
+        )
+        if model and selection.get("thinking") and model not in model_thinking_map:
+            sel_thinking = _parse_thinking_levels(selection.get("thinking"))
+            if sel_thinking:
+                key_pat = f"{provider}/{model}" if provider else model
+                model_thinking_map[key_pat] = sel_thinking
 
         tools = _normalize_tools(
             raw.get("tools") if "tools" in raw else None,
@@ -209,6 +303,8 @@ class LanternBotAccessPolicy:
             model=model,
             lock_provider=lock_provider,
             lock_model=lock_model,
+            thinking_levels=scope_thinking,
+            model_thinking_map=model_thinking_map,
         )
 
     def _provider_allowed(self, provider: str) -> bool:
@@ -246,6 +342,25 @@ class LanternBotAccessPolicy:
             return False
         return True
 
+    def allowed_thinking_levels(self, provider: str = "", model_id: str = "") -> tuple[str, ...]:
+        provider = str(provider or "").strip()
+        model_id = str(model_id or "").strip()
+        if model_id and self.model_thinking_map:
+            key = f"{provider}/{model_id}" if provider else model_id
+            for pattern, levels in self.model_thinking_map.items():
+                if (
+                    fnmatch.fnmatchcase(key, pattern)
+                    or ("/" not in pattern and fnmatch.fnmatchcase(model_id, pattern))
+                ):
+                    return levels
+        if self.thinking_levels:
+            return self.thinking_levels
+        return ALL_THINKING_LEVELS
+
+    def allows_thinking(self, level: str, provider: str = "", model_id: str = "") -> bool:
+        clean = str(level or "").strip().lower()
+        return clean in self.allowed_thinking_levels(provider, model_id)
+
     def public(self) -> dict[str, Any]:
         return {
             "providerMode": self.provider_mode,
@@ -254,6 +369,8 @@ class LanternBotAccessPolicy:
             "lockModel": self.lock_model,
             "configuredProvider": self.provider or None,
             "configuredModel": self.model or None,
+            "allowedThinking": list(self.thinking_levels) if self.thinking_levels else list(ALL_THINKING_LEVELS),
+            "modelThinking": {k: list(v) for k, v in self.model_thinking_map.items()},
             "tools": list(self.tools),
             "extensions": self.extensions,
             "mcp": self.mcp,
@@ -300,7 +417,7 @@ class LanternBotConfig:
         legacy_model_mode = "whitelist" if _as_list(legacy_models) else "all"
 
         local_access = LanternBotAccessPolicy.from_mapping(
-            {**(access.get("localhost") if isinstance(access.get("localhost"), dict) else {}), "_scope": "local"},
+            {**(access.get("localhost") if isinstance(access.get("localhost") , dict) else {}), "_scope": "local"},
             fallback_selection=selection,
             fallback_provider_mode="all",
             fallback_providers=(),
@@ -374,6 +491,11 @@ class LanternBotConfig:
 
     def allows_model(self, provider: str, model_id: str, *, scope: str = "local") -> bool:
         return self.access_policy(scope).allows_model(provider, model_id)
+
+    def allows_thinking(
+        self, level: str, provider: str = "", model_id: str = "", *, scope: str = "local"
+    ) -> bool:
+        return self.access_policy(scope).allows_thinking(level, provider, model_id)
 
     def public_policy(self, scope: str = "local") -> dict[str, Any]:
         selected = self.access_policy(scope)

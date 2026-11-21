@@ -191,7 +191,14 @@ class FilesRoutes:
         self.app.files.protect_config_mutation(target)
         if dest.exists():
             self.send_json(409, {"error": "target exists"}); return
+        old_rel = self.app.files.rel_url_for_path(target).lstrip("/")
         target.rename(dest)
+        new_rel = self.app.files.rel_url_for_path(dest).lstrip("/")
+        if getattr(self.app, "work", None) is not None:
+            try:
+                self.app.work.notify_moved(old_rel, new_rel)
+            except Exception:
+                pass
         self.send_json(200, {"ok": True, "path": self.app.files.rel_url_for_path(dest)})
 
     def api_copy(self) -> None:
@@ -220,11 +227,18 @@ class FilesRoutes:
             if src.resolve() == self.app.config.root.resolve():
                 raise BadRequest("cannot move root")
             self.app.files.protect_config_mutation(src)
+            old_rel = self.app.files.rel_url_for_path(src).lstrip("/")
             result = self.app.files.move_item(src, dest_dir, conflict=conflict)
             if result is None:
                 skipped += 1
             else:
-                moved.append(self.app.files.rel_url_for_path(result).lstrip("/"))
+                new_rel = self.app.files.rel_url_for_path(result).lstrip("/")
+                if getattr(self.app, "work", None) is not None:
+                    try:
+                        self.app.work.notify_moved(old_rel, new_rel)
+                    except Exception:
+                        pass
+                moved.append(new_rel)
         self.send_json(200, {"ok": True, "moved": moved, "skipped": skipped})
 
     def api_duplicate(self) -> None:
@@ -269,8 +283,15 @@ class FilesRoutes:
             seen.add(dest)
         renamed = []
         for src, dest in planned:
+            old_rel = self.app.files.rel_url_for_path(src).lstrip("/")
             src.rename(dest)
-            renamed.append({"from": self.app.files.rel_url_for_path(src).lstrip("/"), "to": self.app.files.rel_url_for_path(dest).lstrip("/")})
+            new_rel = self.app.files.rel_url_for_path(dest).lstrip("/")
+            if getattr(self.app, "work", None) is not None:
+                try:
+                    self.app.work.notify_moved(old_rel, new_rel)
+                except Exception:
+                    pass
+            renamed.append({"from": old_rel, "to": new_rel})
         self.send_json(200, {"ok": True, "renamed": renamed})
 
     def api_extract(self) -> None:
@@ -286,6 +307,79 @@ class FilesRoutes:
 
     def api_archive(self) -> None:
         payload = self.app.files.parse_archive_payload(self)
+        md_rel = str(payload.get("mdPath") or "").strip() if isinstance(payload, dict) else ""
+        if md_rel:
+            md_target = self.app.files.resolve_existing(md_rel)
+            if not md_target.is_file():
+                raise BadRequest("Markdown path must be an existing file")
+            md_dir = md_target.parent.resolve()
+            stem = md_target.stem
+            default_zip = self.app.files.ensure_under_root(md_dir / f"{stem}.zip")
+            conflict_mode = str(payload.get("conflict") or "ask").strip().lower()
+            if default_zip.exists() and conflict_mode == "ask":
+                ts = int(time.time())
+                self.send_json(200, {
+                    "ok": False,
+                    "conflict": True,
+                    "existingName": default_zip.name,
+                    "copyName": f"{stem}_{ts}.zip",
+                })
+                return
+            if default_zip.exists() and conflict_mode == "copy":
+                ts = int(time.time())
+                dest_zip = self.app.files.ensure_under_root(md_dir / f"{stem}_{ts}.zip")
+                idx = 1
+                while dest_zip.exists():
+                    dest_zip = self.app.files.ensure_under_root(md_dir / f"{stem}_{ts}_{idx}.zip")
+                    idx += 1
+            else:
+                dest_zip = default_zip
+
+            arch_paths: List[Path] = [md_target]
+            for sub_name in ("assets", f"{stem}_assets", f"{stem}.assets", "images", "img", "media"):
+                sub_dir = (md_dir / sub_name).resolve()
+                if sub_dir.is_dir():
+                    arch_paths.append(sub_dir)
+            if hasattr(self, "_compute_md_image_audit"):
+                try:
+                    audit = self._compute_md_image_audit(md_target)
+                    for ref_rel in (audit.get("valid") or []):
+                        cand = (md_dir / str(ref_rel).lstrip("/")).resolve()
+                        if cand.is_file() and not any(cand == p.resolve() or p.resolve() in cand.parents for p in arch_paths):
+                            arch_paths.append(cand)
+                except Exception:
+                    pass
+
+            tmp_zip = dest_zip.with_name(f".{dest_zip.name}.{os.getpid()}.tmp")
+            written_count = 0
+            try:
+                with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=3) as zf:
+                    for p_entry, arc in self.app.files.iter_archive_entries(arch_paths):
+                        try:
+                            if p_entry.resolve() in {dest_zip.resolve(), tmp_zip.resolve()}:
+                                continue
+                            if p_entry.is_dir():
+                                zf.writestr(arc.rstrip("/") + "/", b"")
+                            else:
+                                zf.write(p_entry, arc)
+                                written_count += 1
+                        except Exception:
+                            pass
+                os.replace(tmp_zip, dest_zip)
+            finally:
+                if tmp_zip.exists():
+                    try:
+                        tmp_zip.unlink()
+                    except OSError:
+                        pass
+            self.send_json(200, {
+                "ok": True,
+                "conflict": False,
+                "name": dest_zip.name,
+                "path": self.app.files.rel_url_for_path(dest_zip).lstrip("/"),
+                "filesCount": written_count,
+            })
+            return
         rels = self.app.files.payload_paths(payload)
         paths = [self.app.files.resolve_existing(rel) for rel in rels]
         fmt = str(payload.get("format", "zip")).lower()
@@ -325,12 +419,23 @@ class FilesRoutes:
             if target.resolve() == self.app.config.root.resolve():
                 continue
             self.app.files.protect_config_mutation(target)
+            rel_del = self.app.files.rel_url_for_path(target).lstrip("/")
             if target.is_dir():
                 shutil.rmtree(target)
                 deleted += 1
+                if getattr(self.app, "work", None) is not None:
+                    try:
+                        self.app.work.notify_deleted(rel_del)
+                    except Exception:
+                        pass
             elif target.exists():
                 target.unlink()
                 deleted += 1
+                if getattr(self.app, "work", None) is not None:
+                    try:
+                        self.app.work.notify_deleted(rel_del)
+                    except Exception:
+                        pass
         self.send_json(200, {"ok": True, "deleted": deleted})
 
     def api_zip(self) -> None:

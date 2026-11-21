@@ -349,6 +349,9 @@ def build_config(args: argparse.Namespace) -> AppConfig:
                 loc_cfg["tools"] = ["*"]
                 loc_cfg["extensions"] = True
                 loc_cfg["mcp"] = True
+            if isinstance(loc_cfg.get("selection"), dict):
+                loc_cfg["selection"]["lock_provider"] = False
+                loc_cfg["selection"]["lock_model"] = False
     data.update({k: v for k, v in loaded.items() if v is not None})
 
     if args.root is not None: data["root"] = args.root

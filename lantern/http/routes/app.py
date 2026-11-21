@@ -201,3 +201,110 @@ class AppRoutes:
         if changed:
             write_config_file(self.app.config)
         self.send_json(200, {"ok": True, "changed": changed})
+
+
+    def api_lan_settings_get(self) -> None:
+        access = self.app.terminal_access
+        ip = self.client_address[0]
+        is_local = bool(access and hasattr(access, "is_local") and access.is_local(ip))
+        cfg = self.app.config
+        bot_cfg = cfg.lantern_bot
+        loc = bot_cfg.local_access
+        lan = bot_cfg.lan_access
+        lan_tools_mode = "full" if lan.is_full_tools else ("none" if lan.tools == ("none",) else ("code" if "edit" in lan.tools else "readonly"))
+        self.send_json(200, {
+            "ok": True,
+            "isLocal": is_local,
+            "lanLocked": bool(getattr(access, "lan_locked", False)),
+            "passwordConfigured": bool(getattr(access, "configured", False)),
+            "lanSessions": access.active_lan_sessions() if (access and is_local) else 0,
+            "terminalEnabled": bool(cfg.terminal_enabled),
+            "lanbotEnabled": bool(bot_cfg.enabled),
+            "localSelection": {
+                "provider": loc.provider or "",
+                "model": loc.model or "",
+                "lockProvider": bool(loc.lock_provider),
+                "lockModel": bool(loc.lock_model),
+            },
+            "lanSelection": {
+                "provider": lan.provider or "",
+                "model": lan.model or "",
+                "lockProvider": bool(lan.lock_provider),
+                "lockModel": bool(lan.lock_model),
+            },
+            "lanToolsMode": lan_tools_mode,
+        })
+
+    def api_lan_settings_post(self) -> None:
+        import dataclasses
+        from lantern.bot_config import _TOOL_MODE_PRESETS
+        access = self.app.terminal_access
+        ip = self.client_address[0]
+        is_local = bool(access and hasattr(access, "is_local") and access.is_local(ip))
+        if not is_local:
+            self.send_json(403, {"error": "Only localhost can modify LAN & Workspace Settings"})
+            return
+        data = self.read_json()
+        cfg = self.app.config
+
+        # 1. Password update (4-12 chars) or clear
+        if "password" in data or data.get("clearPassword"):
+            raw_pwd = "" if data.get("clearPassword") else str(data.get("password") or "").strip()
+            if raw_pwd and (len(raw_pwd) < 4 or len(raw_pwd) > 12):
+                self.send_json(400, {"error": "Mật khẩu LAN phải từ 4 đến 12 ký tự (Password must be 4-12 characters)."})
+                return
+            if access and hasattr(access, "set_password"):
+                encoded = access.set_password(raw_pwd, cfg.config_path)
+                cfg.terminal_password_hash = encoded
+
+        # 2. LAN lock state
+        if "lanLocked" in data and access and hasattr(access, "revoke_all_lan"):
+            want_lock = bool(data.get("lanLocked"))
+            access.revoke_all_lan(hard_lock=want_lock)
+            if want_lock and hasattr(self.app.ws, "close_lan_peers"):
+                self.app.ws.close_lan_peers(access)
+
+        # 3. Terminal & Lanbot enable/disable switches
+        if "terminalEnabled" in data:
+            cfg.terminal_enabled = bool(data.get("terminalEnabled"))
+        bot_cfg = cfg.lantern_bot
+        next_enabled = bool(data["lanbotEnabled"]) if "lanbotEnabled" in data else bot_cfg.enabled
+
+        # 4. Pinned Provider / Model for LAN (Localhost Keyholder is NEVER locked by LAN settings)
+        loc = dataclasses.replace(bot_cfg.local_access, lock_provider=False, lock_model=False)
+        if isinstance(data.get("localSelection"), dict):
+            lsel = data["localSelection"]
+            l_prov = str(lsel.get("provider") or "").strip()
+            l_mod = str(lsel.get("model") or "").strip()
+            if "/" in l_mod and not l_prov:
+                l_prov, l_mod = l_mod.split("/", 1)
+            loc = dataclasses.replace(loc, provider=l_prov, model=l_mod, lock_provider=False, lock_model=False)
+
+        lan = bot_cfg.lan_access
+        if isinstance(data.get("lanSelection"), dict):
+            nsel = data["lanSelection"]
+            n_prov = str(nsel.get("provider") or "").strip()
+            n_mod = str(nsel.get("model") or "").strip()
+            if "/" in n_mod and not n_prov:
+                n_prov, n_mod = n_mod.split("/", 1)
+            n_lock_m = bool(nsel.get("lockModel")) and bool(n_prov and n_mod)
+            n_lock_p = (bool(nsel.get("lockProvider")) or n_lock_m) and bool(n_prov)
+            lan = dataclasses.replace(lan, provider=n_prov, model=n_mod, lock_provider=n_lock_p, lock_model=n_lock_m)
+
+        if "lanToolsMode" in data:
+            tmode = str(data.get("lanToolsMode") or "readonly").strip().lower()
+            preset = _TOOL_MODE_PRESETS.get(tmode, ("read", "grep", "find", "ls"))
+            lan = dataclasses.replace(lan, tools=preset)
+
+        cfg.lantern_bot = dataclasses.replace(bot_cfg, enabled=next_enabled, local_access=loc, lan_access=lan)
+        if self.app.bot is not None and hasattr(self.app.bot, "update_bot_config"):
+            self.app.bot.update_bot_config(cfg.lantern_bot)
+        elif self.app.bot is not None:
+            self.app.bot.bot_config = cfg.lantern_bot
+            for b_inst in getattr(self.app.bot, "_all_bot_instances", lambda: [])():
+                b_inst.bot_config = cfg.lantern_bot
+
+        write_config_file(cfg)
+        if access and hasattr(self.app.ws, "notify_local_auth_state"):
+            self.app.ws.notify_local_auth_state(access)
+        return self.api_lan_settings_get()

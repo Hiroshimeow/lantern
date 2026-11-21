@@ -562,15 +562,15 @@
 
 /* --- Zone 3: Ultra-Compact Live Context Strip & Thumbnail Chips (v6) --- */
 .lc-context-bar {
-  padding: 3px 8px;
+  padding: 6px 10px;
   background: #0d141f;
   border-top: 1px solid var(--lc-border);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
-  min-height: 22px;
-  max-height: 44px;
+  min-height: 28px;
+  max-height: 132px;
   overflow-y: auto;
   overscroll-behavior: contain;
   flex-shrink: 0;
@@ -578,16 +578,16 @@
 .lc-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border-radius: 5px;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 7px;
   background: #152032;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   color: #cfe2f7;
-  font-size: 10.5px;
-  line-height: 1.25;
+  font-size: 11.5px;
+  line-height: 1.3;
   font-weight: 600;
-  max-width: 210px;
+  max-width: 265px;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -609,12 +609,12 @@
   color: #fde68a;
 }
 .lc-chip-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
   object-fit: cover;
   flex-shrink: 0;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   background: #06090f;
 }
 .lc-chip button {
@@ -899,7 +899,7 @@
   inset: 44px 0 0 0;
   background: rgba(8, 11, 17, 0.96);
   backdrop-filter: blur(10px);
-  z-index: 45;
+  z-index: 200;
   display: flex;
   flex-direction: column;
   padding: 12px;
@@ -1303,4 +1303,1045 @@
 .lc-tool-load-full-btn:hover:not(:disabled) {
   background: rgba(245, 158, 11, 0.28);
   color: #ffffff;
+}
+
+/* --- v7.92: Auto-Hide Overlay Mode (Windows Taskbar Style — Zero Page Reflow), Worker/Subagent Tabs & 2-Level Fork Tree --- */
+@media (min-width: 860px) {
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="right"],
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="left"] {
+    padding-right: 0 !important;
+    padding-left: 0 !important;
+  }
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="right"] .bar.md-bar,
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="right"] .top,
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="right"] .term-drawer {
+    right: 0 !important;
+  }
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="left"] .bar.md-bar,
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="left"] .top,
+  body.lantern-chat-autohide.lantern-chat-open[data-chat-dock="left"] .term-drawer {
+    left: 0 !important;
+  }
+}
+
+.lantern-chat-drawer {
+  transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1), opacity 140ms ease;
+}
+.lantern-chat-drawer.autohide-collapsed[data-dock="left"] {
+  transform: translateX(calc(-100% + 3px));
+  pointer-events: none;
+  box-shadow: none;
+}
+.lantern-chat-drawer.autohide-collapsed[data-dock="right"] {
+  transform: translateX(calc(100% - 3px));
+  pointer-events: none;
+  box-shadow: none;
+}
+
+.lantern-chat-edge-strip {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 2147483642;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: transparent;
+  transition: background 140ms ease;
+}
+.lantern-chat-edge-strip[data-dock="left"] {
+  left: 0;
+  right: auto;
+}
+.lantern-chat-edge-strip[data-dock="right"] {
+  right: 0;
+  left: auto;
+}
+.lantern-chat-edge-strip::after {
+  content: "";
+  width: 4px;
+  height: 76px;
+  border-radius: 999px;
+  background: rgba(104, 227, 122, 0.55);
+  box-shadow: 0 0 10px rgba(104, 227, 122, 0.45);
+  transition: height 140ms ease, background 140ms ease;
+}
+.lantern-chat-edge-strip[data-busy="true"]::after {
+  background: rgba(245, 158, 11, 0.88);
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.75);
+}
+.lantern-chat-edge-strip:hover {
+  background: rgba(104, 227, 122, 0.08);
+}
+.lantern-chat-edge-strip:hover::after {
+  height: 112px;
+  background: #68e37a;
+}
+body.lantern-chat-autohide.lantern-chat-open .lantern-chat-edge-strip.visible {
+  display: flex;
+}
+
+.lc-icon-btn.is-active {
+  background: rgba(104, 227, 122, 0.16);
+  color: #68e37a;
+  border-color: rgba(104, 227, 122, 0.42);
+}
+
+.lc-worker-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.lc-worker-tabs::-webkit-scrollbar {
+  display: none;
+}
+.lc-worker-tab {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(21, 32, 50, 0.72);
+  color: var(--lc-muted);
+  border-radius: 6px;
+  padding: 2px 7px;
+  height: 22px;
+  font: 700 10.5px/1.2 Inter, system-ui, sans-serif;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.lc-worker-tab:hover {
+  background: var(--lc-hover);
+  color: var(--lc-text);
+}
+.lc-worker-tab.active {
+  background: rgba(31, 48, 72, 0.95);
+  border-color: rgba(104, 227, 122, 0.55);
+  color: #edf5ff;
+}
+.lc-worker-tab.is-subagent {
+  border-color: rgba(96, 165, 250, 0.4);
+  color: #bfdbfe;
+}
+.lc-worker-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--lc-emerald);
+  flex-shrink: 0;
+}
+.lc-worker-tab-dot[data-state="busy"] {
+  background: var(--lc-accent);
+  animation: lcPulse 1s infinite;
+}
+.lc-worker-tab-dot[data-state="error"] {
+  background: var(--lc-danger);
+}
+.lc-worker-tab-close {
+  border: 0;
+  background: transparent;
+  color: var(--lc-muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 1px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.lc-worker-tab-close:hover {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.2);
+}
+.lc-worker-add-btn {
+  appearance: none;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: var(--lc-muted);
+  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  font: 800 12px/1 Inter, system-ui, sans-serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.lc-worker-add-btn:hover {
+  border-color: var(--lc-emerald);
+  color: var(--lc-emerald);
+  background: rgba(104, 227, 122, 0.1);
+}
+
+.lc-model-row[data-tree-depth="1"] {
+  margin-left: 18px;
+  border-left: 2.5px solid rgba(104, 227, 122, 0.5);
+  background: rgba(16, 26, 40, 0.92);
+}
+.lc-model-row[data-tree-depth="2"] {
+  margin-left: 34px;
+  border-left: 2.5px solid rgba(96, 165, 250, 0.55);
+  background: rgba(14, 22, 36, 0.92);
+}
+.lc-tree-branch {
+  font: 700 11px/1 var(--lc-font-mono);
+  color: #68e37a;
+  flex-shrink: 0;
+}
+.lc-model-row[data-tree-depth="2"] .lc-tree-branch {
+  color: #93c5fd;
+}
+
+
+
+/* === v8.0 Lanbot Upgrades === */
+.lc-subbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+}
+.lc-worker-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap !important;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+.lc-worker-tabs::-webkit-scrollbar {
+  height: 3px;
+}
+.lc-worker-tabs::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 3px;
+}
+.lc-worker-tab {
+  flex-shrink: 0;
+  font-family: var(--lc-font-mono);
+  font-size: 11px;
+  padding: 2px 7px;
+}
+.lc-worker-tab.is-terminal {
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #bae6fd;
+  background: rgba(14, 116, 144, 0.18);
+}
+.lc-worker-tab.is-terminal.active {
+  background: rgba(14, 116, 144, 0.38);
+  border-color: #38bdf8;
+  color: #f0f9ff;
+}
+.lc-subbar-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+  position: relative;
+}
+.lc-todo-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.75);
+  color: #cbd5e1;
+  font: 600 10.5px/1 var(--lc-font-mono);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lc-todo-btn:hover {
+  background: rgba(30, 41, 59, 0.95);
+  border-color: rgba(148, 163, 184, 0.45);
+}
+.lc-todo-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #64748b;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.lc-todo-dot[data-status="active"] {
+  background: #facc15;
+  box-shadow: 0 0 6px rgba(250, 204, 21, 0.75);
+}
+.lc-todo-dot[data-status="done"] {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.65);
+}
+.lc-todo-dot[data-status="error"] {
+  background: #f87171;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.75);
+}
+.lc-todo-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 120;
+  width: min(360px, 86vw);
+  max-height: 300px;
+  overflow-y: auto;
+  background: #0b1018;
+  border: 1px solid #2b3b52;
+  border-radius: 9px;
+  padding: 8px 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65);
+  font: 11.5px/1.5 var(--lc-font-mono);
+  color: #e2e8f0;
+}
+.lc-todo-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-bottom: 5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+.lc-todo-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 1.5px 0;
+  word-break: break-word;
+}
+.lc-todo-line.is-done {
+  color: #38bdf8;
+  text-decoration-line: line-through;
+  opacity: 0.88;
+}
+.lc-todo-line.is-active {
+  color: #67e8f9;
+  font-weight: 600;
+}
+.lc-todo-line.is-error {
+  color: #fca5a5;
+}
+.lc-todo-line.is-pending {
+  color: #94a3b8;
+}
+
+/* Single-line tool call summary */
+.lc-tool-card > summary {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  max-width: 100% !important;
+  display: block !important;
+}
+
+/* Claude-CLI-style inline subagent card */
+.lc-claude-subagent {
+  margin: 6px 0;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  font: 11.5px/1.45 var(--lc-font-mono);
+}
+.lc-claude-subagent > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lc-claude-subagent > summary::-webkit-details-marker {
+  display: none;
+}
+.lc-subagent-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 11px;
+  color: #090d16;
+  background: #38bdf8;
+}
+.lc-claude-subagent[data-color="0"] .lc-subagent-pill { background: #f87171; color: #fff; }
+.lc-claude-subagent[data-color="1"] .lc-subagent-pill { background: #facc15; color: #090d16; }
+.lc-claude-subagent[data-color="2"] .lc-subagent-pill { background: #2dd4bf; color: #090d16; }
+.lc-subagent-subline {
+  color: #94a3b8;
+  padding-left: 12px;
+  margin-top: 2px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Terminal stage inside Lanbot (relative container so absolute .lx-xterm-host never covers header/tabs) */
+.lc-terminal-stage {
+  position: relative !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #050709;
+  border-top: 1px solid var(--lc-border);
+  overflow: hidden !important;
+  z-index: 1;
+}
+.lc-terminal-stage[hidden] {
+  display: none !important;
+}
+.lc-terminal-stage .lx-xterm-host {
+  position: relative !important;
+  inset: auto !important;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Inline session delete confirm bar */
+.lc-session-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  background: rgba(127, 29, 29, 0.28);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  font-size: 11px;
+  color: #fecaca;
+}
+.lc-session-delete-confirm button {
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #1e293b;
+  color: #f8fafc;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lc-session-delete-confirm button.danger {
+  background: #991b1b;
+  border-color: #f87171;
+  color: #fff;
+}
+.lc-session-delete-confirm button.warn {
+  background: #78350f;
+  border-color: #fbbf24;
+  color: #fef3c7;
+}
+.lc-session-id-tag {
+  font-family: var(--lc-font-mono);
+  font-size: 10.5px;
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.12);
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.lc-share-globe-btn {
+  color: #94a3b8;
+  opacity: 0.78;
+  transition: color 0.15s, opacity 0.15s, background 0.15s;
+}
+.lc-share-globe-btn:hover {
+  opacity: 1;
+  color: #cbd5e1;
+}
+.lc-share-globe-btn.active {
+  color: #38bdf8 !important;
+  opacity: 1;
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+/* Dynamic Auto-Hide Edge Strip positioned at Lantern FAB (2.5x larger for easy hover/drag unhide) */
+.lantern-chat-edge-strip {
+  height: 210px !important;
+  bottom: auto !important;
+  width: 16px !important;
+  border-radius: 8px !important;
+}
+.lantern-chat-edge-strip::after {
+  width: 10px !important;
+  height: 190px !important;
+  border-radius: 999px !important;
+}
+.lantern-chat-edge-strip:hover::after {
+  height: 210px !important;
+}
+
+.lc-todo-btn.is-open {
+  border-color: rgba(56, 189, 248, 0.65);
+  background: rgba(30, 41, 59, 0.95);
+  color: #f8fafc;
+}
+.lc-todo-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.12);
+}
+.lc-todo-item:last-child {
+  border-bottom: 0;
+}
+.lc-todo-row-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.lc-todo-more-btn {
+  border: 0;
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font: 600 10px/1.3 var(--lc-font-mono);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.lc-todo-more-btn:hover {
+  background: rgba(56, 189, 248, 0.28);
+  color: #e0f2fe;
+}
+.lc-todo-details-box {
+  margin-left: 16px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.85);
+  border-left: 2px solid #38bdf8;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.lc-todo-details-active {
+  color: #fde047;
+  font-style: italic;
+  margin-top: 3px;
+}
+
+/* === v8.2 Upgrades: Lantern FAB on Auto-Hide, Modal Z-Index Layering & Claude Code Subagent UI === */
+.lc-overlay-modal {
+  z-index: 200 !important;
+}
+.lc-todo-popover {
+  z-index: 95 !important;
+}
+.lantern-chat-edge-strip,
+body.lantern-chat-autohide.lantern-chat-open .lantern-chat-edge-strip.visible {
+  display: none !important;
+}
+.lantern-chat-drawer.autohide-collapsed[data-dock="left"] {
+  transform: translateX(-102%) !important;
+  pointer-events: none;
+  box-shadow: none;
+}
+.lantern-chat-drawer.autohide-collapsed[data-dock="right"] {
+  transform: translateX(102%) !important;
+  pointer-events: none;
+  box-shadow: none;
+}
+
+.lc-subagent-group {
+  margin: 6px 0;
+  border-radius: 8px;
+  background: rgba(11, 15, 23, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 5px 8px;
+  font: 11.5px/1.45 var(--lc-font-mono);
+}
+.lc-subagent-group-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #cbd5e1;
+  font-weight: 600;
+  font-size: 11px;
+  user-select: none;
+}
+.lc-subagent-group-summary::-webkit-details-marker {
+  display: none;
+}
+.lc-subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.14);
+}
+.lc-claude-subagent {
+  margin: 0 !important;
+  padding: 2px 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  font: 11.5px/1.45 var(--lc-font-mono);
+}
+.lc-subagent-head-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0;
+}
+.lc-subagent-dot {
+  color: #38bdf8;
+  font-size: 11px;
+  margin-right: 6px;
+  line-height: 1;
+}
+.lc-subagent-dot.is-running {
+  animation: lcPulse 1s infinite ease-in-out;
+}
+.lc-subagent-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-weight: 700;
+  font-size: 11.5px;
+  color: #ffffff !important;
+  background: #38bdf8 !important;
+}
+.lc-claude-subagent[data-color="0"] .lc-subagent-pill { background: #38bdf8 !important; color: #ffffff !important; }
+.lc-claude-subagent[data-color="1"] .lc-subagent-pill { background: #a855f7 !important; color: #ffffff !important; }
+.lc-claude-subagent[data-color="2"] .lc-subagent-pill { background: #22c55e !important; color: #ffffff !important; }
+.lc-claude-subagent[data-color="3"] .lc-subagent-pill { background: #f59e0b !important; color: #090d16 !important; }
+.lc-subagent-task-parens {
+  color: #cbd5e1;
+  font-weight: 500;
+  margin-left: 1px;
+}
+.lc-subagent-subline {
+  color: #94a3b8;
+  padding-left: 16px;
+  margin-top: 2px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- v9.0: Authentic Pi UI — [skill] Banner, Subagent Tree Card, Live Active Agents Bar & Compact Auto-Hiding Todo --- */
+.lc-pi-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 4px 0 6px;
+}
+.lc-pi-skill-card {
+  background: #132a1f;
+  border: 1px solid #1e4632;
+  border-left: 3px solid #34d399;
+  border-radius: 5px;
+  padding: 6px 10px;
+  font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #cbd5e1;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.lc-pi-skill-card:hover {
+  background: #173326;
+  border-color: #2dd4bf;
+}
+.lc-pi-skill-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.lc-pi-skill-tag {
+  color: #c084fc;
+  font-weight: 700;
+}
+.lc-pi-skill-name {
+  color: #94a3b8;
+  font-weight: 600;
+}
+.lc-pi-skill-hint {
+  color: #64748b;
+  font-size: 11.5px;
+}
+.lc-pi-skill-body {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-top: 1px solid rgba(52, 211, 153, 0.22);
+  background: rgba(6, 15, 11, 0.65);
+  border-radius: 4px;
+  color: #a7f3d0;
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+  user-select: text;
+}
+
+/* Pi-Style Subagent Tree Card in Transcript */
+.lc-pi-subagent-card {
+  background: #132a1f !important;
+  border: 1px solid #1e4632 !important;
+  border-left: 3px solid #22c55e !important;
+  border-radius: 5px !important;
+  padding: 7px 11px !important;
+  margin: 4px 0 !important;
+  font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+.lc-pi-subagent-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  color: #e2e8f0;
+}
+.lc-pi-subagent-arrow {
+  color: #94a3b8;
+  font-size: 11px;
+  width: 12px;
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+.lc-pi-subagent-card.is-expanded .lc-pi-subagent-arrow {
+  transform: rotate(90deg);
+}
+.lc-pi-subagent-name {
+  color: #f8fafc !important;
+  font-weight: 700 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+.lc-pi-subagent-desc {
+  color: #94a3b8 !important;
+  font-weight: 400 !important;
+}
+.lc-pi-subagent-branch {
+  margin-top: 2px;
+  padding-left: 16px;
+  color: #86efac !important;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+.lc-pi-subagent-details {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-top: 1px solid rgba(34, 197, 94, 0.22);
+  background: rgba(6, 14, 10, 0.72);
+  border-radius: 4px;
+  color: #cbd5e1;
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+
+/* Live Active Agents Status Bar above Chat Input */
+.lc-active-agents-bar {
+  margin: 0 0 6px;
+  padding: 6px 10px 7px;
+  background: #05080f;
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-bottom: 1.5px solid #3b82f6;
+  border-radius: 7px;
+  font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #e2e8f0;
+}
+.lc-agents-bar-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #a78bfa;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.lc-agents-dot {
+  color: #a78bfa;
+  font-size: 11px;
+  animation: lcPulseDot 1.4s infinite ease-in-out;
+}
+@keyframes lcPulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.lc-agents-bar-entry {
+  display: flex;
+  flex-direction: column;
+  padding-left: 2px;
+}
+.lc-agents-bar-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lc-agents-branch {
+  color: #64748b;
+}
+.lc-agents-name {
+  color: #f8fafc;
+  font-weight: 700;
+}
+.lc-agents-task {
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lc-agents-model {
+  color: #64748b;
+  font-size: 11.5px;
+  flex-shrink: 0;
+}
+.lc-agents-bar-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #64748b;
+  font-size: 11.5px;
+}
+
+/* Compact Todo Popover (v9.0: Smaller, unobtrusive, scroll-auto-hide) */
+.lc-todo-popover {
+  width: min(255px, 76vw) !important;
+  max-height: 145px !important;
+  padding: 5px 8px !important;
+  font-size: 11px !important;
+  line-height: 1.32 !important;
+  border-radius: 8px !important;
+  background: rgba(10, 15, 24, 0.96) !important;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.48) !important;
+}
+.lc-todo-popover-head {
+  font-size: 10.5px !important;
+  padding-bottom: 3px !important;
+  margin-bottom: 3px !important;
+}
+.lc-todo-item {
+  padding: 1.5px 0 !important;
+}
+.lc-todo-line {
+  font-size: 11px !important;
+  gap: 4px !important;
+}
+
+/* --- v9.0 Chronological Step Work Box ([skill] + N tool call(s) + thinking inside box) --- */
+.lc-work-box {
+  margin: 6px 0 !important;
+  border: 1px solid rgba(74, 222, 128, 0.28) !important;
+  border-radius: 8px !important;
+  background: rgba(12, 24, 18, 0.72) !important;
+  overflow: hidden;
+}
+.lc-work-box-summary {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 3px !important;
+  padding: 6px 10px !important;
+  cursor: pointer;
+  user-select: none;
+  font: 600 12px/1.38 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  color: #cbd5e1 !important;
+  list-style: none;
+}
+.lc-work-box-summary::-webkit-details-marker {
+  display: none;
+}
+.lc-work-box-skill-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.lc-work-box-tool-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+.lc-work-box-body {
+  padding: 6px 10px 8px !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(6, 11, 18, 0.85);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lc-work-box-sec-title {
+  font: 700 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: #93c5fd;
+  margin-bottom: 3px;
+}
+.lc-work-box-body pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.lc-agents-working-line {
+  margin-top: 4px;
+  color: #60a5fa;
+  font: 600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- v9.1 Upgrades: 2-Line Ultra-Compact Subagent Card & 1-Line 30%-Smaller Tool Call Summary --- */
+.lc-step-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.lc-subagent-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px !important;
+  margin: 3px 0 !important;
+}
+.lc-pi-subagent-card {
+  background: rgba(16, 34, 26, 0.78) !important;
+  border: 1px solid rgba(34, 197, 94, 0.28) !important;
+  border-left: 2.5px solid #22c55e !important;
+  border-radius: 5px !important;
+  padding: 4px 8px !important;
+  margin: 1px 0 !important;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  cursor: pointer;
+  user-select: none;
+}
+.lc-pi-subagent-card:hover {
+  background: rgba(20, 44, 33, 0.92) !important;
+  border-color: rgba(74, 222, 128, 0.45) !important;
+}
+.lc-pi-subagent-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  color: #e2e8f0 !important;
+  font-size: 11px !important;
+  line-height: 1.32 !important;
+}
+.lc-pi-subagent-tag {
+  color: #38bdf8;
+  font-weight: 700;
+}
+.lc-pi-subagent-sep {
+  color: #64748b;
+}
+.lc-pi-subagent-status.is-running {
+  color: #facc15;
+  font-weight: 600;
+}
+.lc-pi-subagent-status.is-done {
+  color: #4ade80;
+  font-weight: 600;
+}
+.lc-pi-subagent-status.is-error {
+  color: #f87171;
+  font-weight: 600;
+}
+.lc-pi-subagent-tok {
+  color: #94a3b8;
+}
+.lc-pi-subagent-branch {
+  margin-top: 1px !important;
+  padding-left: 8px !important;
+  color: #86efac !important;
+  font: 10.5px/1.32 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* 1-Line Tool Call Summary with 30% Smaller Font (~8.8px) & Slim Padding */
+.lc-work-box {
+  margin: 3px 0 !important;
+  border: 1px solid rgba(74, 222, 128, 0.22) !important;
+  border-radius: 6px !important;
+  background: rgba(12, 22, 18, 0.68) !important;
+}
+.lc-work-box > summary.lc-work-box-summary {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+  padding: 2.5px 8px !important;
+  min-height: 19px !important;
+  font: 600 8.8px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  color: #94a3b8 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.lc-work-box > summary.lc-work-box-summary::after {
+  font-size: 8.5px !important;
+}
+.lc-work-box-tool-line {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  font-size: 8.8px !important;
+  line-height: 1.25 !important;
+  color: #94a3b8 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.lc-work-box-dur {
+  color: #64748b;
+}
+
+
+/* v9.24: Smooth scrolling inside #lcSettingsModal and all overlay modals */
+.lc-overlay-modal {
+  max-height: calc(100% - 44px);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.lc-settings-scroll-body {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
