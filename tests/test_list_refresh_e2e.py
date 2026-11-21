@@ -73,24 +73,30 @@ class ListRefreshE2E(unittest.TestCase):
 
     @classmethod
     def stop_server(cls) -> None:
+        server_pid = getattr(cls.server, "pid", None)
+        def kill_tree() -> None:
+            if os.name == "nt" and server_pid:
+                subprocess.run(
+                    ["taskkill", "/PID", str(server_pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
         if cls.server.poll() is None:
             # The browser opens Lanbot's WebSocket during each page load, which can
             # start a native Pi child whose working directory is the temporary root.
             # Terminating only the HTTP parent leaves that child holding the root on
             # Windows and makes TemporaryDirectory.cleanup fail with WinError 32.
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(cls.server.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
+            kill_tree()
             cls.server.terminate()
             try:
                 cls.server.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 cls.server.kill()
                 cls.server.wait(timeout=5)
+        # The parent can exit before its detached native child; repeat the tree
+        # kill by the recorded PID so descendants cannot retain the temp root.
+        kill_tree()
 
     def setUp(self) -> None:
         type(self).case_number += 1
