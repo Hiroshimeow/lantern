@@ -39,6 +39,7 @@ VERSION = "0.1.0"
 MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 600_000
 MAX_TABLE_ROWS = 10000
+MAX_TABLE_BATCH_ROWS = 160
 MAX_TABLE_COLS = 64
 MAX_OFFICE_XML_BYTES = 16 * 1024 * 1024
 MAX_OFFICE_META_BYTES = 512 * 1024
@@ -571,7 +572,7 @@ def _render_markdown_text(
             while True:
                 rows: List[Tuple[int, List[str]]] = []
                 while (i < len(lines) and "|" in lines[i] and lines[i].strip()
-                       and len(rows) < MAX_TABLE_ROWS):
+                       and len(rows) < MAX_TABLE_BATCH_ROWS):
                     rows.append((i + 1, _split_table_row(lines[i])))
                     i += 1
                 body_rows = []
