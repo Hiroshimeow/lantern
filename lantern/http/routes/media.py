@@ -15,7 +15,7 @@ class MediaRoutes:
     def api_video_info(self, query: str) -> None:
         qs = urllib.parse.parse_qs(query)
         rel = qs.get("p", qs.get("path", [""]))[0]
-        target = self.app.files.safe_join("/" + rel)
+        target = self.app.files.safe_join("/" + self.app.files.quote_path(str(rel)))
         if not target.is_file() or self.app.files.classify(target) != "video":
             self.send_json(404, {"error": "video not found"}); return
         self.send_json(200, self.app.media.video_info(target))
@@ -27,7 +27,7 @@ class MediaRoutes:
             idx = max(0, min(int(qs.get("i", ["0"])[0] or 0), 50))
         except Exception:
             idx = 0
-        video = self.app.files.safe_join("/" + rel)
+        video = self.app.files.safe_join("/" + self.app.files.quote_path(str(rel)))
         if not video.is_file() or self.app.files.classify(video) != "video":
             self.send_error(404, "video not found"); return
         subs = self.app.media.video_subtitle_sidecars(video)
@@ -52,5 +52,10 @@ class MediaRoutes:
             if kind == "image": ok = self.app.media.make_image_thumb(target, dst)
             elif kind == "video": ok = self.app.media.make_video_thumb(target, dst)
             if not ok:
+                if kind == "image" and target.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif"}:
+                    cc_orig = "public, max-age=31536000, immutable" if qs.get("v") else "no-cache"
+                    self.serve_static_file(target, download=False, cache_control=cc_orig)
+                    return
                 self.send_error(404, "thumbnail unavailable"); return
-        self.serve_static_file(dst, download=False, ctype="image/jpeg", cache_control="no-cache")
+        cc = "public, max-age=31536000, immutable" if qs.get("v") else "no-cache"
+        self.serve_static_file(dst, download=False, ctype="image/jpeg", cache_control=cc)

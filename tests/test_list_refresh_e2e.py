@@ -73,13 +73,30 @@ class ListRefreshE2E(unittest.TestCase):
 
     @classmethod
     def stop_server(cls) -> None:
+        server_pid = getattr(cls.server, "pid", None)
+        def kill_tree() -> None:
+            if os.name == "nt" and server_pid:
+                subprocess.run(
+                    ["taskkill", "/PID", str(server_pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
         if cls.server.poll() is None:
+            # The browser opens Lanbot's WebSocket during each page load, which can
+            # start a native Pi child whose working directory is the temporary root.
+            # Terminating only the HTTP parent leaves that child holding the root on
+            # Windows and makes TemporaryDirectory.cleanup fail with WinError 32.
+            kill_tree()
             cls.server.terminate()
             try:
                 cls.server.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 cls.server.kill()
                 cls.server.wait(timeout=5)
+        # The parent can exit before its detached native child; repeat the tree
+        # kill by the recorded PID so descendants cannot retain the temp root.
+        kill_tree()
 
     def setUp(self) -> None:
         type(self).case_number += 1
@@ -224,6 +241,141 @@ class ListRefreshE2E(unittest.TestCase):
         self.page.wait_for_function("!state.loading && !state.items.some(x=>x.name==='file0450.txt')")
         self.assert_listing()
         self.assert_anchor(anchor)
+
+    def test_native_back_restores_deep_loaded_window_and_nav_index(self) -> None:
+        """Back from a sibling folder must restore all loaded rows, not page one."""
+        sibling = self.shared / f"{self.case}-b"
+        sibling.mkdir()
+        (sibling / "b.txt").write_text("sibling\n", encoding="utf-8")
+
+        self.page.goto(self.base + "/")
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_function("typeof state !== 'undefined' && !state.loading")
+        self.page.evaluate("path => navigateToFolder(path)", self.case)
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.load_until(500)
+        anchor = self.focus_file()
+        self.page.evaluate("path => navigateToFolder(path)", f"{self.case}-b")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+
+        self.page.go_back()
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.assertEqual(self.page.evaluate("state.items.filter(x=>!x.special).length"), 500)
+        self.assertEqual(self.page.evaluate("state.navIndex"), 1)
+        self.assertEqual(self.page.evaluate("window.APP.currentPath"), self.case)
+        self.assert_anchor(anchor)
+
+    def test_toolbar_back_restores_deep_loaded_window_and_scroll(self) -> None:
+        sibling = self.shared / f"{self.case}-b"
+        sibling.mkdir()
+        (sibling / "b.txt").write_text("sibling\n", encoding="utf-8")
+
+        self.page.goto(self.base + "/")
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_function("typeof state !== 'undefined' && !state.loading")
+        self.page.evaluate("path => navigateToFolder(path)", self.case)
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.load_until(500)
+        anchor = self.focus_file()
+        self.page.evaluate("path => navigateToFolder(path)", f"{self.case}-b")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.locator("#navBackBtn").evaluate("button => button.click()")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.assertEqual(self.page.evaluate("state.items.filter(x=>!x.special).length"), 500)
+        self.assert_anchor(anchor)
+
+    def test_native_forward_restores_deep_scroll_after_back(self) -> None:
+        sibling = self.shared / f"{self.case}-b"
+        sibling.mkdir()
+        (sibling / "b.txt").write_text("sibling\n", encoding="utf-8")
+
+        self.page.goto(self.base + "/")
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_function("typeof state !== 'undefined' && !state.loading")
+        self.page.evaluate("path => navigateToFolder(path)", f"{self.case}-b")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.evaluate("path => navigateToFolder(path)", self.case)
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.load_until(500)
+        anchor = self.focus_file()
+        self.page.go_back()
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.go_forward()
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.assertEqual(self.page.evaluate("state.items.filter(x=>!x.special).length"), 500)
+        self.assert_anchor(anchor)
+
+    def test_repeated_history_entries_restore_identity_and_scroll(self) -> None:
+        """Repeated paths must keep entry identity and restore the cached viewport."""
+        sibling = self.shared / f"{self.case}-b"
+        sibling.mkdir()
+        (sibling / "b.txt").write_text("sibling\n", encoding="utf-8")
+
+        self.page.goto(self.base + "/")
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_function("typeof state !== 'undefined' && !state.loading")
+        self.page.evaluate("path => navigateToFolder(path)", self.case)
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.load_until(500)
+        anchor = self.focus_file()
+        self.page.evaluate("path => navigateToFolder(path)", f"{self.case}-b")
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.evaluate("path => navigateToFolder(path)", self.case)
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+
+        self.page.go_back()
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=f"{self.case}-b",
+        )
+        self.page.go_forward()
+        self.page.wait_for_function(
+            "path => window.APP.currentPath === path && !state.loading",
+            arg=self.case,
+        )
+        self.assertEqual(self.page.evaluate("state.navIndex"), 3)
+        self.assertEqual(self.page.evaluate("state.navHistory"), ["", self.case, f"{self.case}-b", self.case])
+        self.assert_anchor(anchor)
+        self.assertTrue(self.page.locator("#navFwdBtn").is_disabled())
 
     def test_focus_handler_revalidates_deep_page(self) -> None:
         self.open_listing()

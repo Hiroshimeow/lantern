@@ -1,7 +1,7 @@
 {
   "name": "lantern-markdown-bundles",
   "private": true,
-  "version": "9.24.0",
+  "version": "9.25.0",
   "description": "Build-only dependencies for Lantern's offline Markdown Source & Preview editors (Zero Milkdown)",
   "scripts": {
     "build:markdown": "node tools/build_markdown.mjs"

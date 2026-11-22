@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -25,6 +27,19 @@ class MediaService:
     def __init__(self, config: AppConfig, files: FileService):
         self.cfg = config
         self.files = files
+        self._thumb_locks_guard = threading.Lock()
+        self._thumb_locks: Dict[str, threading.Lock] = {}
+
+    def _lock_for_thumb(self, dst: Path) -> threading.Lock:
+        key = str(dst)
+        with self._thumb_locks_guard:
+            lk = self._thumb_locks.get(key)
+            if lk is None:
+                if len(self._thumb_locks) > 512:
+                    self._thumb_locks = {k: v for k, v in self._thumb_locks.items() if v.locked()}
+                lk = threading.Lock()
+                self._thumb_locks[key] = lk
+            return lk
 
 
     def thumb_cache_path(self, path: Path, kind: str) -> Path:
@@ -132,35 +147,100 @@ class MediaService:
         return items
 
     def make_image_thumb(self, src: Path, dst: Path) -> bool:
-        if not HAS_PIL:
-            return False
         if src.suffix.lower() in {".svg", ".avif", ".heic", ".heif"}:
             return False
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            with Image.open(src) as im:
-                im = ImageOps.exif_transpose(im)
-                im.thumbnail((420, 420))
-                if im.mode not in ("RGB", "L"):
-                    im = im.convert("RGB")
-                im.save(dst, "JPEG", quality=82, optimize=True)
-            return True
-        except Exception:
+        if not HAS_PIL:
+            if not FFMPEG:
+                return False
+            with self._lock_for_thumb(dst):
+                if dst.exists() and dst.stat().st_size > 0:
+                    return True
+                tmp_path: Optional[Path] = None
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    fd, tmp_name = tempfile.mkstemp(prefix=".ithumb-", suffix=".jpg", dir=str(dst.parent))
+                    os.close(fd)
+                    tmp_path = Path(tmp_name)
+                    subprocess.run([
+                        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", str(src), "-frames:v", "1",
+                        "-vf", "scale='min(480,iw)':-2", "-q:v", "3", str(tmp_path)
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                    if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                        os.replace(tmp_path, dst)
+                        tmp_path = None
+                        return True
+                    return False
+                except Exception:
+                    return False
+                finally:
+                    if tmp_path is not None:
+                        try:
+                            tmp_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+        if src.suffix.lower() in {".svg", ".avif", ".heic", ".heif"}:
             return False
+        with self._lock_for_thumb(dst):
+            if dst.exists() and dst.stat().st_size > 0:
+                return True
+            tmp_path: Optional[Path] = None
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp_name = tempfile.mkstemp(prefix=".thumb-", suffix=".jpg", dir=str(dst.parent))
+                os.close(fd)
+                tmp_path = Path(tmp_name)
+                with Image.open(src) as im:
+                    im = ImageOps.exif_transpose(im)
+                    im.thumbnail((480, 480))
+                    if im.mode not in ("RGB", "L"):
+                        im = im.convert("RGB")
+                    im.save(tmp_path, "JPEG", quality=84, optimize=True)
+                if tmp_path.stat().st_size > 0:
+                    os.replace(tmp_path, dst)
+                    tmp_path = None
+                    return True
+                return False
+            except Exception:
+                return False
+            finally:
+                if tmp_path is not None:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def make_video_thumb(self, src: Path, dst: Path) -> bool:
         if not FFMPEG:
             return False
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run([
-                FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-                "-ss", "00:00:01.000", "-i", str(src),
-                "-frames:v", "1", "-vf", "scale='min(420,iw)':-2", "-q:v", "3", str(dst)
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-            return dst.exists() and dst.stat().st_size > 0
-        except Exception:
-            return False
+        with self._lock_for_thumb(dst):
+            if dst.exists() and dst.stat().st_size > 0:
+                return True
+            tmp_path: Optional[Path] = None
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp_name = tempfile.mkstemp(prefix=".vthumb-", suffix=".jpg", dir=str(dst.parent))
+                os.close(fd)
+                tmp_path = Path(tmp_name)
+                for seek_ts in ("00:00:01.000", "00:00:00.000"):
+                    subprocess.run([
+                        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", seek_ts, "-i", str(src),
+                        "-frames:v", "1", "-vf", "scale='min(480,iw)':-2", "-q:v", "3", str(tmp_path)
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                    if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                        os.replace(tmp_path, dst)
+                        tmp_path = None
+                        return True
+                return False
+            except Exception:
+                return False
+            finally:
+                if tmp_path is not None:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def _float_or_none(self, value: Any) -> Optional[float]:
         try:

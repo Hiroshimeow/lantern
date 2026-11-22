@@ -139,14 +139,14 @@ class FileService:
         return out
 
     def resolve_existing(self, rel: str) -> Path:
-        p = self.safe_join("/" + str(rel))
+        p = self.safe_join("/" + self.quote_path(str(rel)))
         if not p.exists():
             raise BadRequest(f"not found: {rel}")
         return p
 
     def resolve_destination_dir(self, data: Dict[str, Any], default: str = "") -> Path:
         rel = str(data.get("dest") if data.get("dest") is not None else data.get("dest_dir", default))
-        dest = self.safe_join("/" + rel)
+        dest = self.safe_join("/" + self.quote_path(str(rel)))
         if dest.exists() and not dest.is_dir():
             raise BadRequest("destination is not a folder")
         dest.mkdir(parents=True, exist_ok=True)
@@ -338,6 +338,10 @@ class FileService:
         if zipfile.is_zipfile(archive_path):
             with zipfile.ZipFile(archive_path) as zf:
                 for info in zf.infolist():
+                    mode = (info.external_attr >> 16) & 0o170000
+                    if mode == 0o120000:
+                        skipped += 1
+                        continue
                     out_path = self.safe_extract_member_path(dest, info.filename)
                     if info.is_dir():
                         out_path.mkdir(parents=True, exist_ok=True)
@@ -463,7 +467,7 @@ class FileService:
             "pdf": "📕", "office": "📄", "archive": "🗜️", "file": "📦",
         }.get(kind, "📦")
 
-    def should_hide_entry(self, parent: Path, name: str) -> bool:
+    def should_hide_entry(self, parent: Path, name: str, *, show_hidden: Optional[bool] = None, show_system: Optional[bool] = None) -> bool:
         # Avoid resolving every entry in a large directory. Only matching names
         # and symlinks need expensive realpath checks to hide the local YAML.
         if name.casefold() == "lan_drive_config.yaml":
@@ -475,11 +479,22 @@ class FileService:
         # Upload staging is never a published file, even when "show hidden" is on.
         if name.startswith((".lantern-uploading-", ".lantern-password-")):
             return True
-        if not self.cfg.show_hidden and name.startswith("."):
+        eff_hidden = self.cfg.show_hidden if show_hidden is None else bool(show_hidden)
+        eff_system = self.cfg.show_system if show_system is None else bool(show_system)
+        if not eff_hidden and name.startswith("."):
             return True
-        if os.name != "nt" and self.cfg.root == Path("/").resolve() and parent.resolve() == Path("/") and not self.cfg.show_system:
-            if name in SYSTEM_SKIP_NAMES:
+        if not eff_system:
+            low = name.casefold()
+            if low in {
+                "$recycle.bin", "system volume information", "recovery",
+                "$winreagent", "$sysreset", "config.msi", "msocache",
+                "pagefile.sys", "hiberfil.sys", "swapfile.sys",
+                "dumpstack.log.tmp", "thumbs.db", "desktop.ini",
+            } or (name.startswith("$") and len(name) > 1):
                 return True
+            if os.name != "nt" and self.cfg.root == Path("/").resolve() and parent.resolve() == Path("/"):
+                if name in SYSTEM_SKIP_NAMES:
+                    return True
         return False
 
     def get_local_ip_guess(self) -> str:
@@ -529,9 +544,13 @@ class FileService:
             "mtimeTextEsc": self.html_escape(self.mtime_fmt(st.st_mtime)),
             "searchPathText": search_path_text,
             "searchPathTextEsc": self.html_escape(search_path_text),
+            "ext": "" if is_dir else path.suffix.lower(),
+            "size_text": "Folder" if is_dir else self.size_fmt(st.st_size),
+            "mtime_text": self.mtime_fmt(st.st_mtime),
             "thumb": thumb,
             "url": raw_media_url,
             "preview": (not is_dir) and self.plugin_can_preview(path),
+            "can_preview": (not is_dir) and self.plugin_can_preview(path),
         }
 
     def sort_key_for(self, name: str, is_dir: bool, st: Optional[os.stat_result], sort_mode: str, path: Optional[Path] = None) -> Any:
@@ -550,7 +569,7 @@ class FileService:
             return (ext, lname)
         return lname
 
-    def list_entries_page(self, path: Path, offset: int, limit: int, sort_mode: str, query: str, folders_first: Optional[bool] = None, recursive_depth: Optional[int] = 0) -> Tuple[List[Dict[str, Any]], int, bool, int, int]:
+    def list_entries_page(self, path: Path, offset: int, limit: int, sort_mode: str, query: str, folders_first: Optional[bool] = None, recursive_depth: Optional[int] = 0, show_hidden: Optional[bool] = None, show_system: Optional[bool] = None, media_filter: str = "") -> Tuple[List[Dict[str, Any]], int, bool, int, int]:
         offset = max(0, int(offset or 0))
         limit = max(20, min(int(limit or 220), 1000))
         query_l = (query or "").strip().lower()
@@ -564,15 +583,36 @@ class FileService:
         rows: List[Any] = []
         errors = 0
 
+        mf = str(media_filter or "").strip().lower()
+        def _matches_media_filter(p: Path, is_dir: bool) -> bool:
+            if not mf or mf == "all":
+                return True
+            if is_dir:
+                return True
+            k = self.classify(p, False)
+            if mf == "image":
+                return k == "image"
+            if mf == "video":
+                return k == "video"
+            if mf == "media":
+                return k in ("image", "video", "audio")
+            return True
+
         def maybe_add_row(p: Path, name: str, is_dir: bool, st: Optional[os.stat_result], match_text: str) -> None:
             if query_l and query_l not in match_text.lower():
+                return
+            if not _matches_media_filter(p, is_dir):
                 return
             key = self.sort_key_for(name, is_dir, st, sort_mode, p)
             rows.append((is_dir, key, name.lower(), name, st, p))
 
         if recursive_enabled:
+            eff_show_hidden = self.cfg.show_hidden if show_hidden is None else bool(show_hidden)
+            skip_heavy_dirs = set() if eff_show_hidden else {"node_modules", "__pycache__", ".git", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
+            scanned_total = 0
+            max_recursive_scan = 40000
             stack: List[Tuple[Path, int]] = [(path, 0)]
-            while stack:
+            while stack and scanned_total < max_recursive_scan:
                 folder, depth = stack.pop()
                 try:
                     with os.scandir(folder) as it:
@@ -581,8 +621,13 @@ class FileService:
                     errors += 1
                     continue
                 for de in entries:
+                    scanned_total += 1
+                    if scanned_total > max_recursive_scan:
+                        break
                     name = de.name
-                    if self.should_hide_entry(folder, name):
+                    if name in skip_heavy_dirs:
+                        continue
+                    if self.should_hide_entry(folder, name, show_hidden=show_hidden, show_system=show_system):
                         continue
                     p = folder / name
                     try:
@@ -599,15 +644,18 @@ class FileService:
                 with os.scandir(path) as it:
                     for de in it:
                         name = de.name
-                        if self.should_hide_entry(path, name):
+                        if self.should_hide_entry(path, name, show_hidden=show_hidden, show_system=show_system):
                             continue
                         if query_l and query_l not in name.lower():
                             continue
                         try:
                             is_dir = de.is_dir(follow_symlinks=False)
+                            item_p = path / name
+                            if not _matches_media_filter(item_p, is_dir):
+                                continue
                             st = de.stat(follow_symlinks=False) if needs_stat else None
-                            key = self.sort_key_for(name, is_dir, st, sort_mode, path / name)
-                            rows.append((is_dir, key, name.lower(), name, st, path / name))
+                            key = self.sort_key_for(name, is_dir, st, sort_mode, item_p)
+                            rows.append((is_dir, key, name.lower(), name, st, item_p))
                         except OSError:
                             errors += 1
             except OSError:
@@ -646,3 +694,236 @@ class FileService:
             except OSError:
                 errors += 1
         return out, offset + len(out), has_more, errors, total
+
+    def _has_visible_subdir(self, folder: Path, *, show_hidden: Optional[bool] = None, show_system: Optional[bool] = None) -> bool:
+        try:
+            with os.scandir(folder) as it:
+                for de in it:
+                    if self.should_hide_entry(folder, de.name, show_hidden=show_hidden, show_system=show_system):
+                        continue
+                    try:
+                        if de.is_dir(follow_symlinks=False):
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            return False
+        return False
+
+    def list_tree_children(self, path: Path, *, max_children: int = 500, show_hidden: Optional[bool] = None, show_system: Optional[bool] = None) -> Dict[str, Any]:
+        """Return lazy-loadable child folders for Windows Explorer-style tree sidebar."""
+        root = self.cfg.root.resolve()
+        resolved = path.resolve()
+        rel = resolved.relative_to(root).as_posix()
+        rel = "" if rel == "." else rel
+        children: List[Dict[str, Any]] = []
+        errors = 0
+        try:
+            with os.scandir(resolved) as it:
+                entries = list(it)
+        except OSError:
+            entries = []
+            errors += 1
+
+        dir_rows: List[Tuple[str, str, Path]] = []
+        for de in entries:
+            name = de.name
+            if self.should_hide_entry(resolved, name, show_hidden=show_hidden, show_system=show_system):
+                continue
+            try:
+                if de.is_dir(follow_symlinks=False):
+                    dir_rows.append((name.lower(), name, resolved / name))
+            except OSError:
+                errors += 1
+
+        dir_rows.sort(key=lambda r: r[0])
+        total = len(dir_rows)
+        truncated = total > max_children
+        for _lname, name, child_path in dir_rows[:max_children]:
+            child_rel = f"{rel}/{name}" if rel else name
+            children.append({
+                "name": name,
+                "rel": child_rel,
+                "href": "/" + self.quote_path(child_rel) + "/",
+                "hasChildren": self._has_visible_subdir(child_path, show_hidden=show_hidden, show_system=show_system),
+            })
+
+        parent_rel = ""
+        if rel:
+            p = Path(rel).parent.as_posix()
+            parent_rel = "" if p == "." else p
+        return {
+            "ok": True,
+            "path": rel,
+            "name": resolved.name or str(root),
+            "href": "/" if not rel else "/" + self.quote_path(rel) + "/",
+            "parent": parent_rel,
+            "children": children,
+            "total": total,
+            "truncated": truncated,
+            "errors": errors,
+        }
+
+    def list_tree_with_ancestors(self, path: Path, *, max_children: int = 500, show_hidden: Optional[bool] = None, show_system: Optional[bool] = None) -> Dict[str, Any]:
+        """Return tree nodes for root and every ancestor down to `path` in one round-trip."""
+        root = self.cfg.root.resolve()
+        resolved = path.resolve()
+        rel = resolved.relative_to(root).as_posix()
+        rel = "" if rel == "." else rel
+        parts = [p for p in rel.split("/") if p]
+        nodes: Dict[str, Dict[str, Any]] = {}
+        acc = root
+        nodes[""] = self.list_tree_children(acc, max_children=max_children, show_hidden=show_hidden, show_system=show_system)
+        cur_rel = ""
+        for part in parts:
+            acc = acc / part
+            cur_rel = f"{cur_rel}/{part}" if cur_rel else part
+            if acc.is_dir():
+                nodes[cur_rel] = self.list_tree_children(acc, max_children=max_children, show_hidden=show_hidden, show_system=show_system)
+        return {
+            "ok": True,
+            "rootName": root.name or str(root),
+            "rootPath": str(root),
+            "activePath": rel,
+            "nodes": nodes,
+        }
+
+    def get_item_properties(self, path: Path, *, max_scan: int = 5000) -> Dict[str, Any]:
+        """Return detailed Windows Explorer-style properties for a file or folder."""
+        resolved = path.resolve()
+        st = resolved.stat()
+        is_dir = resolved.is_dir()
+        rel = self.rel_url_for_path(resolved)
+        kind = self.classify(resolved, is_dir)
+        props: Dict[str, Any] = {
+            "ok": True,
+            "name": resolved.name or str(resolved),
+            "rel": rel,
+            "fullPath": str(resolved),
+            "isDir": is_dir,
+            "kind": kind,
+            "ext": "" if is_dir else resolved.suffix.lower(),
+            "mtime": st.st_mtime,
+            "mtimeText": self.mtime_fmt(st.st_mtime),
+            "ctime": st.st_ctime,
+            "ctimeText": self.mtime_fmt(st.st_ctime),
+        }
+        if is_dir:
+            file_count = 0
+            dir_count = 0
+            total_bytes = 0
+            truncated = False
+            stack = [resolved]
+            scanned = 0
+            while stack:
+                cur = stack.pop()
+                try:
+                    with os.scandir(cur) as it:
+                        for de in it:
+                            scanned += 1
+                            if scanned > max_scan:
+                                truncated = True
+                                break
+                            if self.should_hide_entry(cur, de.name):
+                                continue
+                            try:
+                                if de.is_dir(follow_symlinks=False):
+                                    dir_count += 1
+                                    stack.append(cur / de.name)
+                                else:
+                                    file_count += 1
+                                    total_bytes += de.stat(follow_symlinks=False).st_size
+                            except OSError:
+                                continue
+                except OSError:
+                    continue
+                if truncated:
+                    break
+            props.update({
+                "size": total_bytes,
+                "sizeText": self.size_fmt(total_bytes) + ("+" if truncated else ""),
+                "files": file_count,
+                "folders": dir_count,
+                "truncated": truncated,
+            })
+        else:
+            import mimetypes as _mt
+            mime = _mt.guess_type(str(resolved))[0] or "application/octet-stream"
+            props.update({
+                "size": st.st_size,
+                "sizeText": self.size_fmt(st.st_size),
+                "mime": mime,
+            })
+            if kind == "image":
+                dims = self._read_image_dimensions(resolved)
+                if dims:
+                    props["width"], props["height"], props["format"] = dims
+        return props
+
+    def _read_image_dimensions(self, path: Path) -> Optional[Tuple[int, int, str]]:
+        """Read image (width, height, format) via Pillow or pure-Python binary header fallback."""
+        try:
+            from PIL import Image
+            with Image.open(path) as im:
+                return int(im.size[0]), int(im.size[1]), str(im.format or "")
+        except Exception:
+            pass
+        import struct as _struct
+        try:
+            with open(path, "rb") as f:
+                head = f.read(32)
+                if len(head) >= 24 and head[:8] == b"\x89PNG\r\n\x1a\n":
+                    w, h = _struct.unpack(">II", head[16:24])
+                    return int(w), int(h), "PNG"
+                if len(head) >= 10 and head[:6] in (b"GIF87a", b"GIF89a"):
+                    w, h = _struct.unpack("<HH", head[6:10])
+                    return int(w), int(h), "GIF"
+                if len(head) >= 26 and head[:2] == b"BM":
+                    w, h = _struct.unpack("<ii", head[18:26])
+                    return abs(int(w)), abs(int(h)), "BMP"
+                if len(head) >= 30 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+                    chunk = head[12:16]
+                    if chunk == b"VP8X":
+                        w = 1 + int.from_bytes(head[24:27], "little")
+                        h = 1 + int.from_bytes(head[27:30], "little")
+                        return w, h, "WEBP"
+                    if chunk == b"VP8 " and len(head) >= 30:
+                        w, h = _struct.unpack("<HH", head[26:30])
+                        return w & 0x3FFF, h & 0x3FFF, "WEBP"
+                    if chunk == b"VP8L" and len(head) >= 25:
+                        b0, b1, b2, b3 = head[21:25]
+                        w = 1 + (((b1 & 0x3F) << 8) | b0)
+                        h = 1 + (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6))
+                        return w, h, "WEBP"
+                if len(head) >= 2 and head[:2] == b"\xff\xd8":
+                    f.seek(2)
+                    while True:
+                        marker = f.read(2)
+                        if len(marker) < 2:
+                            break
+                        while marker[0] == 0xFF and marker[1] == 0xFF:
+                            nxt = f.read(1)
+                            if not nxt:
+                                break
+                            marker = b"\xff" + nxt
+                        if marker[0] != 0xFF:
+                            break
+                        code = marker[1]
+                        if code in (0xD8, 0xD9, 0x01) or (0xD0 <= code <= 0xD7):
+                            continue
+                        seg_len_b = f.read(2)
+                        if len(seg_len_b) < 2:
+                            break
+                        seg_len = _struct.unpack(">H", seg_len_b)[0]
+                        if code in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                            sof = f.read(5)
+                            if len(sof) == 5:
+                                h, w = _struct.unpack(">HH", sof[1:5])
+                                return int(w), int(h), "JPEG"
+                            break
+                        if seg_len < 2:
+                            break
+                        f.seek(seg_len - 2, 1)
+        except Exception:
+            return None
+        return None

@@ -37,6 +37,24 @@ VERSION_COALESCE_WINDOW_SEC = 60.0
 ORPHAN_GC_INTERVAL_SEC = 60.0
 
 
+def _normalize_line_endings(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _use_disk_line_endings(text: str, disk: str) -> str:
+    crlf_count = disk.count("\r\n")
+    ending_counts = {
+        "\r\n": crlf_count,
+        "\n": disk.count("\n") - crlf_count,
+        "\r": disk.count("\r") - crlf_count,
+    }
+    endings = [ending for ending, count in ending_counts.items() if count]
+    if len(endings) == 1:
+        return _normalize_line_endings(text).replace("\n", endings[0])
+    # Mixed files retain the original separators of the merged segments.
+    return text
+
+
 def _merge3_text(base: str, user: str, bot: str) -> tuple[str, bool]:
     """Perform a line-based 3-way merge between base, user, and bot texts.
     Returns (merged_text, has_conflict).
@@ -46,18 +64,23 @@ def _merge3_text(base: str, user: str, bot: str) -> tuple[str, bool]:
     if user == base:
         return bot, False
     if bot == base:
-        return user, False
+        return _use_disk_line_endings(user, bot), False
 
     base_lines = base.splitlines(keepends=True)
     user_lines = user.splitlines(keepends=True)
     bot_lines = bot.splitlines(keepends=True)
 
+    # A browser draft can use LF while both disk snapshots use CRLF.
+    # Compare logical lines but assemble the result from the original text.
+    base_keys = [_normalize_line_endings(line) for line in base_lines]
+    user_keys = [_normalize_line_endings(line) for line in user_lines]
+    bot_keys = [_normalize_line_endings(line) for line in bot_lines]
     user_ops = [
-        op for op in difflib.SequenceMatcher(None, base_lines, user_lines).get_opcodes()
+        op for op in difflib.SequenceMatcher(None, base_keys, user_keys).get_opcodes()
         if op[0] != "equal"
     ]
     bot_ops = [
-        op for op in difflib.SequenceMatcher(None, base_lines, bot_lines).get_opcodes()
+        op for op in difflib.SequenceMatcher(None, base_keys, bot_keys).get_opcodes()
         if op[0] != "equal"
     ]
 
@@ -89,9 +112,9 @@ def _merge3_text(base: str, user: str, bot: str) -> tuple[str, bool]:
             if start_b > bi:
                 out.extend(base_lines[bi:start_b])
             u_slice = user_lines[u_op[3]:u_op[4]]
-            k_slice = bot_lines[k_op[3]:k_op[4]]
-            if u_op[1] == k_op[1] and u_op[2] == k_op[2] and u_slice == k_slice:
-                out.extend(u_slice)
+            if (u_op[1:3] == k_op[1:3]
+                    and user_keys[u_op[3]:u_op[4]] == bot_keys[k_op[3]:k_op[4]]):
+                out.extend(bot_lines[k_op[3]:k_op[4]])
             else:
                 conflict = True
                 # Preserve user's edit in the primary text; bot's full version is also kept in botConflict
@@ -102,11 +125,12 @@ def _merge3_text(base: str, user: str, bot: str) -> tuple[str, bool]:
 
     if bi < len(base_lines):
         out.extend(base_lines[bi:])
-    return "".join(out), conflict
+    return _use_disk_line_endings("".join(out), bot), conflict
 
 
 class LiveMarkdownStore:
     live = True
+    _normalized_text = staticmethod(_normalize_line_endings)
 
     def __init__(self, root: Path, work_dir: Path, suffixes: Iterable[str],
                  *, max_bytes: int = MAX_TEXT_FILE_BYTES):

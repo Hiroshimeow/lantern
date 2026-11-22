@@ -1,4 +1,4 @@
-name: Lantern v4 CI & E2E
+name: Lantern CI & Mandatory Browser E2E
 
 on:
   push:
@@ -7,26 +7,68 @@ on:
     branches: ["*"]
 
 jobs:
-  test-and-e2e:
-    runs-on: ubuntu-latest
+  locked-unit-and-browser-e2e:
+    # Keep the locked Python 3.12.10 toolchain available; ubuntu-latest
+    # advanced to 26.04 before that interpreter was published for the image.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12.10
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12.10"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Install Python dependencies
+      - name: Verify locked uv manifest & CLI smoke (P1-05)
         run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml pillow
+          uv lock --check
+          uv sync --locked --no-dev
+          uv run --locked main.py --help
 
-      - name: Run JS syntax checks, Unit tests, Contract tests & Real-User E2E suite
-        run: python scripts/run_ci.py
+      - name: Install Chromium and Edge channels for mandatory browser E2E gate (P1-06)
+        run: |
+          uv run --locked --with playwright --with pillow python -m playwright install chromium msedge --with-deps
+
+      - name: Run mandatory browser acceptance with no skips
+        env:
+          LANTERN_E2E: "1"
+          LANTERN_BROWSER_UNIT: "1"
+          LANTERN_CI_REQUIRE_BROWSER: "1"
+        run: |
+          uv run --locked --with playwright --with pillow python scripts/run_ci.py --require-browser \
+            --browser-case tests.test_v925_gallery_explorer.TestV925GalleryBrowserE2E \
+            --browser-case tests.test_list_refresh_e2e.ListRefreshE2E \
+            --browser-case tests.test_crop_shared_e2e.SharedCropBrowserE2E \
+            --browser-case tests.test_crop_formats_e2e.CropFormatsE2E \
+            --browser-case tests.test_visual_feature_e2e.LanternVisualFeaturesE2E.test_crop_overwrite_preserves_path_and_refreshes_viewer \
+            --browser-case tests.test_visual_feature_e2e.LanternVisualFeaturesE2E.test_two_tabs_stale_crop_overwrite_is_refused \
+            --browser-case tests.test_image_cache_e2e.ImageCacheBrowserE2E \
+            --browser-case tests.test_md_visual_e2e.DocxVisualEditorE2E \
+            --browser-case tests.test_md_mode_switch_e2e.MarkdownModesE2E.test_preview_underscores_comments_and_escapes_without_source_mutation \
+            --browser-case tests.test_md_mode_switch_e2e.MarkdownModesE2E.test_preview_long_table_continuation_is_structured_in_real_edge \
+            --browser-case tests.test_markdown_interactions_browser.MarkdownInteractionsBrowser.test_preview_wide_table_drag_and_resizing \
+            --browser-case tests.test_markdown_interactions_browser.MarkdownInteractionsBrowser.test_table_handle_appears_after_delayed_table_mount_and_overflow \
+            --browser-case tests.test_source_codemirror_e2e.SourceCodeMirrorE2E.test_source_uses_one_codemirror_surface_and_canonical_hunk_ui \
+            --browser-case tests.test_source_codemirror_e2e.SourceCodeMirrorE2E.test_source_preview_source_preserves_text_and_keyboard_history \
+            --browser-case tests.test_live_markdown_e2e.LiveMarkdownE2E.test_external_delete_and_rename_fail_visible_without_recreating_old_path \
+            --browser-case tests.test_live_markdown_e2e.LiveMarkdownE2E.test_external_overlap_during_local_write_retains_local_recovery_and_real_external_bytes \
+            --browser-case tests.test_terminal_auth_e2e.TerminalRemoteAuthBrowserE2E
+
+      - name: Run full repository unittest discovery
+        env:
+          # Mandatory browser cases ran in the previous step. Other browser
+          # proofs retain their documented opt-in requirements.
+          LANTERN_E2E: "0"
+          LANTERN_BROWSER_UNIT: "0"
+          LANTERN_CI_REQUIRE_BROWSER: "0"
+        run: |
+          uv run --locked --with playwright --with pillow python scripts/run_ci.py
