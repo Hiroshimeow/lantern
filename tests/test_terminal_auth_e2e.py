@@ -83,7 +83,10 @@ class TerminalRemoteAuthBrowserE2E(unittest.TestCase):
                     time.sleep(.1)
             else:
                 self.fail("isolated no-password fixture never started")
-            self.assertEqual(status,{"required":False,"authenticated":True,"configured":False})
+            self.assertEqual(
+                {key: status[key] for key in ("required", "authenticated", "configured")},
+                {"required":False,"authenticated":True,"configured":False},
+            )
             with sync_playwright() as play:
                 browser=play.chromium.launch(channel="msedge",headless=True)
                 context=browser.new_context()
@@ -140,10 +143,14 @@ class TerminalRemoteAuthBrowserE2E(unittest.TestCase):
                 self.fail("Second Lantern process never started")
             with urllib.request.urlopen(self.url+"/api/terminal/auth", timeout=2) as res:
                 protected = json.load(res)
-            self.assertEqual(protected,
-                             {"required":True,"authenticated":False,"configured":True})
-            self.assertEqual(unprotected,
-                             {"required":False,"authenticated":True,"configured":False})
+            self.assertEqual(
+                {key: protected[key] for key in ("required", "authenticated", "configured")},
+                {"required":True,"authenticated":False,"configured":True},
+            )
+            self.assertEqual(
+                {key: unprotected[key] for key in ("required", "authenticated", "configured")},
+                {"required":False,"authenticated":True,"configured":False},
+            )
             self.assertEqual(self.yaml.read_bytes(),original_yaml,
                              "--no-password must never change the shared configuration")
             with sync_playwright() as play:

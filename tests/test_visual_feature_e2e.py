@@ -57,7 +57,9 @@ class LanternVisualFeaturesE2E(unittest.TestCase):
             }""",pasted)
             layer=dialog.locator('.lantern-crop-paste-layer')
             layer.wait_for(state='visible',timeout=8000)
-            self.assertTrue(layer.locator('.lantern-crop-paste-resize').is_visible())
+            handles = layer.get_by_role("button", name="Resize", exact=False)
+            self.assertEqual(handles.count(), 4)
+            self.assertTrue(all(handle.is_visible() for handle in handles.all()))
             overwrite.click()
             page.wait_for_function(
                 "() => !document.querySelector('.lantern-crop-dialog') &&"

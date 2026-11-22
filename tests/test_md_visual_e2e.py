@@ -1,7 +1,8 @@
-"""Opt-in real Edge acceptance for the offline in-preview Milkdown visual editor.
+"""Real Edge acceptance for the DOCX hybrid editor and historical editor tests.
 
-Run: set LANTERN_E2E=1 && uv run --locked --with playwright python -m unittest -v tests.test_md_visual_e2e
-Uses only an isolated loopback server and temporary Markdown files, never FJP's live instance.
+Run the current DOCX contract with LANTERN_E2E=1 and
+`python -m unittest -v tests.test_md_visual_e2e.DocxVisualEditorE2E`.
+Both fixtures use an isolated loopback server and temporary Markdown files.
 """
 from __future__ import annotations
 
@@ -18,6 +19,65 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@unittest.skipUnless(os.environ.get("LANTERN_E2E") == "1", "set LANTERN_E2E=1 for DOCX browser acceptance")
+class DocxVisualEditorE2E(unittest.TestCase):
+    def test_hybrid_edit_roundtrips_through_source_and_saves_the_user_draft(self):
+        from tests.test_md_mode_switch_e2e import MarkdownModesE2E
+
+        fixture = MarkdownModesE2E
+        fixture.setUpClass()
+        self.addCleanup(fixture.tearDownClass)
+        document = fixture.root / "docx-hybrid.md"
+        original = b"# DOCX fixture\n\nOriginal paragraph.\n"
+        document.write_bytes(original)
+        context = fixture.browser.new_context(viewport={"width": 1280, "height": 900})
+        self.addCleanup(context.close)
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(fixture.base + "/api/plugin/preview?p=docx-hybrid.md", wait_until="domcontentloaded")
+        preview = page.locator("article.md-preview")
+        preview.get_by_text("Original paragraph.", exact=True).wait_for()
+        self.assertTrue(preview.locator("p").evaluate(
+            "element => element.dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true}))"
+        ))
+        page.get_by_role("button", name="Edit visually", exact=True).click()
+        studio = page.locator(".md-docx-studio")
+        studio.wait_for()
+        self.assertEqual(page.locator(".ProseMirror, .milkdown").count(), 0)
+        studio.locator(".md-docx-surface").get_by_text("Original paragraph.", exact=True).click()
+        studio.get_by_role("button", name="Hybrid Syntax", exact=False).click()
+        raw_block = studio.locator(".md-docx-raw-block-editor")
+        raw_block.fill("Edited **paragraph**.")
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/work/write")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("userDraft") is True,
+            timeout=15000,
+        ) as wrote:
+            raw_block.press("Control+Enter")
+        self.assertTrue(wrote.value.ok)
+        self.assertEqual(document.read_bytes(), original)
+        draft = list((fixture.root / ".lantern-work").rglob(".user_draft.md"))
+        self.assertEqual(len(draft), 1)
+        self.assertIn(b"Edited **paragraph**.", draft[0].read_bytes())
+        page.get_by_role("button", name="Source", exact=True).click()
+        source = page.get_by_role("textbox", name="Markdown source")
+        source.wait_for()
+        self.assertIn("Edited **paragraph**.", source.inner_text())
+        self.assertEqual(document.read_bytes(), original)
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/work/save")
+            and response.request.method == "POST",
+            timeout=15000,
+        ) as saved:
+            source.press("Control+s")
+        self.assertTrue(saved.value.ok)
+        self.assertIn(b"Edited **paragraph**.", document.read_bytes())
+        self.assertFalse(draft[0].exists())
+        self.assertEqual(errors, [])
 
 
 @unittest.skipUnless(os.environ.get("LANTERN_E2E") == "1", "set LANTERN_E2E=1 for real-browser tests")

@@ -4,11 +4,10 @@
 Runs:
   1. Node syntax check across all static/*.js and tools/*.mjs files.
   2. Python bytecode compilation across main.py, plugin.py, and lantern/**/*.py.
-  3. Full repository-native `unittest discover -s tests` (zero omitted modules).
-  4. Strict browser gate: when --require-browser or LANTERN_CI_REQUIRE_BROWSER=1
-     is set, skipped acceptance browser E2E tests fail the run. Explicitly
-     opt-in crop performance benchmarks and explicitly retired Markdown-mode
-     cases (whose skip reason says they were replaced) remain allowed to skip.
+  3. Full repository-native `unittest discover -s tests` or the named
+     acceptance cases supplied with --browser-case.
+  4. The named acceptance selection fails on any skip. Strict full discovery
+     permits explicitly opt-in crop benchmarks and retired Markdown cases.
 """
 from __future__ import annotations
 
@@ -31,7 +30,16 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("LANTERN_CI_REQUIRE_BROWSER") == "1",
         help="Fail if browser E2E tests are skipped or unavailable.",
     )
+    parser.add_argument(
+        "--browser-case",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Run a named mandatory browser test, class, or module. Repeat for multiple cases.",
+    )
     args = parser.parse_args(argv)
+    if args.browser_case and not args.require_browser:
+        parser.error("--browser-case requires --require-browser")
 
     print("=== [1/4] Checking JavaScript syntax across ALL static & tool assets ===")
     js_files = sorted(
@@ -51,10 +59,19 @@ def main(argv: list[str] | None = None) -> int:
         py_compile.compile(str(pf), doraise=True)
     print(f"  OK: {len(py_files)} Python files compiled cleanly.")
 
-    print("\n=== [3/4] Running FULL repository unittest discover -s tests ===")
     sys.path.insert(0, str(ROOT))
     loader = unittest.defaultTestLoader
-    suite = loader.discover(str(ROOT / "tests"), pattern="test_*.py")
+    if args.browser_case:
+        print("\n=== [3/4] Running explicitly selected mandatory browser cases ===")
+        suite = unittest.TestSuite()
+        for name in args.browser_case:
+            cases = loader.loadTestsFromName(name)
+            if not cases.countTestCases():
+                parser.error(f"mandatory browser case did not resolve to any tests: {name}")
+            suite.addTests(cases)
+    else:
+        print("\n=== [3/4] Running FULL repository unittest discover -s tests ===")
+        suite = loader.discover(str(ROOT / "tests"), pattern="test_*.py")
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
 
@@ -69,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.require_browser:
-        browser_skips = [
+        browser_skips = result.skipped if args.browser_case else [
             (test, reason)
             for test, reason in result.skipped
             if "cropperformancee2e" not in str(test).lower()
@@ -88,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     if not result.wasSuccessful():
         return 1
 
-    print("\n=== [4/4] Lantern v9.25 Full CI Gate Passed ===")
+    completed_gate = "Mandatory Browser Acceptance" if args.browser_case else "Full Repository Discovery"
+    print(f"\n=== [4/4] {completed_gate} Passed ===")
     return 0
 
 
