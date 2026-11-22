@@ -189,6 +189,35 @@ class ListRefreshE2E(unittest.TestCase):
         (self.artifacts / f"{name}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         self.assertEqual(self.errors, [], "uncaught browser errors")
 
+    def test_wheel_and_page_down_scroll_list_on_desktop_and_mobile_widths(self) -> None:
+        for width, height in ((1440, 900), (390, 844)):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width": width, "height": height})
+                self.page.goto(f"{self.base}/{self.case}/")
+                self.page.wait_for_function("!state.loading && state.offset >= 100")
+                self.page.evaluate("window.scrollTo(0, 0)")
+                self.assertGreater(self.page.evaluate("document.scrollingElement.scrollHeight"), height)
+                first_row_top = self.card("file0001.txt").evaluate("row => row.getBoundingClientRect().top")
+
+                self.page.mouse.move(width // 2, height // 2)
+                self.page.mouse.wheel(0, 600)
+                self.page.wait_for_function("window.scrollY >= 300", timeout=2000)
+                after_wheel = self.page.evaluate("window.scrollY")
+                self.assertLess(
+                    self.card("file0001.txt").evaluate("row => row.getBoundingClientRect().top"),
+                    first_row_top,
+                )
+
+                self.page.keyboard.press("PageDown")
+                self.page.wait_for_function("previous => window.scrollY > previous", arg=after_wheel, timeout=2000)
+                status = self.page.locator("#statusBar").bounding_box()
+                self.assertGreaterEqual(status["y"], 0)
+                self.assertLessEqual(status["y"] + status["height"], height + 1)
+                if width > 900:
+                    tree = self.page.locator("#treePane").bounding_box()
+                    self.assertGreaterEqual(tree["y"], 0)
+                    self.assertLess(tree["y"], height)
+
     def test_external_delete_deep_page_manual_refresh(self) -> None:
         self.open_listing()
         anchor = self.focus_file()
