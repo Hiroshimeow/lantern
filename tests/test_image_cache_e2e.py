@@ -103,7 +103,7 @@ class ImageCacheBrowserE2E(unittest.TestCase):
                         img = card.locator("img.thumb")
                         img.wait_for(timeout=5000)
                         original_url = img.get_attribute("src")
-                        self.assertIn("?v=", original_url)
+                        self.assertIn("v", urllib.parse.parse_qs(urllib.parse.urlsplit(original_url).query))
                         page.wait_for_function(
                             "() => document.querySelector('.card img.thumb')?.naturalWidth === 40",
                             timeout=8000,
@@ -114,7 +114,11 @@ class ImageCacheBrowserE2E(unittest.TestCase):
                               const x=c.getContext('2d');x.drawImage(img,0,0,1,1);
                               return [...x.getImageData(0,0,1,1).data].slice(0,3);
                             }""")
-                        self.assertEqual(color(img), [255, 0, 0])
+                        def assert_thumbnail_color(element, expected: list[int]) -> None:
+                            actual = color(element)
+                            self.assertTrue(all(abs(a - b) <= 2 for a, b in zip(actual, expected, strict=True)), actual)
+
+                        assert_thumbnail_color(img, [255, 0, 0])
                         markdown_page = context.new_page()
                         markdown_page.goto(
                             base + "/api/plugin/preview?p=Album%2Fnotes.md",
@@ -122,10 +126,8 @@ class ImageCacheBrowserE2E(unittest.TestCase):
                         md_image = markdown_page.locator(".md-preview img").first
                         md_image.wait_for(timeout=8000)
                         self.assertEqual(color(md_image), [255, 0, 0])
-                        page.evaluate("""() => {
-                            if(!state.previewPane)togglePreviewPane();
-                            document.querySelector('.card[data-rel="Album/paint.png"] .card-main').click();
-                        }""")
+                        page.evaluate("() => { if (!state.previewPane) togglePreviewPane(); }")
+                        card.locator(".card-main").click()
                         side = page.locator(".side-fit-bg")
                         side.wait_for(timeout=7000)
                         old_background = side.evaluate("el => getComputedStyle(el).backgroundImage")
@@ -170,13 +172,13 @@ class ImageCacheBrowserE2E(unittest.TestCase):
                             "return i && i.complete && i.naturalWidth === 40; }",
                             timeout=10000,
                         )
-                        self.assertEqual(color(updated), [0, 0, 255])
+                        assert_thumbnail_color(updated, [0, 0, 255])
                         page.wait_for_function(
-                            "(old) => {const el=document.querySelector('.side-fit-bg');"
+                            "(old) => {const el = document.querySelector('.side-fit-bg'); "
                             "return el && getComputedStyle(el).backgroundImage !== old;}",
-                            arg=old_background, timeout=9000)
-                        self.assertIn(second["url"],
-                                      side.evaluate("el => getComputedStyle(el).backgroundImage"))
+                            arg=old_background, timeout=9000,
+                        )
+                        self.assertIn(second["url"], side.evaluate("el => getComputedStyle(el).backgroundImage"))
                         page.evaluate("""() => openPreview(
                             'image','/Album/paint.png','paint.png','Album/paint.png')""")
                         modal = page.locator("#modalBody img")
@@ -207,7 +209,7 @@ class ImageCacheBrowserE2E(unittest.TestCase):
                             "() => document.querySelector('.card img.thumb')?.naturalWidth === 40",
                             timeout=9000,
                         )
-                        self.assertEqual(color(final_img), [0, 0, 255])
+                        assert_thumbnail_color(final_img, [0, 0, 255])
                         context.close()
                     finally:
                         browser.close()

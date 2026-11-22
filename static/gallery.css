@@ -949,7 +949,7 @@ select:focus-visible,
 .side-preview {
   position: sticky;
   top: 98px;
-  max-height: calc(100dvh - 128px);
+  height: calc(100dvh - 160px);
 }
 .status-bar {
   position: sticky;
@@ -971,6 +971,6 @@ select:focus-visible,
   .side-preview {
     position: fixed;
     top: auto;
-    max-height: 85dvh;
+    height: 85dvh;
   }
 }
