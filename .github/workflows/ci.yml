@@ -8,7 +8,9 @@ on:
 
 jobs:
   locked-unit-and-browser-e2e:
-    runs-on: ubuntu-latest
+    # Keep the locked Python 3.12.10 toolchain available; ubuntu-latest
+    # advanced to 26.04 before that interpreter was published for the image.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
